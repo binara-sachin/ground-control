@@ -22,7 +22,10 @@ impl From<Marker> for Pos {
 pub enum Value {
     Null,
     /// A scalar; `quoted` is true when it was written in quotes or as a block.
-    Scalar { text: String, quoted: bool },
+    Scalar {
+        text: String,
+        quoted: bool,
+    },
     Seq(Vec<Node>),
     /// Entries in source order. Duplicate keys are reported by the builder.
     Map(Vec<(Key, Node)>),
@@ -95,18 +98,12 @@ impl Builder {
                         Value::Scalar { text, .. } => text.clone(),
                         Value::Null => String::new(),
                         _ => {
-                            self.errors.push(ParseError {
-                                pos: node.pos,
-                                message: "mapping keys must be plain strings".into(),
-                            });
+                            self.errors.push(ParseError { pos: node.pos, message: "mapping keys must be plain strings".into() });
                             String::new()
                         }
                     };
                     if entries.iter().any(|(k, _)| k.text == text) {
-                        self.errors.push(ParseError {
-                            pos: node.pos,
-                            message: format!("duplicate key `{text}`"),
-                        });
+                        self.errors.push(ParseError { pos: node.pos, message: format!("duplicate key `{text}`") });
                     }
                     *pending = Some(Key { text, pos: node.pos });
                 }
@@ -128,9 +125,8 @@ impl MarkedEventReceiver for Builder {
             }
             Event::Scalar(text, style, _, tag) => {
                 let quoted = !matches!(style, TScalarStyle::Plain);
-                let is_null = !quoted
-                    && tag.is_none()
-                    && (text.is_empty() || text == "~" || text == "null" || text == "Null" || text == "NULL");
+                let is_null =
+                    !quoted && tag.is_none() && (text.is_empty() || text == "~" || text == "null" || text == "Null" || text == "NULL");
                 let value = if is_null { Value::Null } else { Value::Scalar { text, quoted } };
                 self.push_node(Node { value, pos });
             }

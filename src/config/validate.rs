@@ -33,24 +33,12 @@ pub fn has_remote_flag(cmd: &str) -> bool {
     REMOTE_FLAG.is_match(cmd)
 }
 
-fn looks_secret(key: &str) -> bool {
+pub(super) fn looks_secret(key: &str) -> bool {
     let k = key.to_ascii_uppercase();
     ["TOKEN", "SECRET", "KEY", "PASSWORD"].iter().any(|w| k.contains(w))
 }
 
-fn check_literal_secrets(vars: &[(String, String)], pos: Pos, where_: &str, diags: &mut Vec<Diagnostic>) {
-    for (k, v) in vars {
-        if looks_secret(k) && !v.is_empty() && !v.starts_with('$') {
-            diags.push(Diagnostic::warning(
-                pos,
-                format!("`{k}` in {where_} looks like a secret with a literal value; the config is in git, move it to an env_file"),
-            ));
-        }
-    }
-}
-
 pub fn validate(config: &mut Config, diags: &mut Vec<Diagnostic>) {
-    check_literal_secrets(&config.env, Pos { line: 1, col: 1 }, "global env", diags);
     for project in &mut config.projects {
         validate_project(project, diags);
     }
@@ -59,14 +47,10 @@ pub fn validate(config: &mut Config, diags: &mut Vec<Diagnostic>) {
 fn validate_project(p: &mut Project, diags: &mut Vec<Diagnostic>) {
     let pid = p.id.clone();
 
-    if let Some(remote) = &p.remote {
-        if crate::git::normalize_remote(remote).is_none() {
-            diags.push(Diagnostic::error(p.pos, format!("project `{pid}`: remote `{remote}` is not a recognisable git remote")));
-        }
-    }
-
-    for e in &p.environments {
-        check_literal_secrets(&e.vars, e.pos, &format!("{pid} environment `{}`", e.name), diags);
+    if let Some(remote) = &p.remote
+        && crate::git::normalize_remote(remote).is_none()
+    {
+        diags.push(Diagnostic::error(p.pos, format!("project `{pid}`: remote `{remote}` is not a recognisable git remote")));
     }
 
     // Services and groups share a namespace.
@@ -87,7 +71,10 @@ fn validate_project(p: &mut Project, diags: &mut Vec<Diagnostic>) {
 
     for s in &p.services {
         if has_remote_flag(&s.start) {
-            diags.push(Diagnostic::error(s.pos, format!("service `{}` start command contains `--remote`; local stacks must never touch remote resources", s.id)));
+            diags.push(Diagnostic::error(
+                s.pos,
+                format!("service `{}` start command contains `--remote`; local stacks must never touch remote resources", s.id),
+            ));
         }
         if let Some(b) = blocked_command(&s.start) {
             diags.push(Diagnostic::error(s.pos, format!("service `{}` start command contains blocked `{b}`", s.id)));
@@ -142,10 +129,10 @@ fn validate_pipeline(p: &Project, pl: &Pipeline, service_ids: &HashSet<&str>, di
                 Some(pat) => match Regex::new(pat) {
                     Err(e) => diags.push(Diagnostic::error(i.pos, format!("input `{}` pattern is not a valid regex: {e}", i.name))),
                     Ok(re) => {
-                        if let Some(d) = &i.default {
-                            if !re.is_match(d) {
-                                diags.push(Diagnostic::error(i.pos, format!("input `{}` default does not match its pattern", i.name)));
-                            }
+                        if let Some(d) = &i.default
+                            && !re.is_match(d)
+                        {
+                            diags.push(Diagnostic::error(i.pos, format!("input `{}` default does not match its pattern", i.name)));
                         }
                     }
                 },
@@ -154,17 +141,18 @@ fn validate_pipeline(p: &Project, pl: &Pipeline, service_ids: &HashSet<&str>, di
                 if i.options.is_empty() {
                     diags.push(Diagnostic::error(i.pos, format!("choice input `{}` must have `options`", i.name)));
                 }
-                if let Some(d) = &i.default {
-                    if !i.options.contains(d) {
-                        diags.push(Diagnostic::error(i.pos, format!("input `{}` default is not one of its options", i.name)));
-                    }
+                if let Some(d) = &i.default
+                    && !i.options.contains(d)
+                {
+                    diags.push(Diagnostic::error(i.pos, format!("input `{}` default is not one of its options", i.name)));
                 }
             }
             InputKind::Bool => {
-                if let Some(d) = &i.default {
-                    if d != "true" && d != "false" {
-                        diags.push(Diagnostic::error(i.pos, format!("bool input `{}` default must be true or false", i.name)));
-                    }
+                if let Some(d) = &i.default
+                    && d != "true"
+                    && d != "false"
+                {
+                    diags.push(Diagnostic::error(i.pos, format!("bool input `{}` default must be true or false", i.name)));
                 }
             }
         }
@@ -218,10 +206,11 @@ pub fn find_cycle(services: &[Service]) -> Option<Vec<String>> {
         marks.insert(n, Mark::Visiting);
         path.push(n);
         for d in deps.get(n).copied().unwrap_or(&[]) {
-            if d != n && deps.contains_key(d.as_str()) {
-                if let Some(c) = visit(d.as_str(), deps, marks, path) {
-                    return Some(c);
-                }
+            if d != n
+                && deps.contains_key(d.as_str())
+                && let Some(c) = visit(d.as_str(), deps, marks, path)
+            {
+                return Some(c);
             }
         }
         path.pop();

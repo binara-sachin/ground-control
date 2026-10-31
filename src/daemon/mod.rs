@@ -158,7 +158,11 @@ impl Daemon {
                 environments: p
                     .environments
                     .iter()
-                    .map(|e| EnvInfo { name: e.name.clone(), protected: e.protected, var_names: e.vars.iter().map(|(k, _)| k.clone()).collect() })
+                    .map(|e| EnvInfo {
+                        name: e.name.clone(),
+                        protected: e.protected,
+                        var_names: e.vars.iter().map(|(k, _)| k.clone()).collect(),
+                    })
                     .collect(),
                 services: p.services.iter().map(|s| self.supervisor.status(p, s)).collect(),
                 groups: p.groups.iter().map(|g| GroupInfo { id: g.id.clone(), members: g.members.clone() }).collect(),
@@ -317,10 +321,10 @@ async fn watch_config(d: Arc<Daemon>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<()>();
     let name = d.config_path.file_name().map(|n| n.to_os_string());
     let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res {
-            if ev.paths.iter().any(|p| p.file_name().map(|n| n.to_os_string()) == name) {
-                let _ = tx.send(());
-            }
+        if let Ok(ev) = res
+            && ev.paths.iter().any(|p| p.file_name().map(|n| n.to_os_string()) == name)
+        {
+            let _ = tx.send(());
         }
     }) {
         Ok(w) => w,

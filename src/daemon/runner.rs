@@ -145,6 +145,9 @@ fn gc_vars(run_id: Option<i64>, env: Option<&str>, output_file: &Path) -> BTreeM
     ])
 }
 
+/// `key=... >> "$GC_OUTPUT"` in a step, to list outputs a dry run can expect.
+static OUTPUT_WRITE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Za-z_][A-Za-z0-9_]*)=[^\n]*>>\s*"?\$\{?GC_OUTPUT"#).unwrap());
+
 static VAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
 
 /// Expands `$NAME` / `${NAME}` in an approval message. Unknown names stay as written.
@@ -193,7 +196,8 @@ async fn preflight(d: &Daemon, project: &Project) -> Vec<String> {
 
 pub async fn start(d: &Arc<Daemon>, params: RunStartParams) -> Result<Response, ReqError> {
     let config = d.config();
-    let project = config.project(&params.project).ok_or_else(|| err(ErrorCode::NotFound, format!("unknown project `{}`", params.project)))?;
+    let project =
+        config.project(&params.project).ok_or_else(|| err(ErrorCode::NotFound, format!("unknown project `{}`", params.project)))?;
     let pipeline = project
         .pipeline(&params.pipeline)
         .ok_or_else(|| err(ErrorCode::NotFound, format!("unknown pipeline `{}` in {}", params.pipeline, project.id)))?;
@@ -335,11 +339,19 @@ async fn dry_run(
             StepKind::Service { action, target } => (format!("{} {target}", action.as_str()), String::new(), Vec::new(), None),
         };
         if let StepKind::Run { run, .. } = &s.kind {
-            for cap in Regex::new(r#"([A-Za-z_][A-Za-z0-9_]*)=[^\n]*>>\s*"?\$\{?GC_OUTPUT"#).unwrap().captures_iter(run) {
+            for cap in OUTPUT_WRITE_RE.captures_iter(run) {
                 known_outputs.push(cap[1].to_ascii_uppercase());
             }
         }
-        steps.push(DryRunStep { index: i, kind: StepKindName::parse(s.kind_str()), label: s.label(), command, cwd, env_names, timeout_secs: timeout });
+        steps.push(DryRunStep {
+            index: i,
+            kind: StepKindName::parse(s.kind_str()),
+            label: s.label(),
+            command,
+            cwd,
+            env_names,
+            timeout_secs: timeout,
+        });
     }
     DryRunPlan {
         project: project.id.clone(),
@@ -658,7 +670,9 @@ async fn run_step(
     log.finish();
 
     let (status, outcome) = match end {
-        End::TimedOut => (StepStatus::TimedOut, StepOutcome::Failed(Some(format!("step {} timed out after {}", idx + 1, fmt_secs(timeout.as_secs()))))),
+        End::TimedOut => {
+            (StepStatus::TimedOut, StepOutcome::Failed(Some(format!("step {} timed out after {}", idx + 1, fmt_secs(timeout.as_secs())))))
+        }
         End::Cancelled => (StepStatus::Cancelled, StepOutcome::Cancelled(Some("cancelled".into()))),
         End::Exited(Some(0)) => (StepStatus::Succeeded, StepOutcome::Ok),
         End::Exited(c) => (
@@ -675,9 +689,9 @@ async fn run_step(
 }
 
 fn fmt_secs(s: u64) -> String {
-    if s % 3600 == 0 {
+    if s.is_multiple_of(3600) {
         format!("{}h", s / 3600)
-    } else if s % 60 == 0 {
+    } else if s.is_multiple_of(60) {
         format!("{}m", s / 60)
     } else {
         format!("{s}s")
@@ -761,7 +775,14 @@ async fn approve_step(
     outcome
 }
 
-async fn service_step(d: &Arc<Daemon>, project: &Project, run_id: i64, idx: usize, action: crate::config::ServiceAction, target: &str) -> StepOutcome {
+async fn service_step(
+    d: &Arc<Daemon>,
+    project: &Project,
+    run_id: i64,
+    idx: usize,
+    action: crate::config::ServiceAction,
+    target: &str,
+) -> StepOutcome {
     let log = open_step_log(project, run_id, idx).ok();
     let path = log.as_ref().map(|(_, p)| p.to_string_lossy().into_owned());
     d.with_store(|db| db.start_step(run_id, idx, now(), StepStatus::Running, path.as_deref()));

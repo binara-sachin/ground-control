@@ -19,10 +19,10 @@ pub fn normalize_remote(url: &str) -> Option<String> {
         }
     }
     // user@host:path (scp-like) or user@host/path
-    if let Some(at) = s.find('@') {
-        if !s[..at].contains('/') {
-            s = s[at + 1..].to_string();
-        }
+    if let Some(at) = s.find('@')
+        && !s[..at].contains('/')
+    {
+        s = s[at + 1..].to_string();
     }
     let (host, path) = match (s.find(':'), s.find('/')) {
         (Some(c), Some(sl)) if c < sl => {
@@ -176,13 +176,7 @@ pub async fn snapshot(dir: &Path) -> Snapshot {
     let st = status(dir, None).await;
     let commit = git(dir, &["rev-parse", "--short=7", "HEAD"]).await.ok().map(|s| s.trim().to_string());
     let unpushed = unpushed_count(dir).await.ok();
-    Snapshot {
-        branch: st.branch.clone(),
-        commit,
-        dirty: st.error.is_none() && !st.is_clean(),
-        unpushed,
-        status: st,
-    }
+    Snapshot { branch: st.branch.clone(), commit, dirty: st.error.is_none() && !st.is_clean(), unpushed, status: st }
 }
 
 /// `git diff HEAD` plus the list of untracked files, for the run record.

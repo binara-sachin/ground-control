@@ -11,10 +11,7 @@ pub const REQUIRED_TOOLS: [&str; 9] = ["git", "gh", "pnpm", "npm", "cargo", "go"
 
 /// Resolves each required tool on the step shell's PATH (`/bin/zsh -l`).
 pub async fn tool_check() -> Vec<ToolStatus> {
-    let script: String = REQUIRED_TOOLS
-        .iter()
-        .map(|t| format!("printf '%s\\t%s\\n' {t} \"$(command -v {t} 2>/dev/null)\";"))
-        .collect();
+    let script: String = REQUIRED_TOOLS.iter().map(|t| format!("printf '%s\\t%s\\n' {t} \"$(command -v {t} 2>/dev/null)\";")).collect();
     let out = shell_output(&script, Duration::from_secs(20)).await.unwrap_or_default();
     REQUIRED_TOOLS
         .iter()
@@ -73,11 +70,8 @@ pub async fn notify(title: &str, body: &str) {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let script = format!(
-        "display notification {} with title \"GroundControl\" subtitle {}",
-        applescript_string(body),
-        applescript_string(title)
-    );
+    let script =
+        format!("display notification {} with title \"GroundControl\" subtitle {}", applescript_string(body), applescript_string(title));
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::process::Command::new("/usr/bin/osascript").arg("-e").arg(script).stdin(std::process::Stdio::null()).status(),

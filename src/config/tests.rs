@@ -124,7 +124,8 @@ fn remote_flag_in_service_start() {
 
 #[test]
 fn dependency_cycle() {
-    let src = BASE.replace("        start: docker compose up postgres\n", "        start: docker compose up postgres\n        depends_on: [api]\n");
+    let src = BASE
+        .replace("        start: docker compose up postgres\n", "        start: docker compose up postgres\n        depends_on: [api]\n");
     assert!(has_error(&src, "cycle"));
 }
 

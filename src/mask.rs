@@ -22,17 +22,13 @@ impl Masker {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut secrets: Vec<Vec<u8>> = values
-            .into_iter()
-            .map(|v| v.as_ref().as_bytes().to_vec())
-            .filter(|v| v.len() >= MIN_SECRET_LEN)
-            .collect();
+        let mut secrets: Vec<Vec<u8>> =
+            values.into_iter().map(|v| v.as_ref().as_bytes().to_vec()).filter(|v| v.len() >= MIN_SECRET_LEN).collect();
         // Longest first so a secret that contains another is masked whole.
         secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secrets.dedup();
         let re = (!secrets.is_empty()).then(|| {
-            let alts: Vec<String> =
-                secrets.iter().map(|s| regex::escape(&String::from_utf8_lossy(s))).collect();
+            let alts: Vec<String> = secrets.iter().map(|s| regex::escape(&String::from_utf8_lossy(s))).collect();
             Regex::new(&alts.join("|")).expect("escaped alternation is valid")
         });
         Masker { secrets, re, carry: Vec::new() }

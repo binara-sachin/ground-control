@@ -102,7 +102,7 @@ async fn handle_conn(d: Arc<Daemon>, stream: UnixStream) -> anyhow::Result<()> {
         let (d, tx, topics) = (d.clone(), out_tx.clone(), topics.clone());
         tokio::spawn(async move {
             let body = match handle(&d, msg.request, &topics).await {
-                Ok(r) => ResponseBody::Result(r),
+                Ok(r) => ResponseBody::Result(Box::new(r)),
                 Err((code, message)) => ResponseBody::Error(ErrorBody { code, message }),
             };
             if let Ok(line) = serde_json::to_string(&ServerMessage::Response { id: msg.id, body }) {
@@ -139,7 +139,8 @@ async fn handle(d: &Arc<Daemon>, req: Request, topics: &Mutex<HashSet<String>>) 
         Request::RunDiff { id } => {
             let detail = d.with_store(|db| db.run_detail(id)).flatten().ok_or((ErrorCode::NotFound, format!("run #{id} not found")))?;
             let path = detail.diff_path.ok_or((ErrorCode::NotFound, format!("run #{id} has no saved diff (the tree was clean)")))?;
-            let text = read_capped(&path, MAX_TEXT).map_err(|e| (ErrorCode::NotFound, format!("cannot read {path}: {e} (diffs are pruned after 90 days)")))?;
+            let text = read_capped(&path, MAX_TEXT)
+                .map_err(|e| (ErrorCode::NotFound, format!("cannot read {path}: {e} (diffs are pruned after 90 days)")))?;
             Ok(Response::Text { text, path: Some(path) })
         }
         Request::LogRead { run, step, from_offset } => log_read(d, run, step, from_offset),
@@ -177,10 +178,8 @@ fn read_capped(path: &str, max: u64) -> std::io::Result<String> {
 }
 
 fn log_read(d: &Daemon, run: i64, step: usize, from: u64) -> Reply {
-    let info = d
-        .with_store(|db| db.step(run, step))
-        .flatten()
-        .ok_or((ErrorCode::NotFound, format!("run #{run} has no step {}", step + 1)))?;
+    let info =
+        d.with_store(|db| db.step(run, step)).flatten().ok_or((ErrorCode::NotFound, format!("run #{run} has no step {}", step + 1)))?;
     let finished = !matches!(info.status, StepStatus::Running | StepStatus::Pending | StepStatus::Waiting);
     let Some(path) = d.with_store(|db| db.step_log_path(run, step)).flatten() else {
         return Ok(Response::Log(LogChunk { run, step, offset: from, data: String::new(), end: from, complete: finished }));

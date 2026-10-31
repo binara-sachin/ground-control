@@ -43,9 +43,7 @@ pub fn spawn_shell(command: &str, dir: &Path, env: &BTreeMap<String, String>) ->
     drop(cmd);
     let pid = child.id().map(|p| p as i32).unwrap_or(-1);
     let (tx, rx) = mpsc::channel(256);
-    std::thread::Builder::new()
-        .name(format!("gc-output-{pid}"))
-        .spawn(move || pump(reader, tx))?;
+    std::thread::Builder::new().name(format!("gc-output-{pid}")).spawn(move || pump(reader, tx))?;
     Ok(Spawned { child, pid, output: rx })
 }
 

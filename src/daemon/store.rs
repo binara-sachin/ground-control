@@ -208,10 +208,7 @@ impl Store {
     }
 
     pub fn set_step_status(&self, run: i64, idx: usize, status: StepStatus) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE steps SET status = ?3 WHERE run_id = ?1 AND idx = ?2",
-            params![run, idx as i64, status.as_str()],
-        )?;
+        self.conn.execute("UPDATE steps SET status = ?3 WHERE run_id = ?1 AND idx = ?2", params![run, idx as i64, status.as_str()])?;
         Ok(())
     }
 
@@ -247,18 +244,15 @@ impl Store {
     }
 
     pub fn run_summary(&self, id: i64) -> rusqlite::Result<Option<RunSummary>> {
-        self.conn
-            .query_row(&format!("SELECT {RUN_COLS} FROM runs WHERE id = ?1"), [id], summary_from_row)
-            .optional()
+        self.conn.query_row(&format!("SELECT {RUN_COLS} FROM runs WHERE id = ?1"), [id], summary_from_row).optional()
     }
 
     pub fn run_detail(&self, id: i64) -> rusqlite::Result<Option<RunDetail>> {
         let Some(summary) = self.run_summary(id)? else { return Ok(None) };
-        let (inputs, diff_path, diff_summary, unpushed_count): (String, Option<String>, Option<String>, Option<u32>) = self.conn.query_row(
-            "SELECT inputs, diff_path, diff_summary, unpushed_count FROM runs WHERE id = ?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?;
+        let (inputs, diff_path, diff_summary, unpushed_count): (String, Option<String>, Option<String>, Option<u32>) =
+            self.conn.query_row("SELECT inputs, diff_path, diff_summary, unpushed_count FROM runs WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?;
         let mut stmt = self.conn.prepare(
             "SELECT idx, name, kind, command, cwd, status, exit_code, started_at, finished_at, log_path FROM steps WHERE run_id = ?1 ORDER BY idx",
         )?;
@@ -306,15 +300,12 @@ impl Store {
             where_.push(format!("status = ?{}", args.len()));
         }
         let clause = if where_.is_empty() { String::new() } else { format!("WHERE {}", where_.join(" AND ")) };
-        let total: u64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM runs {clause}"),
-            rusqlite::params_from_iter(args.iter()),
-            |r| r.get::<_, i64>(0),
-        )? as u64;
-        let sql = format!(
-            "SELECT {RUN_COLS} FROM runs {clause} ORDER BY id DESC LIMIT {PAGE_SIZE} OFFSET {}",
-            page as u64 * PAGE_SIZE as u64
-        );
+        let total: u64 =
+            self.conn.query_row(&format!("SELECT COUNT(*) FROM runs {clause}"), rusqlite::params_from_iter(args.iter()), |r| {
+                r.get::<_, i64>(0)
+            })? as u64;
+        let sql =
+            format!("SELECT {RUN_COLS} FROM runs {clause} ORDER BY id DESC LIMIT {PAGE_SIZE} OFFSET {}", page as u64 * PAGE_SIZE as u64);
         let mut stmt = self.conn.prepare(&sql)?;
         let runs = stmt.query_map(rusqlite::params_from_iter(args.iter()), summary_from_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(RunPage { runs, total, page, page_size: PAGE_SIZE, waiting: self.waiting_approvals()? })
@@ -351,7 +342,14 @@ impl Store {
 
     // ── approvals ──
 
-    pub fn insert_approval(&self, run: i64, step: usize, message: &str, requested_at: Timestamp, expires_at: Timestamp) -> rusqlite::Result<()> {
+    pub fn insert_approval(
+        &self,
+        run: i64,
+        step: usize,
+        message: &str,
+        requested_at: Timestamp,
+        expires_at: Timestamp,
+    ) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO approvals (run_id, step_index, message, status, requested_at, expires_at) VALUES (?1, ?2, ?3, 'pending', ?4, ?5)",
             params![run, step as i64, message, requested_at, expires_at],
@@ -361,7 +359,13 @@ impl Store {
 
     /// Records a decision if the approval is still pending. Returns the status
     /// that was already recorded when another answer won.
-    pub fn decide_approval(&self, run: i64, step: usize, status: ApprovalStatus, at: Timestamp) -> rusqlite::Result<Result<(), ApprovalStatus>> {
+    pub fn decide_approval(
+        &self,
+        run: i64,
+        step: usize,
+        status: ApprovalStatus,
+        at: Timestamp,
+    ) -> rusqlite::Result<Result<(), ApprovalStatus>> {
         let changed = self.conn.execute(
             "UPDATE approvals SET status = ?3, decided_at = ?4 WHERE run_id = ?1 AND step_index = ?2 AND status = 'pending'",
             params![run, step as i64, status.as_str(), at],
@@ -469,7 +473,8 @@ impl Store {
     }
 }
 
-const RUN_COLS: &str = "id, project, pipeline, env, status, reason, branch, commit_sha, dirty, unpushed, protected, started_at, finished_at";
+const RUN_COLS: &str =
+    "id, project, pipeline, env, status, reason, branch, commit_sha, dirty, unpushed, protected, started_at, finished_at";
 
 fn summary_from_row(r: &Row) -> rusqlite::Result<RunSummary> {
     Ok(RunSummary {

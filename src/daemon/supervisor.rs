@@ -110,9 +110,7 @@ impl Supervisor {
         let mut slots = self.slots.lock().unwrap();
         slots
             .entry((project.to_string(), id.to_string()))
-            .or_insert_with(|| {
-                Arc::new(Slot { project: project.into(), id: id.into(), op: Default::default(), st: Default::default() })
-            })
+            .or_insert_with(|| Arc::new(Slot { project: project.into(), id: id.into(), op: Default::default(), st: Default::default() }))
             .clone()
     }
 
@@ -157,10 +155,7 @@ impl Supervisor {
     /// Process-group ids of every live managed service, for "not managed" checks.
     fn managed_pids(&self) -> HashMap<i32, String> {
         let slots = self.slots.lock().unwrap();
-        slots
-            .values()
-            .filter_map(|s| s.st.lock().unwrap().pid.map(|p| (p, format!("{}/{}", s.project, s.id))))
-            .collect()
+        slots.values().filter_map(|s| s.st.lock().unwrap().pid.map(|p| (p, format!("{}/{}", s.project, s.id)))).collect()
     }
 
     pub fn running_count(&self) -> usize {
@@ -339,18 +334,18 @@ fn launch<'a>(
 }
 
 async fn launch_inner(d: &Arc<Daemon>, slot: &Arc<Slot>, config: &Config, project: &Project, svc: &Service) -> Result<(), String> {
-    if let Some(port) = svc.health.as_ref().and_then(Health::port) {
-        if port_in_use(port).await {
-            let owner = port_owner(port).await;
-            let managed = d.supervisor.managed_pids();
-            return Err(match owner {
-                Some(pid) => match managed.get(&pid) {
-                    Some(name) => format!("port {port} is in use by {name} (PID {pid})"),
-                    None => format!("port {port} is in use by PID {pid} (not managed)"),
-                },
-                None => format!("port {port} is in use (not managed)"),
-            });
-        }
+    if let Some(port) = svc.health.as_ref().and_then(Health::port)
+        && port_in_use(port).await
+    {
+        let owner = port_owner(port).await;
+        let managed = d.supervisor.managed_pids();
+        return Err(match owner {
+            Some(pid) => match managed.get(&pid) {
+                Some(name) => format!("port {port} is in use by {name} (PID {pid})"),
+                None => format!("port {port} is in use by PID {pid} (not managed)"),
+            },
+            None => format!("port {port} is in use (not managed)"),
+        });
     }
     let dir = project.resolve_dir(svc.cwd.as_deref());
     if !dir.is_dir() {
@@ -508,11 +503,7 @@ async fn on_exit_inner(d: &Arc<Daemon>, slot: &Arc<Slot>, generation: u64, code:
         GaveUp(String),
     }
     let config = d.config();
-    let policy = config
-        .project(&slot.project)
-        .and_then(|p| p.service(&slot.id))
-        .map(|s| s.restart)
-        .unwrap_or(RestartPolicy::Never);
+    let policy = config.project(&slot.project).and_then(|p| p.service(&slot.id)).map(|s| s.restart).unwrap_or(RestartPolicy::Never);
     let next = {
         let mut st = slot.st.lock().unwrap();
         if st.generation != generation {
@@ -625,7 +616,7 @@ pub async fn http_ok(url: &str) -> bool {
         let mut stream = TcpStream::connect((host.as_str(), port)).await.ok()?;
         let req = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUser-Agent: groundcontrol\r\nConnection: close\r\n\r\n");
         stream.write_all(req.as_bytes()).await.ok()?;
-        let mut buf = vec![0u8; 64];
+        let mut buf = [0u8; 64];
         let mut n = 0;
         while n < 12 {
             let m = stream.read(&mut buf[n..]).await.ok()?;
@@ -666,11 +657,11 @@ pub async fn restore(d: &Arc<Daemon>) {
     }
     // Processes left behind by a daemon that died without stopping them.
     for s in &stored {
-        if let Some(pgid) = s.pgid {
-            if process::group_alive(pgid) {
-                tracing::info!(project = %s.project, service = %s.service, pgid, "stopping leftover service process group");
-                process::terminate_orphan_group(pgid).await;
-            }
+        if let Some(pgid) = s.pgid
+            && process::group_alive(pgid)
+        {
+            tracing::info!(project = %s.project, service = %s.service, pgid, "stopping leftover service process group");
+            process::terminate_orphan_group(pgid).await;
         }
     }
     let config = d.config();
@@ -693,11 +684,7 @@ pub async fn sync_with_config(d: &Arc<Daemon>) {
     let config = d.config();
     let orphans: Vec<Key> = {
         let slots = d.supervisor.slots.lock().unwrap();
-        slots
-            .keys()
-            .filter(|(p, s)| config.project(p).and_then(|p| p.service(s)).is_none())
-            .cloned()
-            .collect()
+        slots.keys().filter(|(p, s)| config.project(p).and_then(|p| p.service(s)).is_none()).cloned().collect()
     };
     for (p, s) in orphans {
         tracing::info!(project = %p, service = %s, "service removed from config; stopping it");

@@ -91,10 +91,10 @@ pub fn tail(path: &Path, max_bytes: u64) -> io::Result<String> {
     f.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
-    if start > 0 {
-        if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-            buf.drain(..=nl);
-        }
+    if start > 0
+        && let Some(nl) = buf.iter().position(|&b| b == b'\n')
+    {
+        buf.drain(..=nl);
     }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
@@ -109,7 +109,7 @@ mod tests {
         let path = dir.path().join("svc.log");
         let mut f = RotatingFile::with_limits(&path, 10, 3);
         for i in 0..10 {
-            write!(f, "line{i:04}\n").unwrap();
+            writeln!(f, "line{i:04}").unwrap();
         }
         assert!(path.exists());
         assert!(dir.path().join("svc.log.1").exists());

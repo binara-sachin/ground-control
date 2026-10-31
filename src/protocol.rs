@@ -139,14 +139,20 @@ impl RunFilter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServerMessage {
-    Response { id: u64, #[serde(flatten)] body: ResponseBody },
-    Event { event: Event },
+    Response {
+        id: u64,
+        #[serde(flatten)]
+        body: ResponseBody,
+    },
+    Event {
+        event: Event,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResponseBody {
-    Result(Response),
+    Result(Box<Response>),
     Error(ErrorBody),
 }
 
@@ -185,16 +191,30 @@ pub enum Response {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Event {
     Run(RunSummary),
-    Step { run_id: i64, step: StepInfo },
+    Step {
+        run_id: i64,
+        step: StepInfo,
+    },
     Approval(ApprovalInfo),
-    Output { run_id: i64, key: String, value: String },
+    Output {
+        run_id: i64,
+        key: String,
+        value: String,
+    },
     Service(ServiceStatus),
-    Git { project: String, git: GitStatus },
+    Git {
+        project: String,
+        git: GitStatus,
+    },
     /// The project list changed shape (config reload); refetch `projects.list`.
     Projects,
     Config(ConfigStatus),
     Log(LogChunk),
-    ServiceLog { project: String, service: String, data: String },
+    ServiceLog {
+        project: String,
+        service: String,
+        data: String,
+    },
 }
 
 impl Event {
@@ -676,21 +696,15 @@ mod tests {
 
     #[test]
     fn server_messages_are_distinguishable() {
-        let r = ServerMessage::Response { id: 3, body: ResponseBody::Result(Response::Ok) };
+        let r = ServerMessage::Response { id: 3, body: ResponseBody::Result(Box::new(Response::Ok)) };
         let s = serde_json::to_string(&r).unwrap();
         assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Response { id: 3, .. }));
         let e = ServerMessage::Event { event: Event::Projects };
         let s = serde_json::to_string(&e).unwrap();
         assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Event { .. }));
-        let err = ServerMessage::Response {
-            id: 4,
-            body: ResponseBody::Error(ErrorBody { code: ErrorCode::Busy, message: "x".into() }),
-        };
+        let err = ServerMessage::Response { id: 4, body: ResponseBody::Error(ErrorBody { code: ErrorCode::Busy, message: "x".into() }) };
         let s = serde_json::to_string(&err).unwrap();
-        assert!(matches!(
-            serde_json::from_str::<ServerMessage>(&s).unwrap(),
-            ServerMessage::Response { body: ResponseBody::Error(_), .. }
-        ));
+        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Response { body: ResponseBody::Error(_), .. }));
     }
 
     #[test]

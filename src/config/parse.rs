@@ -77,14 +77,22 @@ impl Ctx<'_> {
                 Value::Null => String::new(),
                 _ => self.string(v, &format!("{what}.{}", k.text)).unwrap_or_default(),
             };
+            if super::validate::looks_secret(&k.text) && !value.is_empty() && !value.starts_with('$') {
+                self.diags.push(Diagnostic::warning(
+                    k.pos,
+                    format!(
+                        "`{}` in {what} looks like a secret with a literal value; the config is in git, move it to an env_file",
+                        k.text
+                    ),
+                ));
+            }
             out.push((k.text.clone(), value));
         }
         out
     }
 
     fn id(&mut self, key: &Key, what: &str) -> bool {
-        let ok = !key.text.is_empty()
-            && key.text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        let ok = !key.text.is_empty() && key.text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
         if !ok {
             self.err(key.pos, format!("{what} id `{}` may only contain letters, digits, `-`, `_` and `.`", key.text));
         }
@@ -94,8 +102,7 @@ impl Ctx<'_> {
 
 pub fn is_env_name(s: &str) -> bool {
     let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 pub(super) fn config_from_node(root: &Node, diags: &mut Vec<Diagnostic>) -> Option<Config> {
@@ -109,10 +116,10 @@ pub(super) fn config_from_node(root: &Node, diags: &mut Vec<Diagnostic>) -> Opti
             "projects" => {
                 if let Some(projects) = cx.map(v, "projects") {
                     for (pk, pv) in projects {
-                        if cx.id(pk, "project") {
-                            if let Some(p) = project(&mut cx, pk, pv) {
-                                config.projects.push(p);
-                            }
+                        if cx.id(pk, "project")
+                            && let Some(p) = project(&mut cx, pk, pv)
+                        {
+                            config.projects.push(p);
                         }
                     }
                 }
@@ -157,19 +164,19 @@ fn project(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Project> {
             "sensitive" => p.sensitive = cx.bool(v, "sensitive").unwrap_or(false),
             "environments" => {
                 for (ek, ev) in cx.map(v, "environments").unwrap_or(&[]) {
-                    if cx.id(ek, "environment") {
-                        if let Some(e) = environment(cx, ek, ev) {
-                            p.environments.push(e);
-                        }
+                    if cx.id(ek, "environment")
+                        && let Some(e) = environment(cx, ek, ev)
+                    {
+                        p.environments.push(e);
                     }
                 }
             }
             "services" => {
                 for (sk, sv) in cx.map(v, "services").unwrap_or(&[]) {
-                    if cx.id(sk, "service") {
-                        if let Some(s) = service(cx, sk, sv) {
-                            p.services.push(s);
-                        }
+                    if cx.id(sk, "service")
+                        && let Some(s) = service(cx, sk, sv)
+                    {
+                        p.services.push(s);
                     }
                 }
             }
@@ -183,10 +190,10 @@ fn project(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Project> {
             }
             "pipelines" => {
                 for (pk, pv) in cx.map(v, "pipelines").unwrap_or(&[]) {
-                    if cx.id(pk, "pipeline") {
-                        if let Some(pl) = pipeline(cx, pk, pv) {
-                            p.pipelines.push(pl);
-                        }
+                    if cx.id(pk, "pipeline")
+                        && let Some(pl) = pipeline(cx, pk, pv)
+                    {
+                        p.pipelines.push(pl);
                     }
                 }
             }
@@ -338,14 +345,7 @@ fn input(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Input> {
     let what = format!("input `{}`", key.text);
     let entries = cx.map(node, &what)?;
     cx.check_keys(entries, &["type", "pattern", "options", "default"], &what);
-    let mut i = Input {
-        name: key.text.clone(),
-        pos: key.pos,
-        kind: InputKind::String,
-        pattern: None,
-        options: Vec::new(),
-        default: None,
-    };
+    let mut i = Input { name: key.text.clone(), pos: key.pos, kind: InputKind::String, pattern: None, options: Vec::new(), default: None };
     for (k, v) in entries {
         match k.text.as_str() {
             "type" => match v.as_str() {

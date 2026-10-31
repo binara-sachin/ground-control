@@ -146,10 +146,10 @@ async fn start_daemon() -> (Daemon, Client, UnboundedReceiver<Incoming>, PathBuf
 
 async fn wait_run(client: &Client, id: i64, want: impl Fn(&RunDetail) -> bool) -> RunDetail {
     for _ in 0..200 {
-        if let Ok(Response::Run(r)) = client.request(Request::RunGet { id }).await {
-            if want(&r) {
-                return r;
-            }
+        if let Ok(Response::Run(r)) = client.request(Request::RunGet { id }).await
+            && want(&r)
+        {
+            return r;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -353,10 +353,8 @@ async fn services_end_to_end() {
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "web must be stopped");
 
     // Service log captured.
-    let Response::Text { text, .. } = client
-        .request(Request::ServiceLog { project: "app".into(), id: "web".into(), max_bytes: 10_000 })
-        .await
-        .unwrap()
+    let Response::Text { text, .. } =
+        client.request(Request::ServiceLog { project: "app".into(), id: "web".into(), max_bytes: 10_000 }).await.unwrap()
     else {
         panic!()
     };

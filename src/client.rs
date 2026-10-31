@@ -18,7 +18,10 @@ pub enum ConnectError {
     /// No daemon is listening (socket missing or refused).
     NotRunning(String),
     /// The daemon speaks another protocol version.
-    VersionMismatch { daemon: u32, daemon_version: String },
+    VersionMismatch {
+        daemon: u32,
+        daemon_version: String,
+    },
     Other(String),
 }
 
@@ -26,10 +29,9 @@ impl std::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConnectError::NotRunning(e) => write!(f, "daemon not running ({e})"),
-            ConnectError::VersionMismatch { daemon, daemon_version } => write!(
-                f,
-                "daemon speaks protocol {daemon} (v{daemon_version}); this TUI speaks protocol {PROTOCOL_VERSION} (v{VERSION})"
-            ),
+            ConnectError::VersionMismatch { daemon, daemon_version } => {
+                write!(f, "daemon speaks protocol {daemon} (v{daemon_version}); this TUI speaks protocol {PROTOCOL_VERSION} (v{VERSION})")
+            }
             ConnectError::Other(e) => write!(f, "{e}"),
         }
     }
@@ -123,7 +125,7 @@ impl Client {
         let gone = || RequestError { code: ErrorCode::Internal, message: "disconnected from the daemon".into() };
         self.tx.send(line).map_err(|_| gone())?;
         match rx.await.map_err(|_| gone())? {
-            ResponseBody::Result(r) => Ok(r),
+            ResponseBody::Result(r) => Ok(*r),
             ResponseBody::Error(e) => Err(RequestError { code: e.code, message: e.message }),
         }
     }

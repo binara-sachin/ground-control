@@ -18,9 +18,7 @@ pub fn state_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         home_dir().join("Library/Application Support/GroundControl")
     } else {
-        dirs::data_dir()
-            .unwrap_or_else(|| home_dir().join(".local/share"))
-            .join("GroundControl")
+        dirs::data_dir().unwrap_or_else(|| home_dir().join(".local/share")).join("GroundControl")
     }
 }
 
@@ -44,9 +42,7 @@ pub fn config_path() -> PathBuf {
     if let Some(p) = std::env::var_os("GC_CONFIG") {
         return expand_tilde(&PathBuf::from(p));
     }
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("groundcontrol.yaml")
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("groundcontrol.yaml")
 }
 
 pub fn home_dir() -> PathBuf {
@@ -67,11 +63,7 @@ pub fn expand_tilde(p: &Path) -> PathBuf {
 
 /// Root folder for a project's logs and diffs: central or in-repo (sensitive).
 pub fn project_data_root(project_path: &Path, sensitive: bool) -> PathBuf {
-    if sensitive {
-        project_path.join(REPO_STATE_DIR)
-    } else {
-        state_dir()
-    }
+    if sensitive { project_path.join(REPO_STATE_DIR) } else { state_dir() }
 }
 
 /// `logs/<run-id>/<step>.log`
