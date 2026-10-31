@@ -1,0 +1,164 @@
+# GroundControl configuration (spec §7). Edited by hand only; the daemon
+# reloads it on save and keeps the previous good config if this one is invalid.
+#
+# Values marked TODO(§13.x) are still open questions in the spec. They are
+# written as commands that fail loudly instead of guessing, so nothing runs
+# against the wrong target until they are filled in.
+
+env: {}
+
+projects:
+  finance-analyzer:
+    path: ~/code/finance-analyzer                     # TODO(§13.6): confirm
+    remote: github.com/binara-sachin/finance-analyzer # TODO(§13.6): confirm
+    sensitive: true
+    environments:
+      prod: { protected: true }
+
+    services:
+      importer:
+        cwd: apps/importer
+        start: "echo 'TODO(§13.1): set the importer start command in groundcontrol.yaml' >&2; exit 1"
+        # health: { url: "http://127.0.0.1:<port>/" }   # TODO(§13.1): importer port
+        restart: never
+      api-local:
+        start: pnpm --filter backend exec wrangler dev --local --port 8787
+        health: { port: 8787 }
+      webapp-local:
+        start: pnpm --filter webapp dev
+        depends_on: [api-local]
+        # health: { port: <vite port> }                # TODO(§13.1): local Vite port
+    groups:
+      ui-test: [api-local, webapp-local]
+
+    pipelines:
+      # ── git ──
+      pull:
+        steps:
+          - run: git pull --ff-only
+      new-branch:
+        inputs:
+          branch: { type: string, pattern: "^[a-z0-9._/-]+$" }
+        steps:
+          - run: git switch -c "$INPUT_BRANCH"
+      push:
+        steps:
+          - run: git push -u origin HEAD
+      open-pr:
+        steps:
+          - run: gh pr create --fill
+      merge-pr:
+        protected: true
+        inputs:
+          pr: { type: string, pattern: "^[0-9]+$" }
+        steps:
+          - name: Show PR
+            run: gh pr view "$INPUT_PR" && gh pr checks "$INPUT_PR"
+          - approve: "Merge PR #$INPUT_PR into main?"
+          - name: Merge
+            run: gh pr merge "$INPUT_PR" --squash        # TODO(§13.5): confirm merge method
+
+      # ── local UI testing with seed data ──
+      ui-test:
+        steps:
+          - name: Seed local D1
+            run: "echo 'TODO(§13.1): set the local seed command (must target --local)' >&2; exit 1"
+          - service: start ui-test
+
+      # ── Cloudflare ──
+      deploy-backend:
+        environments: [prod]
+        steps:
+          - name: Test
+            run: pnpm --filter backend test
+          - approve: "Deploy backend Worker to $GC_ENV?"
+          - name: Deploy
+            run: pnpm --filter backend exec wrangler deploy
+      deploy-webapp:
+        environments: [prod]
+        steps:
+          - name: Build
+            run: pnpm --filter webapp build
+          - approve: "Deploy webapp to $GC_ENV?"
+          - name: Deploy
+            run: "echo 'TODO(§13.1): set the webapp deploy command' >&2; exit 1"
+
+      migrate:
+        environments: [prod]
+        steps:
+          - name: Pending migrations
+            run: pnpm --filter backend exec wrangler d1 migrations list ledger --remote
+          - name: Record restore point
+            # TODO(§13.2): confirm the JSON shape of `time-travel info` on wrangler 4.15x.
+            run: |
+              bm=$(pnpm --silent --filter backend exec wrangler d1 time-travel info ledger --json \
+                | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write(String(j.bookmark||""))})')
+              test -n "$bm" || { echo "could not read the D1 bookmark; refusing to continue" >&2; exit 1; }
+              echo "D1 bookmark: $bm"
+              echo "d1_bookmark=$bm" >> "$GC_OUTPUT"
+          - approve: "Apply these migrations to prod D1 'ledger'? Restore point: $OUTPUT_D1_BOOKMARK"
+          - name: Apply
+            run: pnpm --filter backend exec wrangler d1 migrations apply ledger --remote
+
+      # ── rollback ──
+      restore-d1:
+        environments: [prod]
+        warning: "Restoring discards ALL writes after the bookmark, including real transactions. It does not roll back the Worker."
+        inputs:
+          bookmark: { type: string, pattern: "^[A-Za-z0-9-]+$" }
+        steps:
+          - name: Time-travel info
+            run: pnpm --filter backend exec wrangler d1 time-travel info ledger
+          - approve: "Restore prod D1 to $INPUT_BOOKMARK? ALL writes after it are lost."
+          - name: Restore
+            run: pnpm --filter backend exec wrangler d1 time-travel restore ledger --bookmark "$INPUT_BOOKMARK"
+      rollback-worker:
+        environments: [prod]
+        warning: "Rolling back the Worker does not undo D1 migrations."
+        steps:
+          - name: Deployments
+            run: pnpm --filter backend exec wrangler deployments list
+          - approve: "Roll back the backend Worker to the previous deployment? (Does not undo D1 migrations.)"
+          - name: Roll back
+            run: pnpm --filter backend exec wrangler rollback
+
+  git-internals:
+    path: ~/code/cs-tools                         # TODO(§13.6): confirm
+    remote: github.com/wso2-open-operations/cs-tools
+    # No git pipelines by design. The dashboard shows read-only git status.
+    services:
+      postgres:
+        cwd: apps/git-internals-dashboard
+        start: docker compose up postgres          # foreground; stop → containers stop
+        health: { port: 5432 }
+      backend:
+        cwd: apps/git-internals-dashboard/backend
+        start: "echo 'TODO(§13.1): set the Git Internals backend run command' >&2; exit 1"
+        env_file: .env                             # GitHub token, CORS_ALLOWED_ORIGINS, DB URL
+        depends_on: [postgres]
+        # health: { url: "<backend health url>" }  # TODO(§13.1)
+      webapp:
+        cwd: apps/git-internals-dashboard/webapp
+        start: pnpm dev
+        depends_on: [backend]
+        health: { port: 5173 }
+    groups:
+      local: [postgres, backend, webapp]
+    pipelines:
+      seed:
+        steps:
+          - name: Seed
+            cwd: apps/git-internals-dashboard/backend
+            env_file: .env
+            run: "echo 'TODO(§13.1): set the Git Internals seed command' >&2; exit 1"
+
+  tmux-ui-manager:
+    path: ~/code/tmux-ui-manager                  # TODO(§13.6): dev checkout symlinked into ~/.tmux/plugins?
+    remote: github.com/binara-sachin/tmux-ui-manager
+    pipelines:
+      deploy:
+        steps:
+          - name: Build
+            run: cargo build --release
+          - name: Reload tmux
+            run: tmux source-file ~/.tmux.conf     # fails clearly if no tmux server is running
