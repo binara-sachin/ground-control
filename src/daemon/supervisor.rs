@@ -657,9 +657,8 @@ pub async fn restore(d: &Arc<Daemon>) {
     }
     // Processes left behind by a daemon that died without stopping them.
     for s in &stored {
-        if let Some(pgid) = s.pgid
-            && process::group_alive(pgid)
-        {
+        let Some(pgid) = s.pgid else { continue };
+        if process::group_alive(pgid) && process::looks_like_ours(pgid).await {
             tracing::info!(project = %s.project, service = %s.service, pgid, "stopping leftover service process group");
             process::terminate_orphan_group(pgid).await;
         }

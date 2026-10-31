@@ -89,6 +89,19 @@ pub async fn terminate(child: &mut Child, pgid: i32) -> Option<i32> {
     status.and_then(|s| s.code())
 }
 
+/// Whether the group leader still looks like a process GroundControl started
+/// (`/bin/zsh -l -c …`), so a reused PID is never signalled.
+pub async fn looks_like_ours(pgid: i32) -> bool {
+    let out = tokio::process::Command::new("ps").args(["-o", "args=", "-p", &pgid.to_string()]).stdin(Stdio::null()).output().await;
+    match out {
+        Ok(o) => {
+            let args = String::from_utf8_lossy(&o.stdout);
+            args.contains("zsh") && args.contains(" -c ")
+        }
+        Err(_) => false,
+    }
+}
+
 /// Terminates a group we no longer hold a `Child` handle for (left over from a
 /// previous daemon process).
 pub async fn terminate_orphan_group(pgid: i32) {
