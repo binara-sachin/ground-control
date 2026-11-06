@@ -212,10 +212,6 @@ fn draw_header(p: &ProjectInfo, f: &mut Frame, area: Rect) {
             s.push(Span::styled("  no upstream", theme::muted()));
         }
     }
-    if p.sensitive {
-        s.push(Span::styled("   sensitive", theme::warning()));
-        s.push(Span::styled(" logs in .groundcontrol/", theme::muted()));
-    }
     if let Some(id) = p.busy_run {
         s.push(Span::styled(format!("   ● run #{id} in progress"), theme::info()));
     }

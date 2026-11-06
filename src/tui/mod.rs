@@ -1,5 +1,5 @@
-//! The TUI (`groundcontrol` with no arguments): a client of the daemon.
-//! Quitting it never stops a run or a service.
+//! The TUI (`groundcontrol` with no arguments). Runs and services live in
+//! tmux windows, so quitting it never stops a run or a service.
 
 mod app;
 mod screens;
@@ -19,7 +19,7 @@ use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
 use app::{App, Conn, Level, Msg, Overlay, View};
-use screens::{dashboard, dialog, health, history, project, run_view};
+use screens::{dashboard, dialog, health, project, run_view};
 use widgets::*;
 
 /// Below this size the TUI shows a "terminal too small" message (§10.1).
@@ -128,10 +128,9 @@ fn draw(app: &mut App, f: &mut Frame) {
     match &app.conn {
         Conn::Connected => draw_view(app, f, body),
         Conn::Connecting => {
-            f.render_widget(para(vec![Line::styled(" connecting to the daemon…", theme::muted())]), body);
+            f.render_widget(para(vec![Line::styled(" starting…", theme::muted())]), body);
         }
-        Conn::NotRunning(e) => draw_disconnected(f, body, "GroundControl daemon is not running", e, "k", "start it (launchctl kickstart)"),
-        Conn::Mismatch(e) => draw_disconnected(f, body, "Daemon version mismatch", e, "k", "restart the daemon (launchctl kickstart -k)"),
+        Conn::Failed(e) => draw_failed(f, body, e),
     }
     if matches!(app.conn, Conn::Connected) {
         draw_overlay(app, f, body);
@@ -144,26 +143,22 @@ fn draw_view(app: &mut App, f: &mut Frame, area: Rect) {
         View::Dashboard => dashboard::draw(app, f, area),
         View::Project(_) => project::draw(app, f, area),
         View::Run(_) => run_view::draw(app, f, area),
-        View::History => history::draw(app, f, area),
         View::Health => health::draw(app, f, area),
     }
 }
 
-fn draw_disconnected(f: &mut Frame, area: Rect, title: &str, detail: &str, key: &str, action: &str) {
-    let r = centered(area, 84, 9);
+fn draw_failed(f: &mut Frame, area: Rect, detail: &str) {
+    let r = centered(area, 84, 8);
     clear(f, r);
-    let inner = framed_alert(f, r, title, false);
+    let inner = framed_alert(f, r, "GroundControl could not start", false);
     let w = inner.width as usize;
     let lines = vec![
         Line::raw(""),
         clip_line(vec![Span::styled(format!(" {detail}"), theme::text())], w),
-        Line::styled(" The TUI never runs the daemon itself; it is a launchd user agent.", theme::muted()),
         Line::styled(" Retrying automatically.", theme::muted()),
         Line::raw(""),
         Line::from(vec![
-            Span::styled(format!(" {key} "), theme::key()),
-            Span::styled(action.to_string(), theme::text()),
-            Span::styled("    r ", theme::key()),
+            Span::styled(" r ", theme::key()),
             Span::styled("retry now", theme::text()),
             Span::styled("    q ", theme::key()),
             Span::styled("quit", theme::text()),
@@ -178,8 +173,7 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
     let tab = bar.add_modifier(Modifier::BOLD);
     f.render_widget(Block::default().style(bar), area);
     let root = match app.nav.first() {
-        Some(View::History) => 2,
-        Some(View::Health) => 3,
+        Some(View::Health) => 2,
         _ => 1,
     };
     let crumbs: Vec<String> = app
@@ -193,7 +187,7 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
         })
         .collect();
     let mut left = vec![Span::styled(" groundcontrol ", tab)];
-    for (n, name) in [(1, "dashboard"), (2, "history"), (3, "health")] {
+    for (n, name) in [(1, "dashboard"), (2, "health")] {
         let mut label = format!(" {n} {name}");
         if n == root && !crumbs.is_empty() {
             label.push_str(&format!(" › {}", crumbs.join(" › ")));
@@ -205,10 +199,8 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
         left.push(Span::styled(label, if n == root { active } else { tab }));
     }
     let mut right = Vec::new();
-    if let Some(h) = &app.health {
-        right.push(Span::styled(format!("daemon up {}   ", fmt_age_long(crate::protocol::now() - h.started_at)), bar));
-    } else if !matches!(app.conn, Conn::Connected) {
-        right.push(Span::styled("daemon down   ", bar));
+    if !matches!(app.conn, Conn::Connected) {
+        right.push(Span::styled("not started   ", bar));
     }
     if let Some(c) = &app.config {
         let t = c.loaded_at.map(fmt_clock).unwrap_or_default();
@@ -230,17 +222,6 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
 }
 
-fn fmt_age_long(secs: i64) -> String {
-    let s = secs.max(0);
-    if s < 3600 {
-        format!("{}m", s / 60)
-    } else if s < 86400 {
-        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
-    } else {
-        format!("{}d{}h", s / 86400, (s % 86400) / 3600)
-    }
-}
-
 /// A key and its label in the bottom bar.
 type Hint = (&'static str, &'static str);
 
@@ -248,7 +229,7 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(Block::default().style(Style::new().bg(theme::BAR_BG)), area);
     let connected = matches!(app.conn, Conn::Connected);
     let (hints, right): (Vec<Hint>, Vec<Hint>) = if !connected {
-        (vec![("k", "start daemon"), ("r", "retry")], vec![("q", "quit")])
+        (vec![("r", "retry")], vec![("q", "quit")])
     } else {
         match &app.overlay {
             Some(Overlay::Dialog(d)) => (dialog::hints(d), vec![]),
@@ -262,7 +243,6 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
                     View::Dashboard => dashboard::hints(app),
                     View::Project(_) => project::hints(app),
                     View::Run(_) => run_view::hints(app),
-                    View::History => history::hints(app),
                     View::Health => health::hints(),
                 };
                 let right = match app.top() {
@@ -334,11 +314,11 @@ fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let sections: [(&str, &[(&str, &str)]); 6] = [
+    let sections: [(&str, &[(&str, &str)]); 5] = [
         (
             "global",
             &[
-                ("1 2 3", "dashboard, history, health"),
+                ("1 2", "dashboard, health"),
                 ("tab / shift+tab", "next / previous pane"),
                 ("↑↓ / j k", "move selection"),
                 ("enter", "open the selection"),
@@ -384,16 +364,6 @@ fn draw_help(f: &mut Frame, area: Rect) {
                 ("y / Y", "copy command / output"),
                 ("a / x", "approve (confirm if protected) / reject"),
                 ("c", "cancel run"),
-            ],
-        ),
-        (
-            "history",
-            &[
-                ("/", "filter: project: pipeline: env: status:"),
-                ("s", "cycle status filter"),
-                ("ctrl+u", "clear filter"),
-                ("enter", "open run"),
-                ("D", "view saved diff"),
             ],
         ),
     ];

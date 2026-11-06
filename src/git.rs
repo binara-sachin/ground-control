@@ -152,17 +152,6 @@ pub async fn unpushed_count(dir: &Path) -> Result<u32, String> {
     out.trim().parse().map_err(|_| "unexpected rev-list output".to_string())
 }
 
-/// Checks that `<repo>/.groundcontrol/` is gitignored (sensitive projects).
-pub async fn state_dir_ignored(dir: &Path) -> bool {
-    let mut cmd = Command::new("git");
-    cmd.args(["check-ignore", "-q", "--no-index", ".groundcontrol/x"])
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    matches!(tokio::time::timeout(Duration::from_secs(10), cmd.status()).await, Ok(Ok(s)) if s.success())
-}
-
 /// Snapshot of the tree at run start.
 pub struct Snapshot {
     pub branch: Option<String>,
@@ -177,22 +166,6 @@ pub async fn snapshot(dir: &Path) -> Snapshot {
     let commit = git(dir, &["rev-parse", "--short=7", "HEAD"]).await.ok().map(|s| s.trim().to_string());
     let unpushed = unpushed_count(dir).await.ok();
     Snapshot { branch: st.branch.clone(), commit, dirty: st.error.is_none() && !st.is_clean(), unpushed, status: st }
-}
-
-/// `git diff HEAD` plus the list of untracked files, for the run record.
-pub async fn capture_diff(dir: &Path) -> String {
-    let diff = git(dir, &["diff", "HEAD", "--no-color"]).await.unwrap_or_else(|e| format!("# git diff failed: {e}\n"));
-    let untracked = git(dir, &["ls-files", "--others", "--exclude-standard"]).await.unwrap_or_default();
-    let mut out = diff;
-    if !untracked.trim().is_empty() {
-        out.push_str("\n# Untracked files:\n");
-        for f in untracked.lines() {
-            out.push_str("#   ");
-            out.push_str(f);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 #[cfg(test)]

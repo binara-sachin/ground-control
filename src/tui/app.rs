@@ -1,5 +1,6 @@
 //! TUI state and message handling. The TUI holds no state of its own beyond
-//! the screen: everything comes from the daemon's responses and events.
+//! the screen: everything comes from the engine's responses and events, which
+//! it reads from what the tmux-hosted workers record.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -7,17 +8,17 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::screens::{dashboard, dialog, history, project, run_view};
+use super::screens::{dashboard, dialog, project, run_view};
 use super::term_view::TermView;
-use crate::client::{Client, ConnectError, Incoming, RequestError};
+use crate::engine::{Engine, RequestError};
 use crate::protocol::*;
 
 pub enum Msg {
     Input(TermEvent),
     Tick,
-    Connected(Client),
-    ConnectFailed(ConnectError),
-    Daemon(Incoming),
+    Connected(std::sync::Arc<Engine>),
+    ConnectFailed(String),
+    Event(Event),
     Reply(Tag, Result<Response, RequestError>),
     Toast(String, Level),
 }
@@ -26,19 +27,16 @@ pub enum Msg {
 pub enum Tag {
     Projects,
     Recent,
-    History { page: u32 },
     Health,
     Run(i64),
     Log { run: i64, step: usize },
     ServiceLog { project: String, service: String },
     FullLog,
-    Diff,
     Start,
     DryRun,
     Decide,
     Cancel,
     Service,
-    HistoryDetail(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,15 +49,14 @@ pub enum Level {
 pub enum Conn {
     Connecting,
     Connected,
-    NotRunning(String),
-    Mismatch(String),
+    /// The engine could not start (for example, the binary's path is unknown).
+    Failed(String),
 }
 
 pub enum View {
     Dashboard,
     Project(project::ProjectView),
     Run(Box<run_view::RunView>),
-    History,
     Health,
 }
 
@@ -91,7 +88,7 @@ pub enum ConfirmAction {
 
 pub struct App {
     pub conn: Conn,
-    pub client: Option<Client>,
+    pub engine: Option<std::sync::Arc<Engine>>,
     pub tx: UnboundedSender<Msg>,
     pub quit: bool,
     pub nav: Vec<View>,
@@ -106,7 +103,6 @@ pub struct App {
     pub config: Option<ConfigStatus>,
 
     pub dash: dashboard::DashState,
-    pub hist: history::HistState,
 
     subscribed: BTreeSet<String>,
     refetch_projects_at: Option<Instant>,
@@ -119,7 +115,7 @@ impl App {
     pub fn new(tx: UnboundedSender<Msg>) -> App {
         App {
             conn: Conn::Connecting,
-            client: None,
+            engine: None,
             tx,
             quit: false,
             nav: vec![View::Dashboard],
@@ -132,7 +128,6 @@ impl App {
             health: None,
             config: None,
             dash: Default::default(),
-            hist: Default::default(),
             subscribed: BTreeSet::new(),
             refetch_projects_at: None,
             refetch_recent_at: None,
@@ -144,10 +139,10 @@ impl App {
     // ── requests ──
 
     pub fn request(&self, req: Request, tag: Tag) {
-        let Some(client) = self.client.clone() else { return };
+        let Some(engine) = self.engine.clone() else { return };
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let r = client.request(req).await;
+            let r = engine.request(req).await;
             let _ = tx.send(Msg::Reply(tag, r));
         });
     }
@@ -189,21 +184,23 @@ impl App {
         self.push(View::Project(project::ProjectView::new(id)));
     }
 
-    /// First connection attempt.
+    /// Opens the engine for the first time.
     pub fn start(&mut self) {
         self.connect();
     }
 
+    /// Opens the state and starts the engine's pollers. Nothing runs in the
+    /// background once the TUI quits.
     fn connect(&mut self) {
         self.conn = Conn::Connecting;
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            match Client::connect(&crate::paths::socket_path()).await {
-                Ok((client, mut rx)) => {
-                    let _ = tx.send(Msg::Connected(client));
-                    while let Some(m) = rx.recv().await {
-                        let gone = matches!(m, Incoming::Disconnected);
-                        if tx.send(Msg::Daemon(m)).is_err() || gone {
+            match crate::ctx::Ctx::from_env() {
+                Ok(ctx) => {
+                    let (engine, mut rx) = Engine::open(ctx);
+                    let _ = tx.send(Msg::Connected(engine));
+                    while let Some(e) = rx.recv().await {
+                        if tx.send(Msg::Event(e)).is_err() {
                             break;
                         }
                     }
@@ -220,9 +217,8 @@ impl App {
         self.subscribed.clear();
         self.sync_subscription();
         self.request(Request::ProjectsList, Tag::Projects);
-        self.request(Request::RunsQuery { filter: RunFilter::default(), page: 0 }, Tag::Recent);
+        self.request(Request::RunsList, Tag::Recent);
         self.request(Request::HealthGet, Tag::Health);
-        history::reload(self);
         // Re-sync anything on screen.
         let runs: Vec<i64> = self.nav.iter().filter_map(|v| if let View::Run(r) = v { Some(r.id) } else { None }).collect();
         for id in runs {
@@ -233,10 +229,13 @@ impl App {
 
     /// Subscribes to the topics the current screen needs (§10.6).
     pub fn sync_subscription(&mut self) {
-        if self.client.is_none() {
+        if self.engine.is_none() {
             return;
         }
         let mut topics: BTreeSet<String> = ["runs", "services", "git", "config"].iter().map(|s| s.to_string()).collect();
+        if matches!(self.top(), View::Health) {
+            topics.insert("health".into());
+        }
         for v in &self.nav {
             if let View::Run(r) = v {
                 topics.insert(format!("log:{}", r.id));
@@ -264,30 +263,20 @@ impl App {
             Msg::Input(TermEvent::Paste(text)) => {
                 if let Some(Overlay::Dialog(d)) = &mut self.overlay {
                     d.paste(&text);
-                } else if self.hist.editing {
-                    self.hist.filter_text.push_str(text.trim());
                 }
             }
             Msg::Input(_) => {}
             Msg::Tick => self.on_tick(),
-            Msg::Connected(client) => {
-                self.client = Some(client);
+            Msg::Connected(engine) => {
+                self.engine = Some(engine);
                 self.on_connected();
             }
             Msg::ConnectFailed(e) => {
-                self.client = None;
-                self.conn = match e {
-                    ConnectError::VersionMismatch { .. } => Conn::Mismatch(e.to_string()),
-                    _ => Conn::NotRunning(e.to_string()),
-                };
+                self.engine = None;
+                self.conn = Conn::Failed(e);
                 self.next_connect = Instant::now() + Duration::from_secs(2);
             }
-            Msg::Daemon(Incoming::Disconnected) => {
-                self.client = None;
-                self.conn = Conn::NotRunning("connection to the daemon was lost".into());
-                self.next_connect = Instant::now() + Duration::from_secs(1);
-            }
-            Msg::Daemon(Incoming::Event(e)) => self.on_event(e),
+            Msg::Event(e) => self.on_event(e),
             Msg::Reply(tag, r) => self.on_reply(tag, r),
             Msg::Toast(m, l) => self.toast(m, l),
         }
@@ -295,7 +284,7 @@ impl App {
 
     fn on_tick(&mut self) {
         let now = Instant::now();
-        if self.client.is_none() && !matches!(self.conn, Conn::Connecting) && now >= self.next_connect {
+        if self.engine.is_none() && !matches!(self.conn, Conn::Connecting) && now >= self.next_connect {
             self.connect();
         }
         if self.refetch_projects_at.is_some_and(|t| now >= t) {
@@ -304,10 +293,15 @@ impl App {
         }
         if self.refetch_recent_at.is_some_and(|t| now >= t) {
             self.refetch_recent_at = None;
-            self.request(Request::RunsQuery { filter: RunFilter::default(), page: 0 }, Tag::Recent);
+            self.request(Request::RunsList, Tag::Recent);
         }
-        let health_every = if matches!(self.top(), View::Health) { Duration::from_secs(5) } else { Duration::from_secs(60) };
-        if self.client.is_some() && self.last_health.is_none_or(|t| t.elapsed() >= health_every) {
+        // Checked once at start for the attention markers, then only while the
+        // Health screen is open: nothing probes the system on a timer.
+        let due = match self.last_health {
+            None => true,
+            Some(t) => matches!(self.top(), View::Health) && t.elapsed() >= Duration::from_secs(5),
+        };
+        if self.engine.is_some() && due {
             self.last_health = Some(now);
             self.request(Request::HealthGet, Tag::Health);
         }
@@ -325,7 +319,6 @@ impl App {
             Event::Run(s) => {
                 upsert_run(&mut self.recent, &s);
                 self.recent.truncate(50);
-                self.hist.on_run(&s);
                 for v in &mut self.nav {
                     if let View::Run(r) = v {
                         r.on_summary(&s);
@@ -344,7 +337,6 @@ impl App {
                         r.on_step(step.clone());
                     }
                 }
-                self.hist.on_step(run_id, &step);
             }
             Event::Approval(a) => {
                 self.waiting.retain(|w| !(w.run_id == a.run_id && w.step_index == a.step_index));
@@ -384,10 +376,14 @@ impl App {
                     p.git = Some(git);
                 }
             }
-            Event::Projects => self.schedule_projects(),
+            // Runs came or went (a window opened or closed): refresh both lists.
+            Event::Projects => {
+                self.schedule_projects();
+                self.refetch_recent_at.get_or_insert(Instant::now() + Duration::from_millis(250));
+            }
             Event::Config(c) => {
                 if !c.ok {
-                    self.toast("config is invalid; the previous config stays active (see 3 health)", Level::Error);
+                    self.toast("config is invalid; the previous config stays active (see 2 health)", Level::Error);
                 } else {
                     self.toast("config reloaded", Level::Info);
                 }
@@ -395,31 +391,15 @@ impl App {
                 self.request(Request::HealthGet, Tag::Health);
             }
             Event::Log(chunk) => {
-                let mut gap = None;
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == chunk.run
                     {
-                        gap = r.on_log(&chunk);
+                        r.on_log(&chunk);
                     }
                 }
-                if let Some(from) = gap {
-                    self.request(
-                        Request::LogRead { run: chunk.run, step: chunk.step, from_offset: from },
-                        Tag::Log { run: chunk.run, step: chunk.step },
-                    );
-                }
             }
-            Event::ServiceLog { project, service, data } => {
-                if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == &project && s == &service) {
-                    self.dash.log.feed(&data);
-                }
-                if let Some(Overlay::Text(t)) = &mut self.overlay
-                    && t.follow_service.as_ref().is_some_and(|(p, s)| p == &project && s == &service)
-                {
-                    t.view.feed(&data);
-                }
-            }
+            Event::ServiceLog { project, service, data } => self.on_service_log(&project, &service, &data),
         }
     }
 
@@ -437,8 +417,6 @@ impl App {
                     self.dash.focus = dashboard::Focus::Banner;
                 }
             }
-            (Tag::History { page }, Ok(Response::Runs(p))) => self.hist.on_page(page, p),
-            (Tag::HistoryDetail(id), Ok(Response::Run(d))) => self.hist.on_detail(id, d),
             (Tag::Health, Ok(Response::Health(h))) => {
                 self.config = Some(h.config.clone());
                 self.health = Some(h);
@@ -452,60 +430,27 @@ impl App {
                         reads.extend(r.on_detail(d.clone()));
                     }
                 }
-                for (run, step, from) in reads {
-                    self.request(Request::LogRead { run, step, from_offset: from }, Tag::Log { run, step });
+                for (run, step) in reads {
+                    self.request(Request::LogRead { run, step }, Tag::Log { run, step });
                 }
             }
-            (Tag::Log { run, step }, Ok(Response::Log(chunk))) => {
-                let mut more = None;
+            (Tag::Log { run, .. }, Ok(Response::Log(chunk))) => {
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == run
                     {
-                        more = r.on_log_read(step, &chunk);
+                        r.on_log(&chunk);
                     }
                 }
-                if let Some(from) = more {
-                    self.request(Request::LogRead { run, step, from_offset: from }, Tag::Log { run, step });
-                }
             }
-            (Tag::ServiceLog { project, service }, Ok(Response::Text { text, .. })) => {
-                if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == &project && s == &service) {
-                    let lines: Vec<&str> = text.lines().collect();
-                    let tail = lines[lines.len().saturating_sub(dashboard::LOG_LINES)..].join("\n");
-                    let tail = tail.trim_start_matches('\n');
-                    self.dash.log.reset();
-                    if !tail.is_empty() {
-                        self.dash.log.feed(tail);
-                        self.dash.log.feed("\n");
-                    }
-                    self.dash.log.loading = false;
-                }
+            (Tag::ServiceLog { project, service }, Ok(Response::Text { text })) => {
+                self.on_service_log(&project, &service, &text);
+                self.dash.log.loading = false;
             }
-            (Tag::FullLog, Ok(Response::Text { text, path })) => {
+            (Tag::FullLog, Ok(Response::Text { text })) => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {
-                    t.view.reset();
-                    if text.is_empty() {
-                        t.view.feed("(no output yet)\n");
-                    } else {
-                        t.view.feed(&text);
-                    }
+                    t.view.replace(if text.is_empty() { "(no output yet)\n" } else { &text });
                     t.view.loading = false;
-                    if let Some(p) = path {
-                        t.subtitle = p;
-                    }
-                }
-            }
-            (Tag::Diff, Ok(Response::Text { text, path })) => {
-                if let Some(Overlay::Text(t)) = &mut self.overlay {
-                    t.view.reset();
-                    t.view.feed(&colorize_diff(&text));
-                    t.view.loading = false;
-                    t.view.follow = false;
-                    t.view.scroll_up(usize::MAX / 2);
-                    if let Some(p) = path {
-                        t.subtitle = p;
-                    }
                 }
             }
             (Tag::Start, Ok(Response::RunStarted { id })) => {
@@ -550,11 +495,11 @@ impl App {
                     self.toast(e.message, Level::Error);
                 }
             }
-            (Tag::Decide, Ok(_)) => self.toast("decision recorded", Level::Success),
+            (Tag::Decide, Ok(_)) => self.toast("decision sent", Level::Success),
             (Tag::Cancel, Ok(_)) => self.toast("cancel requested", Level::Info),
             (Tag::Service, Ok(Response::Text { text, .. })) => self.toast(text, Level::Success),
             (Tag::Service, Ok(_)) => {}
-            (Tag::FullLog | Tag::Diff, Err(e)) => {
+            (Tag::FullLog, Err(e)) => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {
                     t.view.reset();
                     t.view.feed(&format!("\x1b[31m{}\x1b[0m\n", e.message));
@@ -576,6 +521,22 @@ impl App {
         }
     }
 
+    /// A service window's whole output arrived: the dashboard shows its last
+    /// lines, the full-log overlay all of it.
+    fn on_service_log(&mut self, project: &str, service: &str, text: &str) {
+        if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == project && s == service) {
+            let lines: Vec<&str> = text.lines().collect();
+            let tail = lines[lines.len().saturating_sub(dashboard::LOG_LINES)..].join("\n");
+            let tail = tail.trim_start_matches('\n');
+            self.dash.log.replace(&if tail.is_empty() { String::new() } else { format!("{tail}\n") });
+        }
+        if let Some(Overlay::Text(t)) = &mut self.overlay
+            && t.follow_service.as_ref().is_some_and(|(p, s)| p == project && s == service)
+        {
+            t.view.replace(text);
+        }
+    }
+
     // ── keys ──
 
     fn on_key(&mut self, k: KeyEvent) {
@@ -587,7 +548,6 @@ impl App {
         if !matches!(self.conn, Conn::Connected) {
             match k.code {
                 KeyCode::Char('q') => self.quit = true,
-                KeyCode::Char('k') => self.kickstart(),
                 KeyCode::Char('r') => {
                     self.next_connect = Instant::now();
                     if !matches!(self.conn, Conn::Connecting) {
@@ -601,11 +561,6 @@ impl App {
         if let Some(overlay) = self.overlay.take() {
             self.overlay = self.overlay_key(overlay, k);
             self.sync_subscription();
-            return;
-        }
-        // Text input on the history screen owns the keyboard.
-        if matches!(self.top(), View::History) && self.hist.editing {
-            history::key(self, k);
             return;
         }
         match k.code {
@@ -623,11 +578,6 @@ impl App {
                 return;
             }
             KeyCode::Char('2') => {
-                self.nav = vec![View::History];
-                self.sync_subscription();
-                return;
-            }
-            KeyCode::Char('3') => {
                 self.nav = vec![View::Health];
                 self.request(Request::HealthGet, Tag::Health);
                 self.sync_subscription();
@@ -643,7 +593,6 @@ impl App {
             View::Dashboard => dashboard::key(self, k),
             View::Project(_) => project::key(self, k),
             View::Run(_) => run_view::key(self, k),
-            View::History => history::key(self, k),
             View::Health => {
                 if k.code == KeyCode::Char('r') {
                     self.request(Request::HealthGet, Tag::Health);
@@ -696,30 +645,6 @@ impl App {
         }
     }
 
-    /// Offers `launchctl kickstart` for the agent (§5.4). Never runs the daemon in-process.
-    fn kickstart(&mut self) {
-        let restart = matches!(self.conn, Conn::Mismatch(_));
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let uid = nix::unistd::getuid().as_raw();
-            let target = format!("gui/{uid}/{}", crate::paths::LAUNCHD_LABEL);
-            let mut cmd = tokio::process::Command::new("launchctl");
-            cmd.arg("kickstart");
-            if restart {
-                cmd.arg("-k");
-            }
-            cmd.arg(&target);
-            let msg = match cmd.output().await {
-                Ok(o) if o.status.success() => (format!("launchctl kickstart {target}: ok"), Level::Success),
-                Ok(o) => (format!("launchctl failed: {}", String::from_utf8_lossy(&o.stderr).trim()), Level::Error),
-                Err(e) => (format!("cannot run launchctl: {e} (is the agent installed? run `make install`)"), Level::Error),
-            };
-            let _ = tx.send(Msg::Toast(msg.0, msg.1));
-        });
-        self.next_connect = Instant::now() + Duration::from_millis(800);
-        self.conn = Conn::NotRunning("waiting for the daemon to start…".into());
-    }
-
     /// Whether a screen tab needs attention (`!` in the top bar).
     pub fn attention(&self, tab: usize) -> bool {
         match tab {
@@ -743,34 +668,4 @@ pub fn upsert_run(list: &mut Vec<RunSummary>, s: &RunSummary) {
             list.sort_by_key(|r| std::cmp::Reverse(r.id));
         }
     }
-}
-
-/// Adds colour to a unified diff for the viewer.
-pub fn colorize_diff(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + text.len() / 4);
-    for line in text.lines() {
-        let code = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff ") || line.starts_with("index ") {
-            "1"
-        } else if line.starts_with('+') {
-            "32"
-        } else if line.starts_with('-') {
-            "31"
-        } else if line.starts_with("@@") {
-            "36"
-        } else if line.starts_with('#') {
-            "33"
-        } else {
-            ""
-        };
-        if code.is_empty() {
-            out.push_str(line);
-        } else {
-            out.push_str(&format!("\x1b[{code}m{line}\x1b[0m"));
-        }
-        out.push('\n');
-    }
-    if out.is_empty() {
-        out.push_str("(empty diff)\n");
-    }
-    out
 }

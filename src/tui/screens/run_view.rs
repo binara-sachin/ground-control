@@ -52,22 +52,22 @@ impl RunView {
         Some(a)
     }
 
-    /// Returns the log reads needed for the selected step.
-    fn wanted_reads(&mut self) -> Vec<(i64, usize, u64)> {
+    /// Returns the output reads needed for the selected step.
+    fn wanted_reads(&mut self) -> Vec<(i64, usize)> {
         let Some(d) = &self.detail else { return Vec::new() };
         let Some(step) = d.steps.get(self.sel) else { return Vec::new() };
         if !step.has_log && step.status != StepStatus::Running {
             return Vec::new();
         }
         let v = self.outputs.entry(self.sel).or_default();
-        if v.offset == 0 && !v.loading && !v.complete {
+        if v.is_empty() && !v.loading && !v.complete {
             v.loading = true;
-            return vec![(self.id, self.sel, 0)];
+            return vec![(self.id, self.sel)];
         }
         Vec::new()
     }
 
-    pub fn on_detail(&mut self, d: RunDetail) -> Vec<(i64, usize, u64)> {
+    pub fn on_detail(&mut self, d: RunDetail) -> Vec<(i64, usize)> {
         self.detail = Some(d);
         if self.auto_select
             && let Some(t) = self.auto_target()
@@ -115,43 +115,13 @@ impl RunView {
         }
     }
 
-    /// Applies a live chunk. Returns an offset to read from when there is a gap.
-    pub fn on_log(&mut self, c: &LogChunk) -> Option<u64> {
+    /// Shows a step's output: each chunk is the step's whole output so far,
+    /// captured from the run's tmux pane.
+    pub fn on_log(&mut self, c: &LogChunk) {
         let v = self.outputs.entry(c.step).or_default();
-        if c.complete {
-            v.complete = true;
-        }
-        if v.loading || c.end <= v.offset || c.data.is_empty() {
-            return None;
-        }
-        if c.offset > v.offset {
-            v.loading = true;
-            return Some(v.offset);
-        }
-        let skip = (v.offset - c.offset) as usize;
-        if let Some(rest) = c.data.get(skip..) {
-            v.feed(rest);
-        }
-        v.offset = c.end;
-        None
-    }
-
-    /// Applies a `log.read` reply. Returns an offset to continue from.
-    pub fn on_log_read(&mut self, step: usize, c: &LogChunk) -> Option<u64> {
-        let v = self.outputs.entry(step).or_default();
         v.loading = false;
-        if c.offset == v.offset && c.end > v.offset {
-            v.feed(&c.data);
-            v.offset = c.end;
-        }
-        if c.complete {
-            v.complete = true;
-        }
-        // Large logs arrive in pieces.
-        (!c.complete && c.data.len() >= 512 * 1024).then(|| {
-            v.loading = true;
-            v.offset
-        })
+        v.replace(&c.data);
+        v.complete = c.complete;
     }
 
     pub fn on_log_error(&mut self, step: usize, msg: &str) {
@@ -299,8 +269,8 @@ fn scroll(app: &mut App, f: impl FnOnce(&mut TermView)) {
 
 fn load_selected(app: &mut App) {
     let reads = view_mut(app).wanted_reads();
-    for (run, step, from) in reads {
-        app.request(Request::LogRead { run, step, from_offset: from }, Tag::Log { run, step });
+    for (run, step) in reads {
+        app.request(Request::LogRead { run, step }, Tag::Log { run, step });
     }
 }
 
@@ -498,12 +468,9 @@ fn draw_info(d: &RunDetail, f: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
     if d.summary.dirty {
         lines.push(clip_line(
-            vec![Span::styled("dirty  ", theme::warning()), Span::styled(d.diff_summary.clone().unwrap_or_default(), theme::text())],
+            vec![Span::styled("dirty  ", theme::warning()), Span::styled("the tree had uncommitted changes", theme::text())],
             w,
         ));
-        if let Some(p) = &d.diff_path {
-            lines.push(clip_line(vec![Span::styled("diff   ", theme::muted()), Span::styled(p.clone(), theme::text())], w));
-        }
     }
     if d.summary.unpushed {
         let n = d.unpushed_count.unwrap_or(0);
@@ -596,8 +563,8 @@ fn draw_approval(a: &ApprovalInfo, d: &RunDetail, f: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
 
-    fn chunk(offset: u64, data: &str) -> LogChunk {
-        LogChunk { run: 1, step: 0, offset, data: data.into(), end: offset + data.len() as u64, complete: false }
+    fn chunk(data: &str, complete: bool) -> LogChunk {
+        LogChunk { run: 1, step: 0, data: data.into(), complete }
     }
 
     fn text(v: &RunView) -> String {
@@ -605,33 +572,25 @@ mod tests {
     }
 
     #[test]
-    fn live_chunks_are_appended_once() {
+    fn each_chunk_replaces_the_step_output() {
         let mut v = RunView::new(1);
-        assert_eq!(v.on_log(&chunk(0, "ab\n")), None);
-        assert_eq!(v.on_log(&chunk(0, "ab\n")), None, "duplicate is ignored");
-        assert_eq!(v.on_log(&chunk(3, "cd\n")), None);
+        v.on_log(&chunk("ab\n", false));
+        v.on_log(&chunk("ab\ncd\n", false));
         assert_eq!(text(&v), "ab\ncd\n");
-    }
-
-    #[test]
-    fn gap_triggers_a_read_and_read_fills_it() {
-        let mut v = RunView::new(1);
-        v.on_log(&chunk(0, "ab\n"));
-        assert_eq!(v.on_log(&chunk(6, "ef\n")), Some(3), "missing bytes 3..6");
-        // While loading, further live chunks wait for the read.
-        assert_eq!(v.on_log(&chunk(9, "gh\n")), None);
-        let read = LogChunk { run: 1, step: 0, offset: 3, data: "cd\nef\ngh\n".into(), end: 12, complete: false };
-        assert_eq!(v.on_log_read(0, &read), None);
-        assert_eq!(text(&v), "ab\ncd\nef\ngh\n");
-        // A chunk overlapping what the read returned only adds the new part.
-        v.on_log(&chunk(9, "gh\nij\n"));
-        assert_eq!(text(&v), "ab\ncd\nef\ngh\nij\n");
-    }
-
-    #[test]
-    fn completion_is_tracked() {
-        let mut v = RunView::new(1);
-        v.on_log(&LogChunk { run: 1, step: 0, offset: 0, data: String::new(), end: 0, complete: true });
+        // A `\r` progress line rewritten in the pane comes back rewritten.
+        v.on_log(&chunk("ab\ncd\n100%\n", true));
+        assert_eq!(text(&v), "ab\ncd\n100%\n");
         assert!(v.outputs[&0].complete);
+    }
+
+    #[test]
+    fn replacing_keeps_the_scroll_position() {
+        let mut v = RunView::new(1);
+        v.on_log(&chunk(&"line\n".repeat(100), false));
+        v.outputs.get_mut(&0).unwrap().scroll_up(10);
+        v.on_log(&chunk(&"line\n".repeat(120), false));
+        let o = &v.outputs[&0];
+        assert!(!o.follow);
+        assert_eq!(o.scrolled(), 10);
     }
 }

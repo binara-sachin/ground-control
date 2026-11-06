@@ -1,5 +1,6 @@
-//! Health (§6.6): tool check, Docker and tmux reachability, config status
-//! with line and column numbers, last reload time, daemon version and uptime.
+//! Health (§6.6): tool check, tmux and Docker reachability, config status
+//! with line and column numbers, last reload time, version and config path.
+//! Docker is only checked while this screen is open.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -11,7 +12,7 @@ use super::super::widgets::*;
 use crate::protocol::*;
 
 pub fn hints() -> Vec<(&'static str, &'static str)> {
-    vec![("r", "refresh"), ("1", "dashboard"), ("2", "history"), ("?", "help")]
+    vec![("r", "refresh"), ("1", "dashboard"), ("?", "help")]
 }
 
 pub fn draw(app: &App, f: &mut Frame, area: Rect) {
@@ -20,22 +21,21 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
         return;
     };
     let [top, config_area] = Layout::vertical([Constraint::Length(13), Constraint::Min(5)]).areas(area);
-    let [daemon_area, tools_area] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(top);
+    let [about_area, tools_area] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(top);
 
-    // Daemon and environment.
-    let inner = framed(f, daemon_area, vec![title_text("daemon")], false);
+    // GroundControl and its environment.
+    let inner = framed(f, about_area, vec![title_text("groundcontrol")], false);
     let w = inner.width as usize;
     let kv =
         |k: &str, v: String, s: ratatui::style::Style| clip_line(vec![Span::styled(fit(k, 12), theme::muted()), Span::styled(v, s)], w);
     let mut lines = vec![
-        kv("version", format!("{} (protocol {})", h.daemon_version, h.protocol), theme::text()),
-        kv("uptime", format!("{} (since {})", fmt_duration(now() - h.started_at), fmt_when_long(h.started_at)), theme::text()),
-        kv("pid", h.pid.to_string(), theme::text()),
-        kv("state", h.state_dir.clone(), theme::text()),
-        kv("tui", format!("{} (protocol {})", VERSION, PROTOCOL_VERSION), theme::muted()),
+        kv("version", h.version.clone(), theme::text()),
+        kv("opened", format!("{} ago (at {})", fmt_duration(now() - h.started_at), fmt_when_long(h.started_at)), theme::text()),
+        kv("config", h.config.path.clone(), theme::text()),
+        kv("runs", "each run and service is a window in tmux session ground-control".into(), theme::muted()),
         Line::raw(""),
     ];
-    for (name, r) in [("docker", &h.docker), ("tmux", &h.tmux)] {
+    for (name, r) in [("tmux", &h.tmux), ("docker", &h.docker)] {
         lines.push(match r {
             Some(r) if r.ok => clip_line(
                 vec![
@@ -77,11 +77,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
                 cell(sym, style, 1),
                 cell(t.name.clone(), theme::text(), 8),
                 cell(word, style, 7),
-                cell(
-                    t.path.clone().unwrap_or_else(|| "not on the PATH of /bin/zsh -l (move PATH setup to ~/.zprofile)".into()),
-                    theme::muted(),
-                    0,
-                ),
+                cell(t.path.clone().unwrap_or_else(|| "not on PATH (steps inherit the tmux server's PATH)".into()), theme::muted(), 0),
             ],
             w,
             1,

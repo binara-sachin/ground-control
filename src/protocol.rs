@@ -1,8 +1,5 @@
-//! Client protocol (§10.6): newline-delimited JSON over the Unix socket.
-//!
-//! The first message from each side is a [`Hello`]. After that the client sends
-//! [`ClientMessage`]s and the daemon answers with [`ServerMessage`]s: a response
-//! carrying the request's `id`, or an unsolicited event.
+//! The TUI's requests to its in-process engine, the engine's responses and
+//! events, and the data types they carry (§10.6).
 
 use std::collections::BTreeMap;
 
@@ -10,34 +7,9 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::config::{Diagnostic, Health, InputKind, RestartPolicy, ServiceAction, Severity};
 
-pub const PROTOCOL_VERSION: u32 = 1;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Timestamp = i64; // unix seconds
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Hello {
-    pub hello: HelloBody,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HelloBody {
-    pub protocol: u32,
-    pub version: String,
-}
-
-impl Hello {
-    pub fn current() -> Self {
-        Hello { hello: HelloBody { protocol: PROTOCOL_VERSION, version: VERSION.to_string() } }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientMessage {
-    pub id: u64,
-    #[serde(flatten)]
-    pub request: Request,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -50,18 +22,17 @@ pub enum Request {
     RunCancel { id: i64 },
     #[serde(rename = "run.decide")]
     RunDecide { id: i64, step: usize, decision: Decision, confirmed: bool },
-    #[serde(rename = "runs.query")]
-    RunsQuery { filter: RunFilter, page: u32 },
+    /// Every run that still has a window, newest first.
+    #[serde(rename = "runs.list")]
+    RunsList,
     #[serde(rename = "run.get")]
     RunGet { id: i64 },
-    #[serde(rename = "run.diff")]
-    RunDiff { id: i64 },
     #[serde(rename = "log.read")]
-    LogRead { run: i64, step: usize, from_offset: u64 },
+    LogRead { run: i64, step: usize },
     #[serde(rename = "service.control")]
     ServiceControl { project: String, id: String, action: ServiceAction },
     #[serde(rename = "service.log")]
-    ServiceLog { project: String, id: String, max_bytes: u64 },
+    ServiceLog { project: String, id: String },
     #[serde(rename = "health.get")]
     HealthGet,
     #[serde(rename = "subscribe")]
@@ -76,7 +47,7 @@ pub struct RunStartParams {
     pub inputs: BTreeMap<String, String>,
     pub dry_run: bool,
     /// Set by the TUI once the user has seen the confirmation dialog of a
-    /// protected run. The daemon refuses protected runs without it.
+    /// protected run. `runs::start` refuses protected runs without it.
     pub confirmed: bool,
 }
 
@@ -87,87 +58,11 @@ pub enum Decision {
     Reject,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunFilter {
-    pub project: Option<String>,
-    pub pipeline: Option<String>,
-    pub env: Option<String>,
-    pub status: Option<RunStatus>,
-}
-
-impl RunFilter {
-    /// Parses `project:x pipeline:y env:z status:failed`. Bare words filter by pipeline.
-    pub fn parse(s: &str) -> Result<RunFilter, String> {
-        let mut f = RunFilter::default();
-        for tok in s.split_whitespace() {
-            let (k, v) = tok.split_once(':').unwrap_or(("pipeline", tok));
-            let v = (!v.is_empty()).then(|| v.to_string());
-            match k {
-                "project" => f.project = v,
-                "pipeline" => f.pipeline = v,
-                "env" => f.env = v,
-                "status" => {
-                    f.status = match v {
-                        None => None,
-                        Some(s) => Some(RunStatus::parse(&s).ok_or_else(|| format!("unknown status `{s}`"))?),
-                    }
-                }
-                _ => return Err(format!("unknown filter `{k}:` (use project:, pipeline:, env:, status:)")),
-            }
-        }
-        Ok(f)
-    }
-
-    pub fn to_text(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(v) = &self.project {
-            parts.push(format!("project:{v}"));
-        }
-        if let Some(v) = &self.pipeline {
-            parts.push(format!("pipeline:{v}"));
-        }
-        if let Some(v) = &self.env {
-            parts.push(format!("env:{v}"));
-        }
-        if let Some(v) = &self.status {
-            parts.push(format!("status:{}", v.as_str()));
-        }
-        parts.join(" ")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ServerMessage {
-    Response {
-        id: u64,
-        #[serde(flatten)]
-        body: ResponseBody,
-    },
-    Event {
-        event: Event,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ResponseBody {
-    Result(Box<Response>),
-    Error(ErrorBody),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorBody {
-    pub code: ErrorCode,
-    pub message: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     BadRequest,
     NotFound,
-    Busy,
     Refused,
     AlreadyDecided,
     Internal,
@@ -183,7 +78,7 @@ pub enum Response {
     Runs(RunPage),
     Run(RunDetail),
     Log(LogChunk),
-    Text { text: String, path: Option<String> },
+    Text { text: String },
     Health(HealthInfo),
 }
 
@@ -210,25 +105,12 @@ pub enum Event {
     Projects,
     Config(ConfigStatus),
     Log(LogChunk),
+    /// The service window's whole output, which replaces what was shown.
     ServiceLog {
         project: String,
         service: String,
         data: String,
     },
-}
-
-impl Event {
-    /// The subscription topic this event belongs to.
-    pub fn topic(&self) -> String {
-        match self {
-            Event::Run(_) | Event::Step { .. } | Event::Approval(_) | Event::Output { .. } => "runs".into(),
-            Event::Service(_) => "services".into(),
-            Event::Git { .. } => "git".into(),
-            Event::Projects | Event::Config(_) => "config".into(),
-            Event::Log(c) => format!("log:{}", c.run),
-            Event::ServiceLog { project, service, .. } => format!("service-log:{project}/{service}"),
-        }
-    }
 }
 
 // ── data ──────────────────────────────────────────────────────────────────
@@ -262,7 +144,6 @@ pub struct ProjectInfo {
     pub id: String,
     pub path: String,
     pub remote: Option<String>,
-    pub sensitive: bool,
     pub disabled: Option<String>,
     pub busy_run: Option<i64>,
     pub git: Option<GitStatus>,
@@ -577,8 +458,6 @@ pub struct RunDetail {
     pub steps: Vec<StepInfo>,
     pub approvals: Vec<ApprovalInfo>,
     pub outputs: Vec<OutputInfo>,
-    pub diff_path: Option<String>,
-    pub diff_summary: Option<String>,
     pub unpushed_count: Option<u32>,
 }
 
@@ -591,10 +470,9 @@ pub struct OutputInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunPage {
+    /// Runs that still have a window, newest first. There is no history:
+    /// a succeeded run's window closes itself after 5 seconds.
     pub runs: Vec<RunSummary>,
-    pub total: u64,
-    pub page: u32,
-    pub page_size: u32,
     /// Approvals currently waiting, across all projects.
     pub waiting: Vec<ApprovalInfo>,
 }
@@ -603,11 +481,9 @@ pub struct RunPage {
 pub struct LogChunk {
     pub run: i64,
     pub step: usize,
-    pub offset: u64,
-    /// Masked output. Raw bytes are decoded lossily as UTF-8.
+    /// The step's whole output so far, as captured from the run's pane
+    /// (already masked). It replaces what was shown before.
     pub data: String,
-    /// Offset just past this chunk.
-    pub end: u64,
     /// True when the step has finished and no more output will arrive.
     pub complete: bool,
 }
@@ -620,7 +496,7 @@ pub struct DryRunPlan {
     pub protected: bool,
     pub inputs: BTreeMap<String, String>,
     pub steps: Vec<DryRunStep>,
-    /// Problems that would stop a real run (repository guard, gitignore, busy project).
+    /// Problems that would stop a real run (repository guard, busy project).
     pub blockers: Vec<String>,
 }
 
@@ -668,11 +544,9 @@ pub struct HealthInfo {
     pub docker: Option<Reachability>,
     pub tmux: Option<Reachability>,
     pub config: ConfigStatus,
-    pub daemon_version: String,
-    pub protocol: u32,
+    pub version: String,
+    /// When this TUI opened.
     pub started_at: Timestamp,
-    pub pid: u32,
-    pub state_dir: String,
 }
 
 pub fn now() -> Timestamp {
@@ -684,37 +558,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_round_trip() {
-        let m = ClientMessage { id: 7, request: Request::RunCancel { id: 412 } };
-        let s = serde_json::to_string(&m).unwrap();
-        assert_eq!(s, r#"{"id":7,"method":"run.cancel","params":{"id":412}}"#);
-        let back: ClientMessage = serde_json::from_str(&s).unwrap();
-        assert!(matches!(back.request, Request::RunCancel { id: 412 }));
-        let unit: ClientMessage = serde_json::from_str(r#"{"id":1,"method":"projects.list"}"#).unwrap();
-        assert!(matches!(unit.request, Request::ProjectsList));
-    }
-
-    #[test]
-    fn server_messages_are_distinguishable() {
-        let r = ServerMessage::Response { id: 3, body: ResponseBody::Result(Box::new(Response::Ok)) };
-        let s = serde_json::to_string(&r).unwrap();
-        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Response { id: 3, .. }));
-        let e = ServerMessage::Event { event: Event::Projects };
-        let s = serde_json::to_string(&e).unwrap();
-        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Event { .. }));
-        let err = ServerMessage::Response { id: 4, body: ResponseBody::Error(ErrorBody { code: ErrorCode::Busy, message: "x".into() }) };
-        let s = serde_json::to_string(&err).unwrap();
-        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Response { body: ResponseBody::Error(_), .. }));
-    }
-
-    #[test]
-    fn filter_parse() {
-        let f = RunFilter::parse("project:finance-analyzer env:prod status:failed").unwrap();
-        assert_eq!(f.project.as_deref(), Some("finance-analyzer"));
-        assert_eq!(f.env.as_deref(), Some("prod"));
-        assert_eq!(f.status, Some(RunStatus::Failed));
-        assert_eq!(RunFilter::parse(&f.to_text()).unwrap(), f);
-        assert!(RunFilter::parse("color:red").is_err());
-        assert_eq!(RunFilter::parse("migrate").unwrap().pipeline.as_deref(), Some("migrate"));
+    fn request_names() {
+        let s = serde_json::to_string(&Request::RunCancel { id: 412 }).unwrap();
+        assert_eq!(s, r#"{"method":"run.cancel","params":{"id":412}}"#);
+        assert!(matches!(serde_json::from_str(r#"{"method":"projects.list"}"#).unwrap(), Request::ProjectsList));
     }
 }

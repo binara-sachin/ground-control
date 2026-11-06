@@ -1,14 +1,13 @@
-# GroundControl build, install and update (spec §5.4). macOS only for install.
+# GroundControl build and install (docs/architecture.md). Installs one binary
+# and a link to the config, and nothing that starts at login: runs and
+# services live in windows of the `ground-control` tmux session.
 
-LABEL   := dev.binara.groundcontrol
-PREFIX  ?= $(HOME)/.local
-BIN     := $(PREFIX)/bin/groundcontrol
-PLIST   := $(HOME)/Library/LaunchAgents/$(LABEL).plist
-CONFIG  := $(CURDIR)/groundcontrol.yaml
-STATE   := $(HOME)/Library/Application Support/GroundControl
-DOMAIN  := gui/$(shell id -u)
+PREFIX     ?= $(HOME)/.local
+BIN        := $(PREFIX)/bin/groundcontrol
+CONFIG     := $(CURDIR)/groundcontrol.yaml
+CONFIG_DIR := $(HOME)/.config/ground-control
 
-.PHONY: build test lint install uninstall restart logs
+.PHONY: build test lint install uninstall
 
 build:
 	cargo build --release
@@ -20,29 +19,15 @@ lint:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
 
-## install: build to ~/.local/bin, write the launchd plist, load (or restart) the agent.
+## install: build, copy the binary to ~/.local/bin and link the config into
+## ~/.config/ground-control, so the TUI finds it from any directory.
 install: build
-	@test "$$(uname)" = Darwin || { echo "make install needs macOS (launchd)"; exit 1; }
-	install -d "$(PREFIX)/bin" "$(HOME)/Library/LaunchAgents"
+	install -d "$(PREFIX)/bin"
 	install -m 0755 target/release/groundcontrol "$(BIN)"
-	install -d -m 0700 "$(STATE)"
-	sed -e 's|@LABEL@|$(LABEL)|g' -e 's|@BIN@|$(BIN)|g' -e 's|@CONFIG@|$(CONFIG)|g' -e 's|@STATE@|$(STATE)|g' \
-		packaging/$(LABEL).plist.in > "$(PLIST)"
-	@if launchctl print "$(DOMAIN)/$(LABEL)" >/dev/null 2>&1; then \
-		launchctl bootout "$(DOMAIN)/$(LABEL)" 2>/dev/null || true; \
-	fi
-	launchctl bootstrap "$(DOMAIN)" "$(PLIST)"
-	launchctl kickstart -k "$(DOMAIN)/$(LABEL)"
-	@echo "installed $(BIN); daemon running as $(LABEL). Open the TUI with: groundcontrol"
+	install -d "$(CONFIG_DIR)"
+	ln -sfn "$(CONFIG)" "$(CONFIG_DIR)/groundcontrol.yaml"
+	@echo "installed $(BIN). Open the TUI with: groundcontrol (tmux is required)"
 
-## restart: restart the daemon (services stop and, on the same boot, come back).
-restart:
-	launchctl kickstart -k "$(DOMAIN)/$(LABEL)"
-
+## uninstall: remove the binary and the config link.
 uninstall:
-	-launchctl bootout "$(DOMAIN)/$(LABEL)"
-	rm -f "$(PLIST)" "$(BIN)"
-	@echo "state kept in $(STATE)"
-
-logs:
-	tail -f "$(STATE)/daemon.log"
+	rm -f "$(BIN)" "$(CONFIG_DIR)/groundcontrol.yaml"

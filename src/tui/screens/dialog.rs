@@ -90,9 +90,9 @@ impl RunDialog {
                         Span::styled(" You can still run it.", theme::text()),
                     ]));
                     warnings.push(Line::from(vec![
-                        Span::raw("  The run is recorded as "),
+                        Span::raw("  The run view shows it as "),
                         Span::styled("dirty", theme::warning()),
-                        Span::raw(" with a saved copy of the diff."),
+                        Span::raw("."),
                     ]));
                 }
                 if g.upstream.is_none() || g.ahead > 0 {
@@ -107,14 +107,14 @@ impl RunDialog {
                         Span::styled(" You can still run it.", theme::text()),
                     ]));
                     warnings.push(Line::from(vec![
-                        Span::raw("  The run is recorded as "),
+                        Span::raw("  The run view shows it as "),
                         Span::styled("unpushed", theme::warning()),
-                        Span::raw(" so history shows exactly what ran."),
+                        Span::raw("."),
                     ]));
                 }
                 if g.origin_matches == Some(false) {
                     warnings.push(Line::styled(
-                        "× origin does not match the configured remote; the daemon will refuse this run.",
+                        "× origin does not match the configured remote; GroundControl will refuse this run.",
                         theme::danger(),
                     ));
                 }

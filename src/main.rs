@@ -1,16 +1,40 @@
-//! `groundcontrol` opens the TUI; `groundcontrol daemon` runs the daemon.
+//! `groundcontrol` opens the TUI; `groundcontrol svc-exec` and `run-exec` are
+//! the commands of a service's and a run's tmux window.
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => groundcontrol::tui::run(),
-        ["daemon"] => tokio::runtime::Runtime::new().map_err(Into::into).and_then(|rt| rt.block_on(groundcontrol::daemon::run())),
+        ["svc-exec", project, service] => {
+            let code = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt.block_on(groundcontrol::services::worker::run(project, service)),
+                Err(e) => {
+                    eprintln!("groundcontrol: {e}");
+                    1
+                }
+            };
+            return std::process::ExitCode::from(code as u8);
+        }
+        ["run-exec"] => {
+            let code = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt.block_on(groundcontrol::runs::worker::run()),
+                Err(e) => {
+                    eprintln!("groundcontrol: {e}");
+                    1
+                }
+            };
+            return std::process::ExitCode::from(code as u8);
+        }
         ["--version" | "-V"] => {
-            println!("groundcontrol {} (protocol {})", groundcontrol::protocol::VERSION, groundcontrol::protocol::PROTOCOL_VERSION);
+            println!("groundcontrol {}", groundcontrol::protocol::VERSION);
             Ok(())
         }
         _ => {
-            eprintln!("usage: groundcontrol            open the TUI\n       groundcontrol daemon     run the daemon (started by launchd)");
+            eprintln!(
+                "usage: groundcontrol                               open the TUI\n       \
+                 groundcontrol svc-exec <project> <service>   run a service (inside its tmux window)\n       \
+                 groundcontrol run-exec                       run a pipeline run (inside its tmux window)"
+            );
             return std::process::ExitCode::from(2);
         }
     };
