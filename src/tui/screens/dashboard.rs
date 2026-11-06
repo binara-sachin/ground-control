@@ -69,19 +69,23 @@ fn log_service(app: &App) -> Option<(String, String)> {
     let p = selected_project(app)?;
     let rows = service_rows(p);
     let row = rows.get(app.dash.service_sel.min(rows.len().saturating_sub(1)))?;
-    let id = match row {
-        SvcRow::Service(s) => s.clone(),
+    Some((p.id.clone(), row_service(p, row)?))
+}
+
+/// The service a row's log comes from: the service itself, or for a group a
+/// member that crashed or is unhealthy, otherwise its last member.
+pub fn row_service(p: &ProjectInfo, row: &SvcRow) -> Option<String> {
+    match row {
+        SvcRow::Service(s) => Some(s.clone()),
         SvcRow::Group(g) => {
             let g = p.groups.iter().find(|x| &x.id == g)?;
-            // Prefer a member that crashed or is unhealthy; otherwise the last one.
             g.members
                 .iter()
                 .find(|m| p.services.iter().any(|s| &s.id == *m && matches!(s.state, ServiceState::Crashed | ServiceState::Unhealthy)))
-                .or(g.members.last())?
-                .clone()
+                .or(g.members.last())
+                .cloned()
         }
-    };
-    Some((p.id.clone(), id))
+    }
 }
 
 /// Loads the last lines of the selected service's log when the selection changes.
@@ -114,13 +118,13 @@ pub fn open_full_log(app: &mut App, project: &str, service: &str) {
 
 /// Start/stop toggle or restart for a service or group row.
 pub fn control(app: &mut App, project: &ProjectInfo, row: &SvcRow, restart: bool) {
+    // Up while its worker has anything to stop, restarting and stopping included.
+    let up = |x: &ServiceStatus| !matches!(x.state, ServiceState::Stopped | ServiceState::Crashed);
     let (id, up) = match row {
-        SvcRow::Service(s) => {
-            (s.clone(), project.services.iter().any(|x| &x.id == s && x.state != ServiceState::Stopped && x.state != ServiceState::Crashed))
-        }
+        SvcRow::Service(s) => (s.clone(), project.services.iter().any(|x| &x.id == s && up(x))),
         SvcRow::Group(g) => {
             let members = project.groups.iter().find(|x| &x.id == g).map(|x| x.members.clone()).unwrap_or_default();
-            (g.clone(), project.services.iter().any(|x| members.contains(&x.id) && x.state.is_up()))
+            (g.clone(), project.services.iter().any(|x| members.contains(&x.id) && up(x)))
         }
     };
     let action = if restart {
@@ -473,11 +477,11 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
 
 fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     let focused = app.dash.focus == Focus::Runs;
-    let inner = framed(f, area, vec![title_text("recent runs")], focused);
+    let inner = framed(f, area, vec![title_text("runs"), title_muted("  with a window")], focused);
     let w = inner.width;
     let mut lines = Vec::new();
     if app.recent.is_empty() {
-        lines.push(Line::styled(" no runs yet — open a project and press enter on a pipeline", theme::muted()));
+        lines.push(Line::styled(" no open runs — open a project and press enter on a pipeline", theme::muted()));
     }
     let visible = inner.height as usize;
     let start = app.dash.run_sel.saturating_sub(visible.saturating_sub(1));

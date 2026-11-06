@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, Health, Project, Service, ServiceAction};
-pub use crate::ctx::Ctx;
+use crate::ctx::Ctx;
 use crate::protocol::{ServiceState, ServiceStatus};
 use crate::tmux::{NewWindow, Window};
 

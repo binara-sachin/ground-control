@@ -227,9 +227,8 @@ pub fn dry_run_plan(
                 (run.clone(), dir.display().to_string(), names, Some(timeout.as_secs()))
             }
             StepKind::Approve { message } => {
-                let mut vars: BTreeMap<String, String> = config.env.iter().cloned().collect();
-                vars.extend(inputs.iter().map(|(k, v)| (format!("INPUT_{}", k.to_ascii_uppercase()), v.clone())));
-                vars.insert("GC_ENV".into(), env.unwrap_or("").into());
+                // The same variables as a real run; outputs aren't known yet, so `$OUTPUT_*` stays as written.
+                let vars = approval_vars(config, project, env, &inputs, &BTreeMap::new(), &gc);
                 (format!("pause for approval: {}", expand_message(message, &vars)), String::new(), Vec::new(), Some(APPROVAL_TTL.as_secs()))
             }
             StepKind::Service { action, target } => (format!("{} {target}", action.as_str()), String::new(), Vec::new(), None),
@@ -301,7 +300,7 @@ pub fn decode_steps(s: &str) -> Vec<StepState> {
         .collect()
 }
 
-/// `key=<encoded value>` per output, joined by `,`.
+/// `key=<step index>=<encoded value>` per output, joined by `,`.
 pub fn encode_outputs(outputs: &[(String, String, usize)]) -> String {
     outputs.iter().map(|(k, v, i)| format!("{k}={i}={}", encode(v))).collect::<Vec<_>>().join(",")
 }
@@ -547,8 +546,8 @@ pub async fn cancel(ctx: &Ctx, id: i64) -> Result<Response, ReqError> {
     Ok(Response::Ok)
 }
 
-/// Records an approval decision on the run's window; the waiting worker polls
-/// for it. The first answer wins.
+/// Records an approval decision on the run's window and wakes the waiting
+/// worker. The first answer wins.
 pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<Response, ReqError> {
     let w = active_window(ctx, id).await?;
     let approval = w
@@ -636,6 +635,27 @@ projects:
             message: "Go: now?".into(),
         };
         assert_eq!(decode_approval(&encode_approval(&a)), Some(a));
+    }
+
+    #[test]
+    fn dry_run_expands_approvals_like_a_real_run() {
+        let src = r#"
+projects:
+  p:
+    path: /tmp
+    environments:
+      prod: { protected: true, vars: { DB: ledger } }
+    pipelines:
+      x:
+        environments: [prod]
+        steps:
+          - approve: "Migrate $DB on $GC_ENV with $OUTPUT_BM?"
+          - run: "true"
+"#;
+        let c = crate::config::load_str(src).config.unwrap();
+        let p = c.project("p").unwrap();
+        let plan = dry_run_plan(&c, p, p.pipeline("x").unwrap(), Some("prod"), BTreeMap::new(), true, Vec::new());
+        assert_eq!(plan.steps[0].command, "pause for approval: Migrate ledger on prod with $OUTPUT_BM?");
     }
 
     #[test]

@@ -384,13 +384,6 @@ impl Tmux {
         }
         Ok(())
     }
-
-    /// Stops this server. Only for servers made with `with_socket`.
-    pub async fn kill_server(&self) {
-        if self.socket.is_some() {
-            let _ = self.tmux(&["kill-server"]).await;
-        }
-    }
 }
 
 #[cfg(test)]

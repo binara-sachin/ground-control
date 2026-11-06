@@ -62,7 +62,7 @@ Every process therefore has a visible, interactive parent: Terminal → tmux →
 
 | Component | Responsibility |
 |---|---|
-| **Engine** | Runs inside the TUI while it is open. Loads and validates `groundcontrol.yaml` (§7.4), watches it, and keeps the previous good config when a new one is invalid, with line and column numbers. Opens run windows, starts and stops services in dependency order, and writes approval decisions and cancel and stop requests to the windows. Every 500 ms it lists the `ground-control` windows and re-captures the panes on screen, and turns changes into live updates. Polls git status every 30 seconds and after each run; it never fetches. |
+| **Engine** | Runs inside the TUI while it is open. Loads and validates `groundcontrol.yaml` (§7.4), watches it, and keeps the previous good config when a new one is invalid, with line and column numbers. Opens run windows, starts and stops services in dependency order, and writes approval decisions and cancel and stop requests to the windows. Once a second it lists the `ground-control` windows and re-captures the panes on screen, and turns changes into live updates. Polls git status every 30 seconds and after each run; it never fetches. |
 | **Screens** | Dashboard, Project, Run dialog, Run view, Health (§10). |
 | **Output pane** | Feeds output captured from a tmux pane into a terminal-emulator parser and draws the resulting screen, so colours, `\r` progress lines and box-drawing tables render as they would in a terminal. |
 

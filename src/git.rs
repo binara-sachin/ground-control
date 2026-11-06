@@ -158,14 +158,13 @@ pub struct Snapshot {
     pub commit: Option<String>,
     pub dirty: bool,
     pub unpushed: Option<u32>,
-    pub status: GitStatus,
 }
 
 pub async fn snapshot(dir: &Path) -> Snapshot {
     let st = status(dir, None).await;
     let commit = git(dir, &["rev-parse", "--short=7", "HEAD"]).await.ok().map(|s| s.trim().to_string());
     let unpushed = unpushed_count(dir).await.ok();
-    Snapshot { branch: st.branch.clone(), commit, dirty: st.error.is_none() && !st.is_clean(), unpushed, status: st }
+    Snapshot { dirty: st.error.is_none() && !st.is_clean(), branch: st.branch, commit, unpushed }
 }
 
 #[cfg(test)]

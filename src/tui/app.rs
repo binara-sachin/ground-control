@@ -189,7 +189,7 @@ impl App {
         self.connect();
     }
 
-    /// Opens the state and starts the engine's pollers. Nothing runs in the
+    /// Opens the engine and starts its pollers. Nothing runs in the
     /// background once the TUI quits.
     fn connect(&mut self) {
         self.conn = Conn::Connecting;
@@ -649,7 +649,7 @@ impl App {
     pub fn attention(&self, tab: usize) -> bool {
         match tab {
             1 => !self.waiting.is_empty() || self.projects.iter().any(|p| p.services.iter().any(|s| s.state == ServiceState::Crashed)),
-            3 => {
+            2 => {
                 self.config.as_ref().is_some_and(|c| !c.ok)
                     || self.health.as_ref().is_some_and(|h| {
                         h.tools.iter().any(|t| !t.ok) || h.docker.as_ref().is_some_and(|d| !d.ok) || h.tmux.as_ref().is_some_and(|t| !t.ok)

@@ -224,8 +224,6 @@ impl StepKindName {
 #[serde(rename_all = "snake_case")]
 pub enum ServiceState {
     Stopped,
-    /// Waiting for dependencies to become healthy.
-    Waiting,
     Starting,
     Running,
     Unhealthy,
@@ -239,7 +237,6 @@ impl ServiceState {
     pub fn as_str(self) -> &'static str {
         match self {
             ServiceState::Stopped => "stopped",
-            ServiceState::Waiting => "waiting",
             ServiceState::Starting => "starting",
             ServiceState::Running => "running",
             ServiceState::Unhealthy => "unhealthy",
@@ -250,7 +247,6 @@ impl ServiceState {
     }
     pub fn parse(s: &str) -> Self {
         match s {
-            "waiting" => ServiceState::Waiting,
             "starting" => ServiceState::Starting,
             "running" => ServiceState::Running,
             "unhealthy" => ServiceState::Unhealthy,
@@ -277,7 +273,8 @@ pub struct ServiceStatus {
     pub started_at: Option<Timestamp>,
     pub restart_count: u32,
     pub last_exit_code: Option<i32>,
-    /// Short explanation: "needs backend", "crashed 5× in 5m", "port 5432 is in use by PID 77 (not managed)".
+    /// Short explanation from the worker: "crashed 5× in 5m, gave up 14:02",
+    /// "port 5432 is in use (not started by GroundControl)".
     pub message: Option<String>,
     pub depends_on: Vec<String>,
     pub restart: RestartPolicy,
@@ -296,14 +293,6 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
-    pub const ALL: [RunStatus; 6] = [
-        RunStatus::Running,
-        RunStatus::AwaitingApproval,
-        RunStatus::Succeeded,
-        RunStatus::Failed,
-        RunStatus::Cancelled,
-        RunStatus::Rejected,
-    ];
     pub fn as_str(self) -> &'static str {
         match self {
             RunStatus::Running => "running",
@@ -317,10 +306,10 @@ impl RunStatus {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "running" => RunStatus::Running,
-            "awaiting_approval" | "waiting" | "wait" => RunStatus::AwaitingApproval,
-            "succeeded" | "ok" => RunStatus::Succeeded,
-            "failed" | "fail" => RunStatus::Failed,
-            "cancelled" | "canceled" => RunStatus::Cancelled,
+            "awaiting_approval" => RunStatus::AwaitingApproval,
+            "succeeded" => RunStatus::Succeeded,
+            "failed" => RunStatus::Failed,
+            "cancelled" => RunStatus::Cancelled,
             "rejected" => RunStatus::Rejected,
             _ => return None,
         })

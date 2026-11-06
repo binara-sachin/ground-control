@@ -243,7 +243,6 @@ pub fn service_word(s: &ServiceStatus) -> (&'static str, String, Style) {
         ServiceState::Running => ("●", "running".into(), theme::success()),
         ServiceState::Unhealthy => ("◐", "unhealthy".into(), theme::warning()),
         ServiceState::Starting => ("◐", "starting".into(), theme::warning()),
-        ServiceState::Waiting => ("○", "waiting".into(), theme::warning()),
         ServiceState::Restarting => ("◐", format!("restarting ({})", s.restart_count), theme::warning()),
         ServiceState::Stopping => ("◐", "stopping".into(), theme::warning()),
         ServiceState::Crashed => ("×", "crashed".into(), theme::danger()),
