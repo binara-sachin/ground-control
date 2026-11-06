@@ -3,7 +3,8 @@
 //!
 //! tmux is also where all state lives: each window carries its kind, its
 //! project and its live status as `@gc_*` window options, in the tmux
-//! server's memory only. Nothing is written to disk.
+//! server's memory only. Nothing is written to disk. Which options exist is
+//! `crate::window`'s business; this module only moves them.
 //!
 //! Commands are passed to tmux as argv, after `--`, so tmux executes them
 //! directly instead of through a shell. Windows are addressed by their id
@@ -19,34 +20,6 @@ pub const SESSION: &str = "ground-control";
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Scrollback of the session's windows: it is the only copy of their output.
 pub const HISTORY_LIMIT: &str = "50000";
-
-/// The window options GroundControl reads back in one `list-windows`.
-pub const KEYS: [&str; 24] = [
-    "kind",
-    "project",
-    "service",
-    "pipeline",
-    "state",
-    "healthy",
-    "msg",
-    "pid",
-    "started",
-    "restarts",
-    "exit",
-    "env",
-    "branch",
-    "commit",
-    "dirty",
-    "unpushed",
-    "protected",
-    "reason",
-    "finished",
-    "approval",
-    "steps",
-    "outputs",
-    "inputs",
-    "stop",
-];
 
 /// Which tmux server to talk to.
 #[derive(Debug, Clone, Default)]
@@ -65,14 +38,9 @@ pub struct Window {
     pub dead: bool,
     /// Exit status of a dead window's command; `None` when killed by a signal.
     pub dead_status: Option<i32>,
-    /// Decoded `@gc_<key>` options; missing ones are absent.
+    /// The decoded `@gc_<key>` options that were asked for; unset ones are
+    /// empty. What they mean is `crate::window`'s business.
     pub opts: HashMap<String, String>,
-}
-
-impl Window {
-    pub fn opt(&self, key: &str) -> Option<&str> {
-        self.opts.get(key).map(String::as_str).filter(|v| !v.is_empty())
-    }
 }
 
 /// A window to create.
@@ -145,23 +113,23 @@ pub fn escape_format(s: &str) -> String {
     s.replace('#', "##")
 }
 
-fn list_format() -> String {
+fn list_format(keys: &[&str]) -> String {
     let mut f = String::from("#{window_id}|#{pane_dead}|#{pane_dead_status}");
-    for k in KEYS {
+    for k in keys {
         f.push_str(&format!("|#{{@gc_{k}}}"));
     }
     f
 }
 
-/// Parses `list-windows -F <list_format()>`.
-pub fn parse_windows(out: &str) -> Vec<Window> {
+/// Parses `list-windows -F <list_format(keys)>`.
+pub fn parse_windows(out: &str, keys: &[&str]) -> Vec<Window> {
     out.lines()
         .filter_map(|l| {
             let mut it = l.split('|');
             let id = it.next()?.strip_prefix('@')?.parse().ok()?;
             let dead = it.next() == Some("1");
             let status = it.next().and_then(|s| s.parse().ok());
-            let opts = KEYS.iter().zip(it).map(|(k, v)| (k.to_string(), decode(v))).collect();
+            let opts = keys.iter().zip(it).map(|(k, v)| (k.to_string(), decode(v))).collect();
             Some(Window { id, dead, dead_status: if dead { status } else { None }, opts })
         })
         .collect()
@@ -223,18 +191,18 @@ impl Tmux {
         self.tmux(&["-V"]).await.map(|s| s.trim().to_string())
     }
 
-    /// Every window of the `ground-control` session with its options; empty
-    /// when the session or the server is absent.
-    pub async fn windows(&self) -> Result<Vec<Window>, String> {
-        match self.tmux(&["list-windows", "-t", &format!("={SESSION}:"), "-F", &list_format()]).await {
-            Ok(out) => Ok(parse_windows(&out)),
+    /// Every window of the `ground-control` session with the `@gc_<key>`
+    /// options asked for; empty when the session or the server is absent.
+    pub async fn windows(&self, keys: &[&str]) -> Result<Vec<Window>, String> {
+        match self.tmux(&["list-windows", "-t", &format!("={SESSION}:"), "-F", &list_format(keys)]).await {
+            Ok(out) => Ok(parse_windows(&out, keys)),
             Err(e) if is_missing(&e) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
     }
 
-    pub async fn window(&self, id: i64) -> Result<Option<Window>, String> {
-        Ok(self.windows().await?.into_iter().find(|w| w.id == id))
+    pub async fn window(&self, id: i64, keys: &[&str]) -> Result<Option<Window>, String> {
+        Ok(self.windows(keys).await?.into_iter().find(|w| w.id == id))
     }
 
     /// Opens a detached window in the `ground-control` session, creating the
@@ -309,8 +277,8 @@ impl Tmux {
         self.tmux(&args).await.map(|_| ())
     }
 
-    /// Writes a request (`@gc_stop`, `@gc_cancel`, `@gc_decision`) to window
-    /// `id` and wakes its worker, in one tmux command.
+    /// Sets `@gc_<key>` options on window `id` and wakes its worker, in one
+    /// tmux command: how the TUI sends a request.
     pub async fn request(&self, id: i64, options: &[(&str, String)]) -> Result<(), String> {
         let t = target(id);
         let channel = wake_channel(id);
@@ -402,22 +370,14 @@ mod tests {
 
     #[test]
     fn parses_window_list() {
-        let mut line = String::from("@12|1|3");
-        for k in KEYS {
-            line.push('|');
-            line.push_str(match k {
-                "kind" => "svc",
-                "msg" => "port%7C8080",
-                _ => "",
-            });
-        }
-        let w = &parse_windows(&format!("{line}\n@13|0|\n"))[..];
+        let keys = ["kind", "msg", "project"];
+        let w = &parse_windows("@12|1|3|svc|port%7C8080|\n@13|0|\n", &keys)[..];
         assert_eq!(w.len(), 2);
         assert_eq!((w[0].id, w[0].dead, w[0].dead_status), (12, true, Some(3)));
-        assert_eq!(w[0].opt("kind"), Some("svc"));
-        assert_eq!(w[0].opt("msg"), Some("port|8080"));
-        assert_eq!(w[0].opt("project"), None);
-        assert_eq!((w[1].id, w[1].dead, w[1].opt("kind")), (13, false, None));
+        assert_eq!(w[0].opts["kind"], "svc");
+        assert_eq!(w[0].opts["msg"], "port|8080");
+        assert_eq!(w[0].opts["project"], "");
+        assert_eq!((w[1].id, w[1].dead, w[1].opts.get("kind")), (13, false, None));
     }
 
     #[test]

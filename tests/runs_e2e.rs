@@ -13,6 +13,7 @@ use groundcontrol::engine::{latest_started, split_steps};
 use groundcontrol::protocol::*;
 use groundcontrol::runs;
 use groundcontrol::tmux::NewWindow;
+use groundcontrol::window::{RunParams, RunWindow};
 
 fn config(repo: &Path, port: u16) -> String {
     format!(
@@ -84,7 +85,7 @@ async fn start(env: &Env, p: RunStartParams) -> Result<i64, (ErrorCode, String)>
 }
 
 async fn detail(env: &Env, id: i64) -> Option<RunDetail> {
-    env.window(id).await.map(|w| runs::detail(&env.config, &w))
+    env.run_window(id).await.map(|w| runs::detail(&env.config, &w))
 }
 
 async fn wait(env: &Env, id: i64, want: impl Fn(&RunDetail) -> bool) -> RunDetail {
@@ -156,7 +157,7 @@ async fn pipelines_end_to_end() {
     assert_eq!(r.steps[0].exit_code, Some(7));
     assert_eq!(r.steps[1].status, StepStatus::Skipped);
     idle(&env, failed).await;
-    assert!(env.window(failed).await.is_some());
+    assert!(env.run_window(failed).await.is_some());
 
     // Protected runs need the confirmation flag.
     let (code, _) = start(&env, params("deploy", Some("prod"), &[], false)).await.unwrap_err();
@@ -166,7 +167,7 @@ async fn pipelines_end_to_end() {
     let id = start(&env, params("deploy", Some("prod"), &[], true)).await.unwrap();
     // The next run replaces the project's dead run windows. (Window ids, and
     // so run ids, restart when the tmux server does, which can happen here.)
-    assert!(!env.windows().await.iter().any(|w| w.opt("pipeline") == Some("fail")), "the next run replaces the project's dead run windows");
+    assert!(!env.windows().await.runs.iter().any(|w| w.params.pipeline == "fail"), "the next run replaces the project's dead run windows");
     let r = wait(&env, id, |r| r.summary.status == RunStatus::AwaitingApproval).await;
     assert_eq!(r.approvals[0].message, "Deploy to prod? shared=hello");
     assert_eq!(r.steps[1].status, StepStatus::Waiting);
@@ -233,7 +234,7 @@ async fn closed_windows_dead_workers_and_guards() {
 
     // A run whose worker died without publishing an end shows as cancelled.
     let argv = vec!["true".to_string()];
-    let options = [("kind", runs::KIND.to_string()), ("project", "app".into()), ("pipeline", "slow".into()), ("state", "running".into())];
+    let options = RunWindow::create(&RunParams { project: "app".into(), pipeline: "slow".into(), ..Default::default() }, 0);
     let dead = env
         .ctx
         .tmux

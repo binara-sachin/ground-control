@@ -9,7 +9,7 @@ the decisions taken where the spec left room, and what is still open.
 
 - [x] `groundcontrol` is the TUI with an in-process engine (`engine.rs`): config loading, validation (§7.4) with line and column, hot reload that keeps the last good config, git polling, and live updates from one `list-windows` per poll plus pane captures for what is on screen
 - [x] Runs execute in `groundcontrol run-exec` in a `<project>/<pipeline>` window, services in `groundcontrol svc-exec <project> <service>` in a `<project>/<service>` window, all in the `ground-control` tmux session, created if it doesn't exist (`runs/worker.rs`, `services/worker.rs`, `tmux.rs`)
-- [x] All state in tmux: `@gc_*` window options (percent-encoded where tmux would alter them) and pane scrollback. No database, log files, history or lock files
+- [x] All state in tmux: `@gc_*` window options (percent-encoded where tmux would alter them) and pane scrollback. No database, log files, history or lock files. `window.rs` is the only code that knows the options' names and formats, and a test keeps it in step with spec §11
 - [x] Workers wait on their window's `tmux wait-for` channel and are woken by the TUI's requests, so an idle worker starts no processes
 - [x] A run's id is its window's id; a dead window with an active run shows as "worker exited unexpectedly"
 - [x] One run per project and one worker per service, decided by the oldest live window

@@ -26,6 +26,7 @@ use crate::mask::Masker;
 use crate::process;
 use crate::protocol::{ServiceState, now};
 use crate::tmux::Tmux;
+use crate::window::{self, ServiceReport, ServiceWindow};
 
 /// How often a starting service's health check is tried.
 const START_CHECK: Duration = Duration::from_millis(300);
@@ -111,18 +112,6 @@ pub(crate) async fn close_own_pane() {
     }
 }
 
-/// What the worker publishes about the service in its window's options.
-#[derive(Default)]
-struct Published {
-    status: Option<ServiceState>,
-    healthy: bool,
-    pid: Option<i32>,
-    started_at: Option<i64>,
-    restart_count: u32,
-    last_exit_code: Option<i32>,
-    message: Option<String>,
-}
-
 struct Worker {
     tmux: Tmux,
     waker: Waker,
@@ -130,44 +119,33 @@ struct Worker {
     pane: String,
     project: String,
     service: String,
-    state: Published,
+    report: ServiceReport,
 }
 
 impl Worker {
     async fn save(&mut self) {
-        let r = &self.state;
-        let opt = |v: Option<String>| v.unwrap_or_default();
-        let options = [
-            ("state", r.status.map(|s| s.as_str().to_string()).unwrap_or_default()),
-            ("healthy", if r.healthy { "1" } else { "0" }.to_string()),
-            ("pid", opt(r.pid.map(|p| p.to_string()))),
-            ("started", opt(r.started_at.map(|t| t.to_string()))),
-            ("restarts", r.restart_count.to_string()),
-            ("exit", opt(r.last_exit_code.map(|c| c.to_string()))),
-            ("msg", opt(r.message.clone())),
-        ];
-        if let Err(e) = self.tmux.set_options(&self.pane, &options).await {
+        if let Err(e) = self.tmux.set_options(&self.pane, &ServiceWindow::update(&self.report)).await {
             say(&format!("cannot publish state: {e}"));
         }
     }
 
-    async fn set(&mut self, f: impl FnOnce(&mut Published)) {
-        f(&mut self.state);
+    async fn set(&mut self, f: impl FnOnce(&mut ServiceReport)) {
+        f(&mut self.report);
         self.save().await;
     }
 
     async fn stop_requested(&self) -> bool {
-        self.tmux.options(&self.pane, &["stop"]).await.is_ok_and(|v| v[0] == "1")
+        window::stop_requested(&self.tmux, &self.pane).await.unwrap_or(false)
     }
 
     /// Ends the worker without a process: publishes why and returns exit code 1.
     async fn refuse(&mut self, msg: &str) -> i32 {
         say(msg);
         self.set(|r| {
-            r.status = Some(ServiceState::Stopped);
+            r.state = ServiceState::Stopped;
             r.healthy = false;
             r.pid = None;
-            r.message = Some(msg.to_string());
+            r.msg = Some(msg.to_string());
         })
         .await;
         1
@@ -189,7 +167,7 @@ pub async fn run(project_id: &str, service_id: &str) -> i32 {
             return 1;
         }
     };
-    let windows = tmux.windows().await.unwrap_or_default();
+    let windows = window::list(&tmux).await.unwrap_or_default();
     if let Some(older) = super::live_window(&windows, project_id, service_id)
         && older.id < mine
     {
@@ -198,7 +176,8 @@ pub async fn run(project_id: &str, service_id: &str) -> i32 {
         return 1;
     }
     let waker = Waker::new(tmux.clone(), mine);
-    let mut w = Worker { tmux, waker, pane, project: project_id.to_string(), service: service_id.to_string(), state: Published::default() };
+    let mut w =
+        Worker { tmux, waker, pane, project: project_id.to_string(), service: service_id.to_string(), report: ServiceReport::default() };
     let mut signals = match Signals::install() {
         Ok(s) => s,
         Err(e) => return w.refuse(&format!("cannot install signal handlers: {e}")).await,
@@ -259,11 +238,11 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
         let pgid = spawned.pid;
         let spawned_at = Instant::now();
         w.set(|r| {
-            r.status = Some(ServiceState::Starting);
+            r.state = ServiceState::Starting;
             r.healthy = false;
             r.pid = Some(pgid);
-            r.started_at = Some(now());
-            r.message = None;
+            r.started = Some(now());
+            r.msg = None;
         })
         .await;
 
@@ -311,7 +290,7 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                     during_start = false;
                     next_check = Instant::now() + HEALTH_INTERVAL;
                     w.set(|r| {
-                        r.status = Some(ServiceState::Running);
+                        r.state = ServiceState::Running;
                         r.healthy = true;
                     })
                     .await;
@@ -331,9 +310,9 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
             } else {
                 next_check = Instant::now() + HEALTH_INTERVAL;
                 let state = if ok { ServiceState::Running } else { ServiceState::Unhealthy };
-                if w.state.healthy != ok || w.state.status != Some(state) {
+                if w.report.healthy != ok || w.report.state != state {
                     w.set(|r| {
-                        r.status = Some(state);
+                        r.state = state;
                         r.healthy = ok;
                     })
                     .await;
@@ -349,15 +328,15 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
         finish_output(pump).await;
         let next = policy::after_exit(svc.restart, during_start && first, code, &mut crashes, Instant::now());
         first = false;
-        w.state.pid = None;
-        w.state.healthy = false;
-        w.state.last_exit_code = code;
+        w.report.pid = None;
+        w.report.healthy = false;
+        w.report.exit = code;
         match next {
             Next::Stopped { message } => {
                 say(&message);
                 w.set(|r| {
-                    r.status = Some(ServiceState::Stopped);
-                    r.message = Some(message);
+                    r.state = ServiceState::Stopped;
+                    r.msg = Some(message);
                 })
                 .await;
                 return 0;
@@ -365,22 +344,22 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
             Next::Crashed { message, gave_up } => {
                 say(&message);
                 w.set(|r| {
-                    r.status = Some(ServiceState::Crashed);
-                    r.message = Some(message);
+                    r.state = ServiceState::Crashed;
+                    r.msg = Some(message);
                 })
                 .await;
                 if gave_up {
                     pane(b"\x07");
-                    tell(&format!("{}/{} crashed: {}", w.project, w.service, w.state.message.as_deref().unwrap_or(""))).await;
+                    tell(&format!("{}/{} crashed: {}", w.project, w.service, w.report.msg.as_deref().unwrap_or(""))).await;
                 }
                 return 1;
             }
             Next::Restart { delay, message } => {
                 say(&message);
                 w.set(|r| {
-                    r.status = Some(ServiceState::Restarting);
-                    r.restart_count += 1;
-                    r.message = Some(message);
+                    r.state = ServiceState::Restarting;
+                    r.restarts += 1;
+                    r.msg = Some(message);
                 })
                 .await;
                 let until = tokio::time::Instant::now() + delay;
@@ -393,8 +372,8 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                     if stop {
                         say("stopped");
                         w.set(|r| {
-                            r.status = Some(ServiceState::Stopped);
-                            r.message = None;
+                            r.state = ServiceState::Stopped;
+                            r.msg = None;
                         })
                         .await;
                         return 0;
@@ -426,15 +405,15 @@ async fn stop_service(
     pump: tokio::task::JoinHandle<()>,
 ) -> i32 {
     say("stopping");
-    w.set(|r| r.status = Some(ServiceState::Stopping)).await;
+    w.set(|r| r.state = ServiceState::Stopping).await;
     let code = stop_group(pgid, exited).await;
     finish_output(pump).await;
     w.set(|r| {
-        r.status = Some(ServiceState::Stopped);
+        r.state = ServiceState::Stopped;
         r.healthy = false;
         r.pid = None;
-        r.last_exit_code = code;
-        r.message = None;
+        r.exit = code;
+        r.msg = None;
     })
     .await;
     say("stopped");

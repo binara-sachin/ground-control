@@ -19,16 +19,14 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::{
-    APPROVAL_TTL, ApprovalState, KIND, StepState, approval_vars, encode_approval, encode_outputs, encode_steps, expand_message, fmt_secs,
-    gc_vars, parse_outputs, step_env,
-};
+use super::{APPROVAL_TTL, approval_vars, expand_message, fmt_secs, gc_vars, parse_outputs, step_env};
 use crate::config::{Config, Pipeline, Project, ServiceAction, StepKind};
 use crate::mask::Masker;
 use crate::process;
 use crate::protocol::*;
 use crate::services::worker::{Signals, Waker, close_own_pane, pane, say, tell};
 use crate::tmux::Tmux;
+use crate::window::{self, ApprovalState, RunUpdate, RunWindow, StepState};
 
 /// How long a succeeded run's window stays open before it closes itself.
 const LINGER: Duration = Duration::from_secs(5);
@@ -46,13 +44,13 @@ struct Exec {
     woken: bool,
     cancelled: bool,
     steps: Vec<StepState>,
-    outputs: Vec<(String, String, usize)>,
+    outputs: Vec<OutputInfo>,
 }
 
 impl Exec {
-    /// Publishes options on the run's window; a failure is reported in the pane.
-    async fn publish(&self, options: &[(&str, String)]) {
-        if let Err(e) = self.tmux.set_options(&self.pane, options).await {
+    /// Publishes a change on the run's window; a failure is reported in the pane.
+    async fn publish(&self, update: RunUpdate<'_>) {
+        if let Err(e) = self.tmux.set_options(&self.pane, &RunWindow::update(update)).await {
             say(&format!("cannot publish state: {e}"));
         }
     }
@@ -61,11 +59,11 @@ impl Exec {
         if let Some(s) = self.steps.get_mut(idx) {
             f(s);
         }
-        self.publish(&[("steps", encode_steps(&self.steps))]).await;
+        self.publish(RunUpdate::Steps(&self.steps)).await;
     }
 
     async fn cancel_requested(&self) -> bool {
-        self.tmux.options(&self.pane, &["cancel"]).await.is_ok_and(|v| v[0] == "1")
+        window::run_requests(&self.tmux, &self.pane).await.is_ok_and(|(cancel, _)| cancel)
     }
 
     /// Resolves once the run is cancelled: a signal, or `@gc_cancel` set by
@@ -108,9 +106,8 @@ enum StepOutcome {
 /// Ends the run before it started: publishes why and returns exit code 1.
 async fn fail(tmux: &Tmux, pane_id: &str, msg: &str) -> i32 {
     say(msg);
-    let _ = tmux
-        .set_options(pane_id, &[("state", RunStatus::Failed.as_str().into()), ("reason", msg.to_string()), ("finished", now().to_string())])
-        .await;
+    let ended = RunUpdate::Ended { state: RunStatus::Failed, reason: Some(msg), finished: now(), steps: None };
+    let _ = tmux.set_options(pane_id, &RunWindow::update(ended)).await;
     pane(b"\x07");
     1
 }
@@ -129,21 +126,21 @@ pub async fn run() -> i32 {
             return 1;
         }
     };
-    let Ok(Some(me)) = tmux.window(id).await else {
-        say("cannot read this run's window");
-        return 1;
+    let me = match window::run(&tmux, id).await {
+        Ok(Some(me)) => me,
+        Ok(None) => {
+            say("this window was not opened for a run");
+            return 1;
+        }
+        Err(e) => {
+            say(&format!("cannot read this run's window: {e}"));
+            return 1;
+        }
     };
-    if me.opt("kind") != Some(KIND) {
-        say("this window was not opened for a run");
-        return 1;
-    }
-    let project_id = me.opt("project").unwrap_or_default().to_string();
-    let pipeline_id = me.opt("pipeline").unwrap_or_default().to_string();
-    let env = me.opt("env").map(str::to_string);
-    let inputs: BTreeMap<String, String> = me.opt("inputs").and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default();
+    let window::RunParams { project: project_id, pipeline: pipeline_id, env, inputs, .. } = me.params;
 
     // One run per project: an older live run of the same project wins.
-    let windows = tmux.windows().await.unwrap_or_default();
+    let windows = window::list(&tmux).await.unwrap_or_default();
     if let Some(older) = super::busy_run(&windows, &project_id)
         && older < id
     {
@@ -210,13 +207,7 @@ async fn execute(
     for s in exec.steps.iter_mut().filter(|s| s.status == Some(StepStatus::Pending)) {
         s.status = Some(StepStatus::Skipped);
     }
-    exec.publish(&[
-        ("steps", encode_steps(&exec.steps)),
-        ("state", status.as_str().to_string()),
-        ("reason", reason.clone().unwrap_or_default()),
-        ("finished", now().to_string()),
-    ])
-    .await;
+    exec.publish(RunUpdate::Ended { state: status, reason: reason.as_deref(), finished: now(), steps: Some(&exec.steps) }).await;
     (status, reason)
 }
 
@@ -266,13 +257,13 @@ async fn run_steps(
             for (k, v) in parse_outputs(&text).into_iter().skip(outputs_seen) {
                 outputs_seen += 1;
                 let v = String::from_utf8_lossy(&masker.mask_all(v.as_bytes())).into_owned();
-                exec.outputs.retain(|(key, _, _)| key != &k);
-                exec.outputs.push((k.clone(), v.clone(), idx));
+                exec.outputs.retain(|o| o.key != k);
+                exec.outputs.push(OutputInfo { key: k.clone(), value: v.clone(), step_index: Some(idx) });
                 outputs.insert(k, v);
                 changed = true;
             }
             if changed {
-                exec.publish(&[("outputs", encode_outputs(&exec.outputs))]).await;
+                exec.publish(RunUpdate::Outputs(&exec.outputs)).await;
             }
         }
 
@@ -386,11 +377,10 @@ async fn run_step(
     outcome
 }
 
-/// The decision the TUI recorded for step `idx`, if any (`approved:<idx>`).
+/// The decision the TUI recorded for step `idx`, if any.
 async fn decision(exec: &Exec, idx: usize) -> Option<ApprovalStatus> {
-    let v = exec.tmux.options(&exec.pane, &["decision"]).await.ok()?;
-    let (status, step) = v[0].split_once(':')?;
-    (step.parse::<usize>().ok()? == idx).then(|| ApprovalStatus::parse(status))
+    let (_, d) = window::run_requests(&exec.tmux, &exec.pane).await.ok()?;
+    d.filter(|d| d.step == idx).map(|d| d.status)
 }
 
 /// Pauses for a decision recorded by the TUI. Expires after 30 minutes.
@@ -404,13 +394,13 @@ async fn approve_step(exec: &mut Exec, idx: usize, message: &str) -> StepOutcome
         decided_at: None,
         message: message.to_string(),
     };
-    exec.publish(&[("decision", String::new()), ("approval", encode_approval(&approval))]).await;
+    exec.publish(RunUpdate::Approval(&approval)).await;
     exec.publish_step(idx, |s| {
         s.status = Some(StepStatus::Waiting);
         s.started_at = Some(requested);
     })
     .await;
-    exec.publish(&[("state", RunStatus::AwaitingApproval.as_str().into())]).await;
+    exec.publish(RunUpdate::State(RunStatus::AwaitingApproval)).await;
     say(&format!("waiting for approval in GroundControl: {message}"));
     pane(b"\x07");
     tell(&format!("run #{} is waiting for approval: {message}", exec.id)).await;
@@ -446,12 +436,12 @@ async fn approve_step(exec: &mut Exec, idx: usize, message: &str) -> StepOutcome
     };
     approval.status = status;
     approval.decided_at = Some(now());
-    exec.publish(&[("approval", encode_approval(&approval))]).await;
+    exec.publish(RunUpdate::Approval(&approval)).await;
     match status {
         ApprovalStatus::Approved => {
             say("approved");
             finish_step(exec, idx, StepStatus::Succeeded, None).await;
-            exec.publish(&[("state", RunStatus::Running.as_str().into())]).await;
+            exec.publish(RunUpdate::State(RunStatus::Running)).await;
             StepOutcome::Ok
         }
         ApprovalStatus::Rejected => {

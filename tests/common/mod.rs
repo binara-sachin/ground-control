@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use groundcontrol::config::Config;
 use groundcontrol::ctx::Ctx;
 use groundcontrol::tmux::{Tmux, Window};
+use groundcontrol::window::{self, RunWindow, Windows};
 
 pub struct Env {
     pub ctx: Ctx,
@@ -84,19 +85,21 @@ impl Env {
         Command::new("tmux").arg("-S").arg(&self.socket).args(args).output().unwrap()
     }
 
-    pub async fn windows(&self) -> Vec<Window> {
-        self.ctx.tmux.windows().await.unwrap()
+    /// The GroundControl windows of the session.
+    pub async fn windows(&self) -> Windows {
+        window::list(&self.ctx.tmux).await.unwrap()
     }
 
-    pub async fn window(&self, id: i64) -> Option<Window> {
-        self.ctx.tmux.window(id).await.unwrap()
+    pub async fn run_window(&self, id: i64) -> Option<RunWindow> {
+        window::run(&self.ctx.tmux, id).await.unwrap()
     }
 
-    /// Waits up to `secs` for `want`, which gets the session's windows.
+    /// Waits up to `secs` for `want`, which gets every window of the session
+    /// (without options).
     pub async fn wait_for(&self, secs: u64, what: &str, want: impl Fn(&[Window]) -> bool) -> Vec<Window> {
         let deadline = Instant::now() + Duration::from_secs(secs);
         loop {
-            let w = self.windows().await;
+            let w = self.ctx.tmux.windows(&[]).await.unwrap();
             if want(&w) {
                 return w;
             }
