@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod config;
+pub mod ctx;
 pub mod daemon;
 pub mod envfile;
 pub mod git;
@@ -12,6 +13,7 @@ pub mod lock;
 pub mod mask;
 pub mod paths;
 pub mod protocol;
+pub mod runs;
 pub mod services;
 pub mod tmux;
 pub mod tui;

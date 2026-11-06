@@ -155,6 +155,8 @@ impl Store {
         ] {
             add_column(&conn, "service_state", col, ty)?;
         }
+        // v2: runs executed by tmux-hosted workers are cancelled through the store.
+        add_column(&conn, "runs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")?;
         let store = Store { conn };
         store.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(store)
@@ -343,21 +345,48 @@ impl Store {
 
     /// Runs left active by a previous daemon process are closed out.
     pub fn recover_interrupted(&self, now: Timestamp) -> rusqlite::Result<Vec<i64>> {
-        let mut stmt = self.conn.prepare("SELECT id FROM runs WHERE status IN ('running', 'awaiting_approval')")?;
-        let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+        let ids: Vec<i64> = self.active_runs()?.into_iter().map(|(id, _, _)| id).collect();
         for id in &ids {
-            self.conn.execute(
-                "UPDATE steps SET status = 'cancelled', finished_at = ?2 WHERE run_id = ?1 AND status IN ('running', 'waiting')",
-                params![id, now],
-            )?;
-            self.skip_pending_steps(*id)?;
-            self.conn.execute(
-                "UPDATE approvals SET status = 'cancelled', decided_at = ?2 WHERE run_id = ?1 AND status = 'pending'",
-                params![id, now],
-            )?;
-            self.set_run_status(*id, RunStatus::Cancelled, Some("daemon restarted"), Some(now))?;
+            self.interrupt_run(*id, RunStatus::Cancelled, "daemon restarted", now)?;
         }
         Ok(ids)
+    }
+
+    /// Ends a run that can no longer finish on its own: running or waiting
+    /// steps are cancelled, the rest skipped, a pending approval cancelled.
+    pub fn interrupt_run(&self, id: i64, status: RunStatus, reason: &str, now: Timestamp) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE steps SET status = 'cancelled', finished_at = ?2 WHERE run_id = ?1 AND status IN ('running', 'waiting')",
+            params![id, now],
+        )?;
+        self.skip_pending_steps(id)?;
+        self.conn.execute(
+            "UPDATE approvals SET status = 'cancelled', decided_at = ?2 WHERE run_id = ?1 AND status = 'pending'",
+            params![id, now],
+        )?;
+        self.set_run_status(id, status, Some(reason), Some(now))
+    }
+
+    /// `(id, project, started_at)` of every run still running or awaiting approval.
+    pub fn active_runs(&self) -> rusqlite::Result<Vec<(i64, String, Timestamp)>> {
+        let mut stmt =
+            self.conn.prepare("SELECT id, project, started_at FROM runs WHERE status IN ('running', 'awaiting_approval') ORDER BY id")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+    }
+
+    /// Asks the run's worker to cancel. False when the run is not active.
+    pub fn request_run_cancel(&self, id: i64) -> rusqlite::Result<bool> {
+        let n =
+            self.conn.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1 AND status IN ('running', 'awaiting_approval')", [id])?;
+        Ok(n == 1)
+    }
+
+    pub fn run_cancel_requested(&self, id: i64) -> rusqlite::Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT cancel_requested FROM runs WHERE id = ?1", [id], |r| r.get::<_, i64>(0))
+            .optional()?
+            .is_some_and(|v| v != 0))
     }
 
     // ── approvals ──
@@ -668,6 +697,39 @@ mod tests {
         assert_eq!(d.summary.reason.as_deref(), Some("daemon restarted"));
         assert_eq!(d.steps[0].status, StepStatus::Cancelled);
         assert_eq!(d.steps[1].status, StepStatus::Skipped);
+    }
+
+    #[test]
+    fn cancel_and_interrupt() {
+        let s = Store::open_in_memory().unwrap();
+        let inputs = BTreeMap::new();
+        let new = NewRun {
+            project: "p",
+            pipeline: "x",
+            env: None,
+            inputs: &inputs,
+            protected: false,
+            branch: None,
+            commit: None,
+            dirty: false,
+            unpushed: false,
+            unpushed_count: None,
+        };
+        let step = || NewStep { name: "a".into(), kind: StepKindName::Run, command: "true".into(), cwd: None };
+        let id = s.insert_run(&new, &[step(), step()], 1).unwrap();
+        assert_eq!(s.active_runs().unwrap(), vec![(id, "p".to_string(), 1)]);
+        assert!(!s.run_cancel_requested(id).unwrap());
+        assert!(s.request_run_cancel(id).unwrap());
+        assert!(s.run_cancel_requested(id).unwrap());
+
+        s.start_step(id, 0, 2, StepStatus::Running, None).unwrap();
+        s.interrupt_run(id, RunStatus::Cancelled, "worker exited unexpectedly", 3).unwrap();
+        let d = s.run_detail(id).unwrap().unwrap();
+        assert_eq!(d.summary.status, RunStatus::Cancelled);
+        assert_eq!(d.steps[0].status, StepStatus::Cancelled);
+        assert_eq!(d.steps[1].status, StepStatus::Skipped);
+        assert!(s.active_runs().unwrap().is_empty());
+        assert!(!s.request_run_cancel(id).unwrap(), "finished runs cannot be cancelled");
     }
 
     #[test]

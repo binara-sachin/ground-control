@@ -82,6 +82,10 @@ you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI) ──reads
 - Workers run steps and services as `/bin/zsh -c <command>`, **not** `-l`.
   tmux windows already inherit your interactive environment, so the
   `.zprofile` PATH requirement in the README goes away.
+- Each step and service shell starts in its own session (`setsid`), so it
+  has no controlling terminal even though its worker runs in a pane: it
+  can't read the pane's size or prompt on `/dev/tty`. Stdin stays
+  `/dev/null`, as before.
 - Everything GroundControl runs for itself uses argv with no shell: `git`,
   `tmux`, and `docker info` on the Health screen.
 

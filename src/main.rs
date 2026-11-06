@@ -1,5 +1,6 @@
 //! `groundcontrol` opens the TUI; `groundcontrol daemon` runs the daemon;
-//! `groundcontrol svc-exec` is the command of a service's tmux window.
+//! `groundcontrol svc-exec` and `run-exec` are the commands of a service's
+//! and a run's tmux window.
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -9,6 +10,20 @@ fn main() -> std::process::ExitCode {
         ["svc-exec", project, service, launch] => {
             let code = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt.block_on(groundcontrol::services::worker::run(project, service, launch)),
+                Err(e) => {
+                    eprintln!("groundcontrol: {e}");
+                    1
+                }
+            };
+            return std::process::ExitCode::from(code as u8);
+        }
+        ["run-exec", id] => {
+            let Ok(id) = id.parse::<i64>() else {
+                eprintln!("groundcontrol: run-exec needs a run id");
+                return std::process::ExitCode::from(2);
+            };
+            let code = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt.block_on(groundcontrol::runs::worker::run(id)),
                 Err(e) => {
                     eprintln!("groundcontrol: {e}");
                     1

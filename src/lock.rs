@@ -41,6 +41,20 @@ pub fn try_acquire(path: &Path) -> io::Result<Option<Lock>> {
     }
 }
 
+/// `try_acquire`, retried for up to ~160 ms. `is_held` probes take the lock
+/// for a moment, so a probe from a polling TUI must not make a start fail.
+pub fn acquire(path: &Path) -> io::Result<Option<Lock>> {
+    for attempt in 0..5 {
+        if let Some(l) = try_acquire(path)? {
+            return Ok(Some(l));
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+    }
+    Ok(None)
+}
+
 /// Whether some process holds the lock at `path`. A missing file is not held.
 ///
 /// The probe briefly takes the lock itself when it is free, so it must not be

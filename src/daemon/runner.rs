@@ -4,26 +4,19 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use regex::Regex;
 use tokio::sync::{oneshot, watch};
 
 use super::process;
 use super::store::{NewRun, NewStep};
 use super::{Daemon, supervisor, system};
-use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
+use crate::config::{Config, Pipeline, Project, StepKind};
 use crate::mask::Masker;
 use crate::protocol::*;
-
-pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
-
-pub type ReqError = (ErrorCode, String);
-
-fn err(code: ErrorCode, msg: impl Into<String>) -> ReqError {
-    (code, msg.into())
-}
+pub use crate::runs::{APPROVAL_TTL, ReqError, expand_message, parse_outputs, resolve_inputs};
+use crate::runs::{check_env, err, fmt_secs, gc_vars, step_env};
 
 /// Live state of runs this daemon process is executing.
 #[derive(Default)]
@@ -50,143 +43,11 @@ impl Runs {
     }
 }
 
-/// Validates inputs against the pipeline's declarations, applying defaults.
-pub fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
-    for k in given.keys() {
-        if !p.inputs.iter().any(|i| &i.name == k) {
-            return Err(format!("unknown input `{k}`"));
-        }
-    }
-    let mut out = BTreeMap::new();
-    for i in &p.inputs {
-        let value = match given.get(&i.name).filter(|v| !v.is_empty()).or(i.default.as_ref()) {
-            Some(v) => v.clone(),
-            None if i.kind == InputKind::Bool => "false".to_string(),
-            None => return Err(format!("input `{}` is required", i.name)),
-        };
-        match i.kind {
-            InputKind::String => {
-                let pat = i.pattern.as_deref().unwrap_or("^$");
-                let re = Regex::new(pat).map_err(|e| format!("input `{}` pattern is invalid: {e}", i.name))?;
-                if !re.is_match(&value) {
-                    return Err(format!("input `{}` does not match {pat}", i.name));
-                }
-            }
-            InputKind::Bool => {
-                if value != "true" && value != "false" {
-                    return Err(format!("input `{}` must be true or false", i.name));
-                }
-            }
-            InputKind::Choice => {
-                if !i.options.contains(&value) {
-                    return Err(format!("input `{}` must be one of: {}", i.name, i.options.join(", ")));
-                }
-            }
-        }
-        out.insert(i.name.clone(), value);
-    }
-    Ok(out)
-}
-
-fn check_env(project: &Project, p: &Pipeline, env: Option<&str>) -> Result<(), String> {
-    match (p.environments.is_empty(), env) {
-        (true, None) => Ok(()),
-        (true, Some(e)) => Err(format!("pipeline `{}` does not run against an environment (got `{e}`)", p.id)),
-        (false, None) => Err(format!("pipeline `{}` needs an environment: {}", p.id, p.environments.join(", "))),
-        (false, Some(e)) if !p.environments.iter().any(|x| x == e) => {
-            Err(format!("pipeline `{}` cannot run on `{e}` (allowed: {})", p.id, p.environments.join(", ")))
-        }
-        (false, Some(e)) if project.environment(e).is_none() => Err(format!("unknown environment `{e}`")),
-        _ => Ok(()),
-    }
-}
-
-/// Environment for a step, in increasing precedence (§6.1). Returns the
-/// variables and the `env_file` values (for masking).
-fn step_env(
-    config: &Config,
-    project: &Project,
-    env: Option<&str>,
-    env_file: Option<&Path>,
-    inputs: &BTreeMap<String, String>,
-    outputs: &BTreeMap<String, String>,
-    gc: &BTreeMap<String, String>,
-) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
-    let mut vars: BTreeMap<String, String> = config.env.iter().cloned().collect();
-    if let Some(e) = env.and_then(|e| project.environment(e)) {
-        vars.extend(e.vars.iter().cloned());
-    }
-    let mut secrets = Vec::new();
-    if let Some(f) = env_file {
-        for (k, v) in crate::envfile::load(f)? {
-            secrets.push(v.clone());
-            vars.insert(k, v);
-        }
-    }
-    for (k, v) in inputs {
-        vars.insert(format!("INPUT_{}", k.to_ascii_uppercase()), v.clone());
-    }
-    for (k, v) in outputs {
-        vars.insert(format!("OUTPUT_{}", k.to_ascii_uppercase()), v.clone());
-    }
-    vars.extend(gc.iter().map(|(k, v)| (k.clone(), v.clone())));
-    Ok((vars, secrets))
-}
-
-fn gc_vars(run_id: Option<i64>, env: Option<&str>, output_file: &Path) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("GC_RUN_ID".into(), run_id.map(|i| i.to_string()).unwrap_or_else(|| "dry-run".into())),
-        ("GC_ENV".into(), env.unwrap_or("").into()),
-        ("GC_OUTPUT".into(), output_file.to_string_lossy().into_owned()),
-        ("FORCE_COLOR".into(), "1".into()),
-        ("CLICOLOR_FORCE".into(), "1".into()),
-        ("TERM".into(), "xterm-256color".into()),
-        ("COLUMNS".into(), "120".into()),
-    ])
-}
-
-/// `key=... >> "$GC_OUTPUT"` in a step, to list outputs a dry run can expect.
-static OUTPUT_WRITE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Za-z_][A-Za-z0-9_]*)=[^\n]*>>\s*"?\$\{?GC_OUTPUT"#).unwrap());
-
-static VAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
-
-/// Expands `$NAME` / `${NAME}` in an approval message. Unknown names stay as written.
-pub fn expand_message(msg: &str, vars: &BTreeMap<String, String>) -> String {
-    VAR_RE
-        .replace_all(msg, |c: &regex::Captures| {
-            let name = c.get(1).or_else(|| c.get(2)).unwrap().as_str();
-            vars.get(name).cloned().unwrap_or_else(|| c[0].to_string())
-        })
-        .into_owned()
-}
-
-/// Parses `key=value` lines appended to `$GC_OUTPUT`.
-pub fn parse_outputs(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .filter_map(|l| {
-            let (k, v) = l.split_once('=')?;
-            let k = k.trim();
-            crate::config::is_env_name(k).then(|| (k.to_string(), v.trim_end_matches('\r').to_string()))
-        })
-        .collect()
-}
-
 /// Checks that would refuse a real run (§8.4, §7.2 log location, §6.2).
 async fn preflight(d: &Daemon, project: &Project) -> Vec<String> {
-    let mut blockers = Vec::new();
-    if let Some(reason) = &project.disabled {
-        blockers.push(format!("project is disabled: {reason}"));
+    let mut blockers = crate::runs::common_blockers(project).await;
+    if project.disabled.is_some() {
         return blockers;
-    }
-    if let Err(e) = crate::git::check_remote(&project.path, project.remote.as_deref()).await {
-        blockers.push(e);
-    }
-    if project.sensitive && !crate::git::state_dir_ignored(&project.path).await {
-        blockers.push(format!(
-            "{} is sensitive but {}/ is not gitignored; add it to .gitignore before running",
-            project.id,
-            crate::paths::REPO_STATE_DIR
-        ));
     }
     if let Some(id) = d.runs.lock().unwrap().busy_run(&project.id) {
         blockers.push(format!("{} already has run #{id} in progress", project.id));
@@ -306,62 +167,7 @@ async fn dry_run(
     protected: bool,
 ) -> DryRunPlan {
     let blockers = preflight(d, project).await;
-    let out_file = PathBuf::from("$GC_OUTPUT");
-    let mut steps = Vec::new();
-    let mut known_outputs: Vec<String> = Vec::new();
-    for (i, s) in pipeline.steps.iter().enumerate() {
-        let gc = gc_vars(None, env, &out_file);
-        let (command, cwd, env_names, timeout) = match &s.kind {
-            StepKind::Run { run, cwd, env_file, timeout } => {
-                let dir = project.resolve_dir(cwd.as_deref());
-                let mut names: Vec<String> = config.env.iter().map(|(k, _)| k.clone()).collect();
-                if let Some(e) = env.and_then(|e| project.environment(e)) {
-                    names.extend(e.vars.iter().map(|(k, _)| k.clone()));
-                }
-                if let Some(f) = env_file {
-                    match crate::envfile::load(&dir.join(f)) {
-                        Ok(vars) => names.extend(vars.into_iter().map(|(k, _)| format!("{k} (env_file)"))),
-                        Err(e) => names.push(format!("<env_file error: {e}>")),
-                    }
-                }
-                names.extend(inputs.keys().map(|k| format!("INPUT_{}", k.to_ascii_uppercase())));
-                names.extend(known_outputs.iter().map(|k| format!("OUTPUT_{k} (if set)")));
-                names.extend(gc.keys().cloned());
-                names.dedup();
-                (run.clone(), dir.display().to_string(), names, Some(timeout.as_secs()))
-            }
-            StepKind::Approve { message } => {
-                let mut vars: BTreeMap<String, String> = config.env.iter().cloned().collect();
-                vars.extend(inputs.iter().map(|(k, v)| (format!("INPUT_{}", k.to_ascii_uppercase()), v.clone())));
-                vars.insert("GC_ENV".into(), env.unwrap_or("").into());
-                (format!("pause for approval: {}", expand_message(message, &vars)), String::new(), Vec::new(), Some(APPROVAL_TTL.as_secs()))
-            }
-            StepKind::Service { action, target } => (format!("{} {target}", action.as_str()), String::new(), Vec::new(), None),
-        };
-        if let StepKind::Run { run, .. } = &s.kind {
-            for cap in OUTPUT_WRITE_RE.captures_iter(run) {
-                known_outputs.push(cap[1].to_ascii_uppercase());
-            }
-        }
-        steps.push(DryRunStep {
-            index: i,
-            kind: StepKindName::parse(s.kind_str()),
-            label: s.label(),
-            command,
-            cwd,
-            env_names,
-            timeout_secs: timeout,
-        });
-    }
-    DryRunPlan {
-        project: project.id.clone(),
-        pipeline: pipeline.id.clone(),
-        env: env.map(str::to_string),
-        protected,
-        inputs,
-        steps,
-        blockers,
-    }
+    crate::runs::dry_run_plan(config, project, pipeline, env, inputs, protected, blockers)
 }
 
 enum StepOutcome {
@@ -688,16 +494,6 @@ async fn run_step(
     outcome
 }
 
-fn fmt_secs(s: u64) -> String {
-    if s.is_multiple_of(3600) {
-        format!("{}h", s / 3600)
-    } else if s.is_multiple_of(60) {
-        format!("{}m", s / 60)
-    } else {
-        format!("{s}s")
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn approve_step(
     d: &Arc<Daemon>,
@@ -853,54 +649,5 @@ pub fn decide(d: &Daemon, id: i64, step: usize, decision: Decision, confirmed: b
         }
         // The run stopped waiting at the same moment; it reads the recorded decision.
         None => Ok(Response::Ok),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pipeline() -> (Config, String) {
-        let src = r#"
-projects:
-  p:
-    path: /tmp
-    pipelines:
-      x:
-        inputs:
-          branch: { type: string, pattern: "^[a-z]+$" }
-          kind: { type: choice, options: [a, b], default: a }
-          force: { type: bool }
-        steps:
-          - run: "true"
-"#;
-        (crate::config::load_str(src).config.unwrap(), "x".into())
-    }
-
-    #[test]
-    fn input_resolution() {
-        let (c, id) = pipeline();
-        let p = c.project("p").unwrap().pipeline(&id).unwrap();
-        let ok = resolve_inputs(p, &BTreeMap::from([("branch".into(), "feat".into())])).unwrap();
-        assert_eq!(ok["kind"], "a");
-        assert_eq!(ok["force"], "false");
-        assert!(resolve_inputs(p, &BTreeMap::new()).unwrap_err().contains("required"));
-        assert!(resolve_inputs(p, &BTreeMap::from([("branch".into(), "Feat; rm".into())])).unwrap_err().contains("does not match"));
-        assert!(resolve_inputs(p, &BTreeMap::from([("branch".into(), "a".into()), ("kind".into(), "c".into())])).is_err());
-        assert!(resolve_inputs(p, &BTreeMap::from([("branch".into(), "a".into()), ("nope".into(), "c".into())])).is_err());
-    }
-
-    #[test]
-    fn message_expansion() {
-        let vars = BTreeMap::from([("GC_ENV".to_string(), "prod".to_string()), ("INPUT_PR".to_string(), "42".to_string())]);
-        assert_eq!(expand_message("Merge PR #$INPUT_PR on ${GC_ENV}? $UNKNOWN", &vars), "Merge PR #42 on prod? $UNKNOWN");
-    }
-
-    #[test]
-    fn outputs_parse() {
-        assert_eq!(
-            parse_outputs("d1_bookmark=0000-abc\nnot a line\nx=a=b\n"),
-            vec![("d1_bookmark".to_string(), "0000-abc".to_string()), ("x".to_string(), "a=b".to_string())]
-        );
     }
 }

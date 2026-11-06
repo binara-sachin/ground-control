@@ -12,16 +12,15 @@ pub mod policy;
 pub mod worker;
 
 use std::collections::HashSet;
-use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, Health, Project, Service, ServiceAction};
-use crate::daemon::store::{Store, StoredService};
-use crate::lock::{self, Lock};
+pub use crate::ctx::Ctx;
+use crate::daemon::store::StoredService;
+use crate::lock;
 use crate::protocol::{ServiceState, ServiceStatus, Timestamp, now};
-use crate::tmux::{NewWindow, Tmux};
+use crate::tmux::NewWindow;
 
 pub const HEALTH_START_TIMEOUT: Duration = Duration::from_secs(30);
 pub const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -32,41 +31,8 @@ const STALE_WAITING_SECS: Timestamp = 120;
 
 type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
-/// Everything the start and stop code needs, passed explicitly so tests can
-/// run side by side with their own state folder and tmux server.
-pub struct Ctx {
-    pub tmux: Tmux,
-    /// The `groundcontrol` binary the windows run.
-    pub exe: PathBuf,
-    pub state_dir: PathBuf,
-    pub config_path: PathBuf,
-    store: Mutex<Store>,
-}
-
+/// Service-specific helpers on the shared context.
 impl Ctx {
-    pub fn new(tmux: Tmux, exe: PathBuf, state_dir: PathBuf, config_path: PathBuf) -> Result<Ctx, String> {
-        // Workers start in the project folder, so relative paths would resolve wrongly there.
-        let state_dir = std::path::absolute(&state_dir).map_err(|e| e.to_string())?;
-        let config_path = std::path::absolute(&config_path).map_err(|e| e.to_string())?;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&state_dir)
-            .map_err(|e| format!("cannot create {}: {e}", state_dir.display()))?;
-        let store = Store::open(&state_dir.join(crate::paths::DB_FILE)).map_err(|e| format!("cannot open the state database: {e}"))?;
-        Ok(Ctx { tmux, exe, state_dir, config_path, store: Mutex::new(store) })
-    }
-
-    /// The user's tmux server, this binary, and the usual state and config paths.
-    pub fn from_env() -> Result<Ctx, String> {
-        let exe = std::env::current_exe().map_err(|e| format!("cannot find the groundcontrol binary: {e}"))?;
-        Ctx::new(Tmux::default_server(), exe, crate::paths::state_dir(), crate::paths::config_path())
-    }
-
-    fn db<T>(&self, f: impl FnOnce(&Store) -> rusqlite::Result<T>) -> Result<T, String> {
-        f(&self.store.lock().unwrap()).map_err(|e| format!("state database: {e}"))
-    }
-
     fn lock_path(&self, project: &str, service: &str) -> PathBuf {
         crate::paths::service_lock_path(&self.state_dir, project, service)
     }
@@ -78,7 +44,7 @@ impl Ctx {
     /// Runs `f` on the service's row while holding its lock. `Ok(false)` when
     /// a worker holds the lock, so the row is not ours to write.
     fn with_lock(&self, project: &str, service: &str, f: impl FnOnce(&mut StoredService)) -> Result<bool, String> {
-        let Some(_lock) = acquire(&self.lock_path(project, service)).map_err(|e| e.to_string())? else { return Ok(false) };
+        let Some(_lock) = lock::acquire(&self.lock_path(project, service)).map_err(|e| e.to_string())? else { return Ok(false) };
         let mut row = self.db(|s| s.service(project, service))?.unwrap_or_else(|| blank_row(project, service));
         f(&mut row);
         self.db(|s| s.save_service(&row))?;
@@ -88,32 +54,10 @@ impl Ctx {
     /// Writes a launch's first row and clears any old stop request, under the
     /// lock. `Ok(false)` when a worker already holds the service.
     fn begin_launch(&self, row: &StoredService) -> Result<bool, String> {
-        let Some(_lock) = acquire(&self.lock_path(&row.project, &row.service)).map_err(|e| e.to_string())? else { return Ok(false) };
+        let Some(_lock) = lock::acquire(&self.lock_path(&row.project, &row.service)).map_err(|e| e.to_string())? else { return Ok(false) };
         self.db(|s| s.begin_service_launch(row))?;
         Ok(true)
     }
-
-    /// Variables every window gets, so the worker finds the same state and config.
-    fn window_env(&self) -> Vec<(String, String)> {
-        vec![
-            ("GC_STATE_DIR".into(), self.state_dir.to_string_lossy().into_owned()),
-            ("GC_CONFIG".into(), self.config_path.to_string_lossy().into_owned()),
-        ]
-    }
-}
-
-/// Takes a lock, retrying briefly: `lock::is_held` probes take it for a moment,
-/// and a probe from a polling TUI must not make a start fail.
-pub(crate) fn acquire(path: &Path) -> std::io::Result<Option<Lock>> {
-    for attempt in 0..5 {
-        if let Some(l) = lock::try_acquire(path)? {
-            return Ok(Some(l));
-        }
-        if attempt < 4 {
-            std::thread::sleep(Duration::from_millis(40));
-        }
-    }
-    Ok(None)
 }
 
 /// Window name for a service. Runs use `run-<id>`, so the prefixes keep the

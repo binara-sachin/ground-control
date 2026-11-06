@@ -34,33 +34,40 @@ const NO_CHECK_GRACE: Duration = Duration::from_millis(700);
 
 /// Writes to the pane. Never fails: once the window is closed the terminal is
 /// gone and writes return EIO, which must not stop the cleanup.
-fn pane(bytes: &[u8]) {
+pub(crate) fn pane(bytes: &[u8]) {
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(bytes);
     let _ = out.flush();
 }
 
-fn say(msg: &str) {
+pub(crate) fn say(msg: &str) {
     pane(format!("\x1b[2m── {msg} ──\x1b[0m\n").as_bytes());
 }
 
-struct Signals {
+pub(crate) struct Signals {
     int: tokio::signal::unix::Signal,
     term: tokio::signal::unix::Signal,
     hup: tokio::signal::unix::Signal,
 }
 
 impl Signals {
-    fn install() -> std::io::Result<Signals> {
+    pub(crate) fn install() -> std::io::Result<Signals> {
         Ok(Signals { int: signal(SignalKind::interrupt())?, term: signal(SignalKind::terminate())?, hup: signal(SignalKind::hangup())? })
     }
 
-    async fn recv(&mut self) {
+    pub(crate) async fn recv(&mut self) {
         tokio::select! {
             _ = self.int.recv() => {}
             _ = self.term.recv() => {}
             _ = self.hup.recv() => {}
         }
+    }
+}
+
+/// Closes the pane this worker runs in, when it runs in tmux.
+pub(crate) async fn close_own_pane() {
+    if let Ok(pane_id) = std::env::var("TMUX_PANE") {
+        let _ = crate::tmux::Tmux::default_server().kill_pane(&pane_id).await;
     }
 }
 
@@ -107,14 +114,12 @@ pub async fn run(project_id: &str, service_id: &str, launch: &str) -> i32 {
         return 1;
     }
     let lock_path = crate::paths::service_lock_path(&state, project_id, service_id);
-    let _lock = match super::acquire(&lock_path) {
+    let _lock = match crate::lock::acquire(&lock_path) {
         Ok(Some(l)) => l,
         Ok(None) => {
             say(&format!("{project_id}/{service_id} is already running in another window"));
             // Duplicate window names would make every later target ambiguous.
-            if let Ok(pane_id) = std::env::var("TMUX_PANE") {
-                let _ = crate::tmux::Tmux::default_server().kill_pane(&pane_id).await;
-            }
+            close_own_pane().await;
             return 1;
         }
         Err(e) => {

@@ -23,7 +23,7 @@ pub struct Spawned {
 }
 
 /// Runs `/bin/zsh -l -c <command>` in `dir`, stdin from `/dev/null`, in a new
-/// process group whose id equals the child's pid.
+/// session and process group whose id equals the child's pid.
 pub fn spawn_shell(command: &str, dir: &Path, env: &BTreeMap<String, String>) -> std::io::Result<Spawned> {
     spawn(&["-l", "-c", command], dir, env)
 }
@@ -43,8 +43,14 @@ fn spawn(args: &[&str], dir: &Path, env: &BTreeMap<String, String>) -> std::io::
         .stdin(Stdio::null())
         .stdout(Stdio::from(writer.try_clone()?))
         .stderr(Stdio::from(writer))
-        .process_group(0)
         .kill_on_drop(false);
+    // A new session: the child leads its own process group (pgid == pid) and
+    // has no controlling terminal. Inside a tmux pane this keeps steps from
+    // reading the pane's size or prompting on `/dev/tty`, as under launchd.
+    // SAFETY: `setsid` is async-signal-safe and touches no shared state.
+    unsafe {
+        cmd.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(std::io::Error::from));
+    }
     let child = cmd.spawn()?;
     // Dropping `cmd` closes our copies of the write end, so EOF arrives once
     // the child (and anything it left running) has closed its copies.
@@ -169,6 +175,16 @@ mod tests {
         let s = spawn_shell("read x; echo \"got[$x] $?\"", Path::new("/"), &BTreeMap::new()).unwrap();
         let (out, _) = collect(s).await;
         assert_eq!(out, "got[] 1\n");
+    }
+
+    #[tokio::test]
+    async fn no_controlling_terminal() {
+        let s = spawn_plain_shell("if (exec 3</dev/tty) 2>/dev/null; then echo tty; else echo none; fi", Path::new("/"), &BTreeMap::new())
+            .unwrap();
+        let pid = s.pid;
+        let (out, _) = collect(s).await;
+        assert_eq!(out, "none\n");
+        assert!(pid > 0);
     }
 
     #[tokio::test]
