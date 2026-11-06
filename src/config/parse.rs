@@ -132,18 +132,13 @@ pub(super) fn config_from_node(root: &Node, diags: &mut Vec<Diagnostic>) -> Opti
 
 fn project(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Project> {
     let entries = cx.map(node, &format!("project `{}`", key.text))?;
-    cx.check_keys(
-        entries,
-        &["path", "remote", "sensitive", "environments", "services", "groups", "pipelines"],
-        &format!("project `{}`", key.text),
-    );
+    cx.check_keys(entries, &["path", "remote", "environments", "services", "groups", "pipelines"], &format!("project `{}`", key.text));
     let mut p = Project {
         id: key.text.clone(),
         pos: key.pos,
         path_display: String::new(),
         path: PathBuf::new(),
         remote: None,
-        sensitive: false,
         environments: Vec::new(),
         services: Vec::new(),
         groups: Vec::new(),
@@ -161,7 +156,6 @@ fn project(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Project> {
                 }
             }
             "remote" => p.remote = cx.string(v, "remote"),
-            "sensitive" => p.sensitive = cx.bool(v, "sensitive").unwrap_or(false),
             "environments" => {
                 for (ek, ev) in cx.map(v, "environments").unwrap_or(&[]) {
                     if cx.id(ek, "environment")

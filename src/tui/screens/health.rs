@@ -1,5 +1,5 @@
 //! Health (§6.6): tool check, tmux and Docker reachability, config status
-//! with line and column numbers, last reload time, version and state folder.
+//! with line and column numbers, last reload time, version and config path.
 //! Docker is only checked while this screen is open.
 
 use ratatui::Frame;
@@ -12,7 +12,7 @@ use super::super::widgets::*;
 use crate::protocol::*;
 
 pub fn hints() -> Vec<(&'static str, &'static str)> {
-    vec![("r", "refresh"), ("1", "dashboard"), ("2", "history"), ("?", "help")]
+    vec![("r", "refresh"), ("1", "dashboard"), ("?", "help")]
 }
 
 pub fn draw(app: &App, f: &mut Frame, area: Rect) {
@@ -31,9 +31,8 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     let mut lines = vec![
         kv("version", h.version.clone(), theme::text()),
         kv("opened", format!("{} ago (at {})", fmt_duration(now() - h.started_at), fmt_when_long(h.started_at)), theme::text()),
-        kv("state", h.state_dir.clone(), theme::text()),
         kv("config", h.config.path.clone(), theme::text()),
-        kv("runs", "each run and service is a window in tmux session gc-<project>".into(), theme::muted()),
+        kv("runs", "each run and service is a window in tmux session ground-control".into(), theme::muted()),
         Line::raw(""),
     ];
     for (name, r) in [("tmux", &h.tmux), ("docker", &h.docker)] {

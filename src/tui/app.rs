@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::screens::{dashboard, dialog, history, project, run_view};
+use super::screens::{dashboard, dialog, project, run_view};
 use super::term_view::TermView;
 use crate::engine::{Engine, RequestError};
 use crate::protocol::*;
@@ -27,19 +27,16 @@ pub enum Msg {
 pub enum Tag {
     Projects,
     Recent,
-    History { page: u32 },
     Health,
     Run(i64),
     Log { run: i64, step: usize },
     ServiceLog { project: String, service: String },
     FullLog,
-    Diff,
     Start,
     DryRun,
     Decide,
     Cancel,
     Service,
-    HistoryDetail(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +49,7 @@ pub enum Level {
 pub enum Conn {
     Connecting,
     Connected,
-    /// The state folder or database could not be opened.
+    /// The engine could not start (for example, the binary's path is unknown).
     Failed(String),
 }
 
@@ -60,7 +57,6 @@ pub enum View {
     Dashboard,
     Project(project::ProjectView),
     Run(Box<run_view::RunView>),
-    History,
     Health,
 }
 
@@ -107,7 +103,6 @@ pub struct App {
     pub config: Option<ConfigStatus>,
 
     pub dash: dashboard::DashState,
-    pub hist: history::HistState,
 
     subscribed: BTreeSet<String>,
     refetch_projects_at: Option<Instant>,
@@ -133,7 +128,6 @@ impl App {
             health: None,
             config: None,
             dash: Default::default(),
-            hist: Default::default(),
             subscribed: BTreeSet::new(),
             refetch_projects_at: None,
             refetch_recent_at: None,
@@ -223,9 +217,8 @@ impl App {
         self.subscribed.clear();
         self.sync_subscription();
         self.request(Request::ProjectsList, Tag::Projects);
-        self.request(Request::RunsQuery { filter: RunFilter::default(), page: 0 }, Tag::Recent);
+        self.request(Request::RunsList, Tag::Recent);
         self.request(Request::HealthGet, Tag::Health);
-        history::reload(self);
         // Re-sync anything on screen.
         let runs: Vec<i64> = self.nav.iter().filter_map(|v| if let View::Run(r) = v { Some(r.id) } else { None }).collect();
         for id in runs {
@@ -270,8 +263,6 @@ impl App {
             Msg::Input(TermEvent::Paste(text)) => {
                 if let Some(Overlay::Dialog(d)) = &mut self.overlay {
                     d.paste(&text);
-                } else if self.hist.editing {
-                    self.hist.filter_text.push_str(text.trim());
                 }
             }
             Msg::Input(_) => {}
@@ -302,7 +293,7 @@ impl App {
         }
         if self.refetch_recent_at.is_some_and(|t| now >= t) {
             self.refetch_recent_at = None;
-            self.request(Request::RunsQuery { filter: RunFilter::default(), page: 0 }, Tag::Recent);
+            self.request(Request::RunsList, Tag::Recent);
         }
         // Checked once at start for the attention markers, then only while the
         // Health screen is open: nothing probes the system on a timer.
@@ -328,7 +319,6 @@ impl App {
             Event::Run(s) => {
                 upsert_run(&mut self.recent, &s);
                 self.recent.truncate(50);
-                self.hist.on_run(&s);
                 for v in &mut self.nav {
                     if let View::Run(r) = v {
                         r.on_summary(&s);
@@ -347,7 +337,6 @@ impl App {
                         r.on_step(step.clone());
                     }
                 }
-                self.hist.on_step(run_id, &step);
             }
             Event::Approval(a) => {
                 self.waiting.retain(|w| !(w.run_id == a.run_id && w.step_index == a.step_index));
@@ -387,10 +376,14 @@ impl App {
                     p.git = Some(git);
                 }
             }
-            Event::Projects => self.schedule_projects(),
+            // Runs came or went (a window opened or closed): refresh both lists.
+            Event::Projects => {
+                self.schedule_projects();
+                self.refetch_recent_at.get_or_insert(Instant::now() + Duration::from_millis(250));
+            }
             Event::Config(c) => {
                 if !c.ok {
-                    self.toast("config is invalid; the previous config stays active (see 3 health)", Level::Error);
+                    self.toast("config is invalid; the previous config stays active (see 2 health)", Level::Error);
                 } else {
                     self.toast("config reloaded", Level::Info);
                 }
@@ -398,31 +391,15 @@ impl App {
                 self.request(Request::HealthGet, Tag::Health);
             }
             Event::Log(chunk) => {
-                let mut gap = None;
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == chunk.run
                     {
-                        gap = r.on_log(&chunk);
+                        r.on_log(&chunk);
                     }
                 }
-                if let Some(from) = gap {
-                    self.request(
-                        Request::LogRead { run: chunk.run, step: chunk.step, from_offset: from },
-                        Tag::Log { run: chunk.run, step: chunk.step },
-                    );
-                }
             }
-            Event::ServiceLog { project, service, data } => {
-                if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == &project && s == &service) {
-                    self.dash.log.feed(&data);
-                }
-                if let Some(Overlay::Text(t)) = &mut self.overlay
-                    && t.follow_service.as_ref().is_some_and(|(p, s)| p == &project && s == &service)
-                {
-                    t.view.feed(&data);
-                }
-            }
+            Event::ServiceLog { project, service, data } => self.on_service_log(&project, &service, &data),
         }
     }
 
@@ -440,8 +417,6 @@ impl App {
                     self.dash.focus = dashboard::Focus::Banner;
                 }
             }
-            (Tag::History { page }, Ok(Response::Runs(p))) => self.hist.on_page(page, p),
-            (Tag::HistoryDetail(id), Ok(Response::Run(d))) => self.hist.on_detail(id, d),
             (Tag::Health, Ok(Response::Health(h))) => {
                 self.config = Some(h.config.clone());
                 self.health = Some(h);
@@ -455,60 +430,27 @@ impl App {
                         reads.extend(r.on_detail(d.clone()));
                     }
                 }
-                for (run, step, from) in reads {
-                    self.request(Request::LogRead { run, step, from_offset: from }, Tag::Log { run, step });
+                for (run, step) in reads {
+                    self.request(Request::LogRead { run, step }, Tag::Log { run, step });
                 }
             }
-            (Tag::Log { run, step }, Ok(Response::Log(chunk))) => {
-                let mut more = None;
+            (Tag::Log { run, .. }, Ok(Response::Log(chunk))) => {
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == run
                     {
-                        more = r.on_log_read(step, &chunk);
+                        r.on_log(&chunk);
                     }
                 }
-                if let Some(from) = more {
-                    self.request(Request::LogRead { run, step, from_offset: from }, Tag::Log { run, step });
-                }
             }
-            (Tag::ServiceLog { project, service }, Ok(Response::Text { text, .. })) => {
-                if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == &project && s == &service) {
-                    let lines: Vec<&str> = text.lines().collect();
-                    let tail = lines[lines.len().saturating_sub(dashboard::LOG_LINES)..].join("\n");
-                    let tail = tail.trim_start_matches('\n');
-                    self.dash.log.reset();
-                    if !tail.is_empty() {
-                        self.dash.log.feed(tail);
-                        self.dash.log.feed("\n");
-                    }
-                    self.dash.log.loading = false;
-                }
+            (Tag::ServiceLog { project, service }, Ok(Response::Text { text })) => {
+                self.on_service_log(&project, &service, &text);
+                self.dash.log.loading = false;
             }
-            (Tag::FullLog, Ok(Response::Text { text, path })) => {
+            (Tag::FullLog, Ok(Response::Text { text })) => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {
-                    t.view.reset();
-                    if text.is_empty() {
-                        t.view.feed("(no output yet)\n");
-                    } else {
-                        t.view.feed(&text);
-                    }
+                    t.view.replace(if text.is_empty() { "(no output yet)\n" } else { &text });
                     t.view.loading = false;
-                    if let Some(p) = path {
-                        t.subtitle = p;
-                    }
-                }
-            }
-            (Tag::Diff, Ok(Response::Text { text, path })) => {
-                if let Some(Overlay::Text(t)) = &mut self.overlay {
-                    t.view.reset();
-                    t.view.feed(&colorize_diff(&text));
-                    t.view.loading = false;
-                    t.view.follow = false;
-                    t.view.scroll_up(usize::MAX / 2);
-                    if let Some(p) = path {
-                        t.subtitle = p;
-                    }
                 }
             }
             (Tag::Start, Ok(Response::RunStarted { id })) => {
@@ -553,11 +495,11 @@ impl App {
                     self.toast(e.message, Level::Error);
                 }
             }
-            (Tag::Decide, Ok(_)) => self.toast("decision recorded", Level::Success),
+            (Tag::Decide, Ok(_)) => self.toast("decision sent", Level::Success),
             (Tag::Cancel, Ok(_)) => self.toast("cancel requested", Level::Info),
             (Tag::Service, Ok(Response::Text { text, .. })) => self.toast(text, Level::Success),
             (Tag::Service, Ok(_)) => {}
-            (Tag::FullLog | Tag::Diff, Err(e)) => {
+            (Tag::FullLog, Err(e)) => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {
                     t.view.reset();
                     t.view.feed(&format!("\x1b[31m{}\x1b[0m\n", e.message));
@@ -576,6 +518,22 @@ impl App {
             (Tag::Run(_), Err(e)) => self.toast(e.message, Level::Error),
             (_, Err(e)) => self.toast(e.message, Level::Error),
             (_, Ok(_)) => {}
+        }
+    }
+
+    /// A service window's whole output arrived: the dashboard shows its last
+    /// lines, the full-log overlay all of it.
+    fn on_service_log(&mut self, project: &str, service: &str, text: &str) {
+        if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == project && s == service) {
+            let lines: Vec<&str> = text.lines().collect();
+            let tail = lines[lines.len().saturating_sub(dashboard::LOG_LINES)..].join("\n");
+            let tail = tail.trim_start_matches('\n');
+            self.dash.log.replace(&if tail.is_empty() { String::new() } else { format!("{tail}\n") });
+        }
+        if let Some(Overlay::Text(t)) = &mut self.overlay
+            && t.follow_service.as_ref().is_some_and(|(p, s)| p == project && s == service)
+        {
+            t.view.replace(text);
         }
     }
 
@@ -605,11 +563,6 @@ impl App {
             self.sync_subscription();
             return;
         }
-        // Text input on the history screen owns the keyboard.
-        if matches!(self.top(), View::History) && self.hist.editing {
-            history::key(self, k);
-            return;
-        }
         match k.code {
             KeyCode::Char('q') => {
                 self.quit = true;
@@ -625,11 +578,6 @@ impl App {
                 return;
             }
             KeyCode::Char('2') => {
-                self.nav = vec![View::History];
-                self.sync_subscription();
-                return;
-            }
-            KeyCode::Char('3') => {
                 self.nav = vec![View::Health];
                 self.request(Request::HealthGet, Tag::Health);
                 self.sync_subscription();
@@ -645,7 +593,6 @@ impl App {
             View::Dashboard => dashboard::key(self, k),
             View::Project(_) => project::key(self, k),
             View::Run(_) => run_view::key(self, k),
-            View::History => history::key(self, k),
             View::Health => {
                 if k.code == KeyCode::Char('r') {
                     self.request(Request::HealthGet, Tag::Health);
@@ -721,34 +668,4 @@ pub fn upsert_run(list: &mut Vec<RunSummary>, s: &RunSummary) {
             list.sort_by_key(|r| std::cmp::Reverse(r.id));
         }
     }
-}
-
-/// Adds colour to a unified diff for the viewer.
-pub fn colorize_diff(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + text.len() / 4);
-    for line in text.lines() {
-        let code = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff ") || line.starts_with("index ") {
-            "1"
-        } else if line.starts_with('+') {
-            "32"
-        } else if line.starts_with('-') {
-            "31"
-        } else if line.starts_with("@@") {
-            "36"
-        } else if line.starts_with('#') {
-            "33"
-        } else {
-            ""
-        };
-        if code.is_empty() {
-            out.push_str(line);
-        } else {
-            out.push_str(&format!("\x1b[{code}m{line}\x1b[0m"));
-        }
-        out.push('\n');
-    }
-    if out.is_empty() {
-        out.push_str("(empty diff)\n");
-    }
-    out
 }

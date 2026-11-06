@@ -19,7 +19,7 @@ use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
 use app::{App, Conn, Level, Msg, Overlay, View};
-use screens::{dashboard, dialog, health, history, project, run_view};
+use screens::{dashboard, dialog, health, project, run_view};
 use widgets::*;
 
 /// Below this size the TUI shows a "terminal too small" message (§10.1).
@@ -128,7 +128,7 @@ fn draw(app: &mut App, f: &mut Frame) {
     match &app.conn {
         Conn::Connected => draw_view(app, f, body),
         Conn::Connecting => {
-            f.render_widget(para(vec![Line::styled(" opening GroundControl's state…", theme::muted())]), body);
+            f.render_widget(para(vec![Line::styled(" starting…", theme::muted())]), body);
         }
         Conn::Failed(e) => draw_failed(f, body, e),
     }
@@ -143,7 +143,6 @@ fn draw_view(app: &mut App, f: &mut Frame, area: Rect) {
         View::Dashboard => dashboard::draw(app, f, area),
         View::Project(_) => project::draw(app, f, area),
         View::Run(_) => run_view::draw(app, f, area),
-        View::History => history::draw(app, f, area),
         View::Health => health::draw(app, f, area),
     }
 }
@@ -151,7 +150,7 @@ fn draw_view(app: &mut App, f: &mut Frame, area: Rect) {
 fn draw_failed(f: &mut Frame, area: Rect, detail: &str) {
     let r = centered(area, 84, 8);
     clear(f, r);
-    let inner = framed_alert(f, r, "Cannot open GroundControl's state", false);
+    let inner = framed_alert(f, r, "GroundControl could not start", false);
     let w = inner.width as usize;
     let lines = vec![
         Line::raw(""),
@@ -174,8 +173,7 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
     let tab = bar.add_modifier(Modifier::BOLD);
     f.render_widget(Block::default().style(bar), area);
     let root = match app.nav.first() {
-        Some(View::History) => 2,
-        Some(View::Health) => 3,
+        Some(View::Health) => 2,
         _ => 1,
     };
     let crumbs: Vec<String> = app
@@ -189,7 +187,7 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
         })
         .collect();
     let mut left = vec![Span::styled(" groundcontrol ", tab)];
-    for (n, name) in [(1, "dashboard"), (2, "history"), (3, "health")] {
+    for (n, name) in [(1, "dashboard"), (2, "health")] {
         let mut label = format!(" {n} {name}");
         if n == root && !crumbs.is_empty() {
             label.push_str(&format!(" › {}", crumbs.join(" › ")));
@@ -202,7 +200,7 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
     }
     let mut right = Vec::new();
     if !matches!(app.conn, Conn::Connected) {
-        right.push(Span::styled("state unavailable   ", bar));
+        right.push(Span::styled("not started   ", bar));
     }
     if let Some(c) = &app.config {
         let t = c.loaded_at.map(fmt_clock).unwrap_or_default();
@@ -245,7 +243,6 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
                     View::Dashboard => dashboard::hints(app),
                     View::Project(_) => project::hints(app),
                     View::Run(_) => run_view::hints(app),
-                    View::History => history::hints(app),
                     View::Health => health::hints(),
                 };
                 let right = match app.top() {
@@ -317,11 +314,11 @@ fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let sections: [(&str, &[(&str, &str)]); 6] = [
+    let sections: [(&str, &[(&str, &str)]); 5] = [
         (
             "global",
             &[
-                ("1 2 3", "dashboard, history, health"),
+                ("1 2", "dashboard, health"),
                 ("tab / shift+tab", "next / previous pane"),
                 ("↑↓ / j k", "move selection"),
                 ("enter", "open the selection"),
@@ -367,16 +364,6 @@ fn draw_help(f: &mut Frame, area: Rect) {
                 ("y / Y", "copy command / output"),
                 ("a / x", "approve (confirm if protected) / reject"),
                 ("c", "cancel run"),
-            ],
-        ),
-        (
-            "history",
-            &[
-                ("/", "filter: project: pipeline: env: status:"),
-                ("s", "cycle status filter"),
-                ("ctrl+u", "clear filter"),
-                ("enter", "open run"),
-                ("D", "view saved diff"),
             ],
         ),
     ];

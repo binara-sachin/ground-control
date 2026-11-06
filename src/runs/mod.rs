@@ -1,7 +1,10 @@
-//! Pipeline runs (docs/architecture.md, "Pipeline runs"). `start` validates and records a run, then opens the tmux window
-//! `gc-<project>:run-<id>`, whose `groundcontrol run-exec <id>` worker
-//! executes it. Approvals and cancel go through the store, which the worker
-//! polls. Also: inputs, environments, step env, outputs and dry runs (§6.1–§6.4, §8).
+//! Pipeline runs (docs/architecture.md, "Pipeline runs"). `start` validates
+//! a run and opens its window in the `ground-control` tmux session, whose
+//! `groundcontrol run-exec` worker executes it. A run's id is its window's id,
+//! and everything known about it lives in that window's `@gc_*` options: the
+//! worker publishes its progress there, and the TUI asks for a cancel or
+//! answers an approval there. Nothing is written to disk. Also: inputs,
+//! environments, step env, outputs and dry runs (§6.1–§6.4, §8).
 
 pub mod worker;
 
@@ -15,23 +18,16 @@ use regex::Regex;
 use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
 use crate::protocol::*;
-use crate::store::{NewRun, NewStep};
-use crate::tmux::NewWindow;
+use crate::tmux::{NewWindow, Window, decode, encode, target};
 
 pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
-/// A run whose worker has not taken the project lock this long after the run
-/// was recorded, and whose window is gone, is treated as interrupted.
-const WORKER_START_GRACE_SECS: Timestamp = 15;
+/// `@gc_kind` of a run window.
+pub const KIND: &str = "run";
 
 pub type ReqError = (ErrorCode, String);
 
 pub fn err(code: ErrorCode, msg: impl Into<String>) -> ReqError {
     (code, msg.into())
-}
-
-/// Window name for a run. Services use `svc-<id>`.
-pub fn window_name(run_id: i64) -> String {
-    format!("run-{run_id}")
 }
 
 /// Validates inputs against the pipeline's declarations, applying defaults.
@@ -184,7 +180,7 @@ pub fn fmt_secs(s: u64) -> String {
     }
 }
 
-/// Checks that refuse a run whoever executes it (§8.4, §7.2 log location).
+/// Checks that refuse a run whoever executes it (§8.4).
 pub async fn common_blockers(project: &Project) -> Vec<String> {
     let mut blockers = Vec::new();
     if let Some(reason) = &project.disabled {
@@ -194,44 +190,7 @@ pub async fn common_blockers(project: &Project) -> Vec<String> {
     if let Err(e) = crate::git::check_remote(&project.path, project.remote.as_deref()).await {
         blockers.push(e);
     }
-    if project.sensitive && !crate::git::state_dir_ignored(&project.path).await {
-        blockers.push(format!(
-            "{} is sensitive but {}/ is not gitignored; add it to .gitignore before running",
-            project.id,
-            crate::paths::REPO_STATE_DIR
-        ));
-    }
     blockers
-}
-
-/// The rows a run's steps start with.
-pub fn new_steps(pipeline: &Pipeline) -> Vec<NewStep> {
-    pipeline
-        .steps
-        .iter()
-        .map(|s| {
-            let (command, cwd) = match &s.kind {
-                StepKind::Run { run, cwd, .. } => (run.clone(), cwd.clone()),
-                StepKind::Approve { message } => (message.clone(), None),
-                StepKind::Service { action, target } => (format!("{} {}", action.as_str(), target), None),
-            };
-            NewStep { name: s.label(), kind: StepKindName::parse(s.kind_str()), command, cwd }
-        })
-        .collect()
-}
-
-/// Saves `git diff HEAD` and the untracked list of a dirty tree. Returns the
-/// path and the summary line.
-pub async fn save_diff(project: &Project, run_id: i64, status: &GitStatus) -> std::io::Result<(PathBuf, String)> {
-    let diff = crate::git::capture_diff(&project.path).await;
-    let path = crate::paths::diff_path(&project.data_root(), run_id);
-    let changed = status.staged + status.modified + status.conflicted;
-    let summary = format!("{changed} file{} changed, {} untracked", if changed == 1 { "" } else { "s" }, status.untracked);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, diff)?;
-    Ok((path, summary))
 }
 
 pub fn dry_run_plan(
@@ -301,29 +260,218 @@ pub fn dry_run_plan(
     }
 }
 
-fn run_lock_path(ctx: &Ctx, project: &str) -> PathBuf {
-    crate::paths::run_lock_path(&ctx.state_dir, project)
+// ── run state in window options ─────────────────────────────────────────
+
+/// One step's progress, as the worker publishes it in `@gc_steps`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StepState {
+    pub status: Option<StepStatus>,
+    pub exit_code: Option<i32>,
+    pub started_at: Option<Timestamp>,
+    pub finished_at: Option<Timestamp>,
 }
 
-/// The project's active run, if its worker holds the project lock.
-pub fn busy_run(ctx: &Ctx, project: &str) -> Option<i64> {
-    if !crate::lock::is_held(&run_lock_path(ctx, project)).unwrap_or(false) {
-        return None;
+/// `status:exit:started:finished` per step, joined by `,`.
+pub fn encode_steps(steps: &[StepState]) -> String {
+    let n = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_default();
+    steps
+        .iter()
+        .map(|s| {
+            format!(
+                "{}:{}:{}:{}",
+                s.status.map(StepStatus::as_str).unwrap_or("pending"),
+                n(s.exit_code.map(i64::from)),
+                n(s.started_at),
+                n(s.finished_at)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub fn decode_steps(s: &str) -> Vec<StepState> {
+    s.split(',')
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            let mut it = e.split(':');
+            let status = it.next().map(StepStatus::parse);
+            let mut num = || it.next().and_then(|v| v.parse::<i64>().ok());
+            StepState { status, exit_code: num().map(|c| c as i32), started_at: num(), finished_at: num() }
+        })
+        .collect()
+}
+
+/// `key=<encoded value>` per output, joined by `,`.
+pub fn encode_outputs(outputs: &[(String, String, usize)]) -> String {
+    outputs.iter().map(|(k, v, i)| format!("{k}={i}={}", encode(v))).collect::<Vec<_>>().join(",")
+}
+
+pub fn decode_outputs(s: &str) -> Vec<OutputInfo> {
+    s.split(',')
+        .filter_map(|e| {
+            let mut it = e.splitn(3, '=');
+            let key = it.next()?.to_string();
+            let step_index = it.next()?.parse().ok();
+            Some(OutputInfo { key, value: decode(it.next()?), step_index })
+        })
+        .collect()
+}
+
+/// The run's approval, as published in `@gc_approval`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalState {
+    pub step: usize,
+    pub status: ApprovalStatus,
+    pub requested_at: Timestamp,
+    pub expires_at: Timestamp,
+    pub decided_at: Option<Timestamp>,
+    pub message: String,
+}
+
+/// `step:status:requested:expires:decided:<encoded message>`.
+pub fn encode_approval(a: &ApprovalState) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        a.step,
+        a.status.as_str(),
+        a.requested_at,
+        a.expires_at,
+        a.decided_at.map(|t| t.to_string()).unwrap_or_default(),
+        encode(&a.message)
+    )
+}
+
+pub fn decode_approval(s: &str) -> Option<ApprovalState> {
+    let mut it = s.splitn(6, ':');
+    Some(ApprovalState {
+        step: it.next()?.parse().ok()?,
+        status: ApprovalStatus::parse(it.next()?),
+        requested_at: it.next()?.parse().ok()?,
+        expires_at: it.next()?.parse().ok()?,
+        decided_at: it.next()?.parse().ok(),
+        message: decode(it.next()?),
+    })
+}
+
+/// The run windows, oldest first.
+pub fn run_windows(windows: &[Window]) -> Vec<&Window> {
+    let mut v: Vec<&Window> = windows.iter().filter(|w| w.opt("kind") == Some(KIND)).collect();
+    v.sort_by_key(|w| w.id);
+    v
+}
+
+fn run_status(w: &Window) -> (RunStatus, Option<String>) {
+    let status = w.opt("state").and_then(RunStatus::parse).unwrap_or(RunStatus::Running);
+    if w.dead && status.is_active() {
+        // The worker died without publishing an end (killed hard).
+        return (RunStatus::Cancelled, Some("worker exited unexpectedly".into()));
     }
-    let active = ctx.db(|s| s.active_runs()).unwrap_or_default();
-    Some(active.into_iter().rev().find(|(_, p, _)| p == project).map(|(id, _, _)| id).unwrap_or(0))
+    (status, w.opt("reason").map(str::to_string))
 }
 
-async fn blockers(ctx: &Ctx, project: &Project) -> Vec<String> {
-    let mut b = common_blockers(project).await;
-    if let Some(id) = busy_run(ctx, &project.id) {
-        b.push(format!("{} already has run #{id} in progress", project.id));
+pub fn summary(w: &Window) -> RunSummary {
+    let (status, reason) = run_status(w);
+    let num = |k: &str| w.opt(k).and_then(|v| v.parse::<i64>().ok());
+    RunSummary {
+        id: w.id,
+        project: w.opt("project").unwrap_or_default().to_string(),
+        pipeline: w.opt("pipeline").unwrap_or_default().to_string(),
+        env: w.opt("env").map(str::to_string),
+        status,
+        reason,
+        branch: w.opt("branch").map(str::to_string),
+        commit: w.opt("commit").map(str::to_string),
+        dirty: w.opt("dirty") == Some("1"),
+        unpushed: num("unpushed").is_some_and(|n| n > 0),
+        protected: w.opt("protected") == Some("1"),
+        started_at: num("started").unwrap_or(0),
+        finished_at: num("finished"),
     }
-    b
 }
 
-/// Validates and records a run, then opens its worker's window. One run per
-/// project: a second start is refused, never queued.
+/// A run's detail. Step names and commands come from the config; their
+/// progress from the window.
+pub fn detail(config: &Config, w: &Window) -> RunDetail {
+    let s = summary(w);
+    let states = decode_steps(w.opt("steps").unwrap_or(""));
+    let outline: Vec<(String, StepKindName, String, Option<String>)> = config
+        .project(&s.project)
+        .and_then(|p| p.pipeline(&s.pipeline))
+        .map(|pl| {
+            pl.steps
+                .iter()
+                .map(|st| {
+                    let (command, cwd) = match &st.kind {
+                        StepKind::Run { run, cwd, .. } => (run.clone(), cwd.clone()),
+                        StepKind::Approve { message } => (message.clone(), None),
+                        StepKind::Service { action, target } => (format!("{} {target}", action.as_str()), None),
+                    };
+                    (st.label(), StepKindName::parse(st.kind_str()), command, cwd)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let n = outline.len().max(states.len());
+    let steps = (0..n)
+        .map(|i| {
+            let (name, kind, command, cwd) =
+                outline.get(i).cloned().unwrap_or_else(|| (format!("step {}", i + 1), StepKindName::Run, String::new(), None));
+            let st = states.get(i).cloned().unwrap_or_default();
+            let mut status = st.status.unwrap_or(StepStatus::Pending);
+            if w.dead && matches!(status, StepStatus::Running | StepStatus::Waiting) {
+                status = StepStatus::Cancelled;
+            }
+            StepInfo {
+                index: i,
+                name,
+                kind,
+                command,
+                cwd,
+                status,
+                exit_code: st.exit_code,
+                started_at: st.started_at,
+                finished_at: st.finished_at,
+                has_log: st.started_at.is_some(),
+            }
+        })
+        .collect();
+    let approvals = w
+        .opt("approval")
+        .and_then(decode_approval)
+        .map(|a| {
+            let status = if w.dead && a.status == ApprovalStatus::Pending { ApprovalStatus::Cancelled } else { a.status };
+            vec![ApprovalInfo {
+                run_id: s.id,
+                step_index: a.step,
+                project: s.project.clone(),
+                pipeline: s.pipeline.clone(),
+                env: s.env.clone(),
+                protected: s.protected,
+                message: a.message,
+                status,
+                requested_at: a.requested_at,
+                decided_at: a.decided_at,
+                expires_at: a.expires_at,
+            }]
+        })
+        .unwrap_or_default();
+    RunDetail {
+        inputs: w.opt("inputs").and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default(),
+        steps,
+        approvals,
+        outputs: decode_outputs(w.opt("outputs").unwrap_or("")),
+        unpushed_count: w.opt("unpushed").and_then(|v| v.parse().ok()),
+        summary: s,
+    }
+}
+
+/// The project's run in progress: a live run window whose run is active.
+pub fn busy_run(windows: &[Window], project: &str) -> Option<i64> {
+    run_windows(windows).into_iter().find(|w| !w.dead && w.opt("project") == Some(project) && run_status(w).0.is_active()).map(|w| w.id)
+}
+
+/// Validates a run and opens its worker's window. One run per project: a
+/// second start is refused, never queued.
 pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result<Response, ReqError> {
     let project =
         config.project(&params.project).ok_or_else(|| err(ErrorCode::NotFound, format!("unknown project `{}`", params.project)))?;
@@ -335,115 +483,95 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
     let inputs = resolve_inputs(pipeline, &params.inputs).map_err(|e| err(ErrorCode::BadRequest, e))?;
     let protected = pipeline.is_protected(project, env);
 
+    let windows = ctx.tmux.windows().await.map_err(|e| err(ErrorCode::Internal, e))?;
+    let mut blockers = common_blockers(project).await;
+    if let Some(id) = busy_run(&windows, &project.id) {
+        blockers.push(format!("{} already has run #{id} in progress", project.id));
+    }
     if params.dry_run {
-        let b = blockers(ctx, project).await;
-        return Ok(Response::DryRun(dry_run_plan(config, project, pipeline, env, inputs, protected, b)));
+        return Ok(Response::DryRun(dry_run_plan(config, project, pipeline, env, inputs, protected, blockers)));
     }
     if protected && !params.confirmed {
         return Err(err(ErrorCode::Refused, "protected run needs the confirmation dialog"));
     }
-    let b = blockers(ctx, project).await;
-    if !b.is_empty() {
-        return Err(err(ErrorCode::Refused, b.join("; ")));
+    if !blockers.is_empty() {
+        return Err(err(ErrorCode::Refused, blockers.join("; ")));
     }
 
+    // The project's earlier failed runs keep their dead window for reading
+    // until this one replaces them.
+    for w in run_windows(&windows) {
+        if w.dead && w.opt("project") == Some(&project.id) {
+            let _ = ctx.tmux.kill_window(w.id).await;
+        }
+    }
     let snap = crate::git::snapshot(&project.path).await;
-    let new = NewRun {
-        project: &project.id,
-        pipeline: &pipeline.id,
-        env,
-        inputs: &inputs,
-        protected,
-        branch: snap.branch.as_deref(),
-        commit: snap.commit.as_deref(),
-        dirty: snap.dirty,
-        unpushed: snap.unpushed.is_some_and(|n| n > 0),
-        unpushed_count: snap.unpushed,
-    };
-    let run_id = ctx.db(|s| s.insert_run(&new, &new_steps(pipeline), now())).map_err(|e| err(ErrorCode::Internal, e))?;
-    if snap.dirty {
-        match save_diff(project, run_id, &snap.status).await {
-            Ok((path, summary)) => {
-                let _ = ctx.db(|s| s.set_run_diff(run_id, &path.to_string_lossy(), &summary));
-            }
-            // The run still goes ahead; its record says the diff is missing.
-            Err(e) => {
-                let _ = ctx.db(|s| s.set_run_diff(run_id, "", &format!("diff not saved: {e}")));
-            }
-        }
-    }
-
-    // Earlier failed runs keep their dead window for reading; the next run replaces them.
-    if let Ok(windows) = ctx.tmux.list_windows(&project.id).await {
-        for w in windows.iter().filter(|w| w.dead && w.name.starts_with("run-")) {
-            let _ = ctx.tmux.kill_window(&project.id, &w.name).await;
-        }
-    }
-    let argv = [ctx.exe.to_string_lossy().into_owned(), "run-exec".into(), run_id.to_string()];
-    let name = window_name(run_id);
-    let opened = ctx
+    let bit = |b: bool| if b { "1" } else { "0" }.to_string();
+    let initial = StepState { status: Some(StepStatus::Pending), ..Default::default() };
+    let options = [
+        ("kind", KIND.to_string()),
+        ("project", project.id.clone()),
+        ("pipeline", pipeline.id.clone()),
+        ("env", env.unwrap_or("").to_string()),
+        ("inputs", serde_json::to_string(&inputs).unwrap_or_else(|_| "{}".into())),
+        ("protected", bit(protected)),
+        ("branch", snap.branch.clone().unwrap_or_default()),
+        ("commit", snap.commit.clone().unwrap_or_default()),
+        ("dirty", bit(snap.dirty)),
+        ("unpushed", snap.unpushed.map(|n| n.to_string()).unwrap_or_default()),
+        ("started", now().to_string()),
+        ("state", RunStatus::Running.as_str().to_string()),
+        ("steps", encode_steps(&vec![initial; pipeline.steps.len()])),
+    ];
+    let argv = [ctx.exe.to_string_lossy().into_owned(), "run-exec".into()];
+    let name = format!("{}/{}", project.id, pipeline.id);
+    let id = ctx
         .tmux
-        .new_window(&NewWindow { project: &project.id, name: &name, cwd: &project.path, argv: &argv, env: &ctx.window_env() })
-        .await;
-    if let Err(e) = opened {
-        let msg = format!("cannot open its tmux window: {e}");
-        let _ = ctx.db(|s| s.interrupt_run(run_id, RunStatus::Failed, &msg, now()));
-        return Err(err(ErrorCode::Internal, msg));
+        .new_window(&NewWindow { name: &name, cwd: &project.path, argv: &argv, env: &ctx.window_env(), options: &options })
+        .await
+        .map_err(|e| err(ErrorCode::Internal, format!("cannot open the run's tmux window: {e}")))?;
+    Ok(Response::RunStarted { id })
+}
+
+async fn active_window(ctx: &Ctx, id: i64) -> Result<Window, ReqError> {
+    match ctx.tmux.window(id).await.map_err(|e| err(ErrorCode::Internal, e))? {
+        Some(w) if w.opt("kind") == Some(KIND) && !w.dead && run_status(&w).0.is_active() => Ok(w),
+        _ => Err(err(ErrorCode::NotFound, format!("run #{id} is not active"))),
     }
-    Ok(Response::RunStarted { id: run_id })
 }
 
 /// Asks a run's worker to cancel it.
-pub fn cancel(ctx: &Ctx, id: i64) -> Result<Response, ReqError> {
-    match ctx.db(|s| s.request_run_cancel(id)) {
-        Ok(true) => Ok(Response::Ok),
-        Ok(false) => Err(err(ErrorCode::NotFound, format!("run #{id} is not active"))),
-        Err(e) => Err(err(ErrorCode::Internal, e)),
-    }
+pub async fn cancel(ctx: &Ctx, id: i64) -> Result<Response, ReqError> {
+    active_window(ctx, id).await?;
+    ctx.tmux.request(id, &[("cancel", "1".into())]).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    Ok(Response::Ok)
 }
 
-/// Records an approval decision; the waiting worker polls for it. The first
-/// answer wins.
-pub fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<Response, ReqError> {
-    let approval = ctx
-        .db(|s| s.approval(id, step))
-        .map_err(|e| err(ErrorCode::Internal, e))?
+/// Records an approval decision on the run's window; the waiting worker polls
+/// for it. The first answer wins.
+pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<Response, ReqError> {
+    let w = active_window(ctx, id).await?;
+    let approval = w
+        .opt("approval")
+        .and_then(decode_approval)
+        .filter(|a| a.step == step)
         .ok_or_else(|| err(ErrorCode::NotFound, format!("run #{id} has no approval at step {}", step + 1)))?;
-    if decision == Decision::Approve && approval.protected && !confirmed {
+    if decision == Decision::Approve && w.opt("protected") == Some("1") && !confirmed {
         return Err(err(ErrorCode::Refused, "approving a protected run needs the confirm keypress"));
     }
-    let status = match decision {
+    let existing = ctx.tmux.options(&target(id), &["decision"]).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    if approval.status != ApprovalStatus::Pending || !existing[0].is_empty() {
+        // `@gc_decision` is `<status>:<step>`; show only the status.
+        let recorded = existing[0].split(':').next().unwrap_or_default();
+        let already = if recorded.is_empty() { approval.status.as_str() } else { recorded };
+        return Err(err(ErrorCode::AlreadyDecided, format!("already decided: {already}")));
+    }
+    let value = match decision {
         Decision::Approve => ApprovalStatus::Approved,
         Decision::Reject => ApprovalStatus::Rejected,
     };
-    match ctx.db(|s| s.decide_approval(id, step, status, now())) {
-        Ok(Ok(())) => Ok(Response::Ok),
-        Ok(Err(existing)) => Err(err(ErrorCode::AlreadyDecided, format!("already decided: {}", existing.as_str()))),
-        Err(e) => Err(err(ErrorCode::Internal, e)),
-    }
-}
-
-/// Ends active runs whose worker is gone (its window was closed hard, the
-/// Mac rebooted, or it crashed). Returns their ids.
-pub async fn reap(ctx: &Ctx) -> Vec<i64> {
-    let mut ended = Vec::new();
-    for (id, project, started_at) in ctx.db(|s| s.active_runs()).unwrap_or_default() {
-        if now() - started_at < WORKER_START_GRACE_SECS {
-            continue;
-        }
-        if crate::lock::is_held(&run_lock_path(ctx, &project)).unwrap_or(false) {
-            continue;
-        }
-        if let Ok(Some(w)) = ctx.tmux.window(&project, &window_name(id)).await
-            && !w.dead
-        {
-            continue;
-        }
-        if ctx.db(|s| s.interrupt_run(id, RunStatus::Cancelled, "worker exited unexpectedly", now())).is_ok() {
-            ended.push(id);
-        }
-    }
-    ended
+    ctx.tmux.request(id, &[("decision", format!("{}:{step}", value.as_str()))]).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    Ok(Response::Ok)
 }
 
 #[cfg(test)]
@@ -484,6 +612,30 @@ projects:
     fn message_expansion() {
         let vars = BTreeMap::from([("GC_ENV".to_string(), "prod".to_string()), ("INPUT_PR".to_string(), "42".to_string())]);
         assert_eq!(expand_message("Merge PR #$INPUT_PR on ${GC_ENV}? $UNKNOWN", &vars), "Merge PR #42 on prod? $UNKNOWN");
+    }
+
+    #[test]
+    fn state_encodings_round_trip() {
+        let steps = vec![
+            StepState { status: Some(StepStatus::Succeeded), exit_code: Some(0), started_at: Some(10), finished_at: Some(12) },
+            StepState { status: Some(StepStatus::Running), exit_code: None, started_at: Some(12), finished_at: None },
+            StepState { status: Some(StepStatus::Pending), ..Default::default() },
+        ];
+        assert_eq!(decode_steps(&encode_steps(&steps)), steps);
+        let outs = vec![("bm".to_string(), "a=b,c|d\nx".to_string(), 0)];
+        assert_eq!(
+            decode_outputs(&encode_outputs(&outs)),
+            vec![OutputInfo { key: "bm".into(), value: "a=b,c|d\nx".into(), step_index: Some(0) }]
+        );
+        let a = ApprovalState {
+            step: 1,
+            status: ApprovalStatus::Pending,
+            requested_at: 5,
+            expires_at: 9,
+            decided_at: None,
+            message: "Go: now?".into(),
+        };
+        assert_eq!(decode_approval(&encode_approval(&a)), Some(a));
     }
 
     #[test]

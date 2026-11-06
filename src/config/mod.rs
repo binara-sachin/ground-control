@@ -55,7 +55,6 @@ pub struct Project {
     /// `path` with `~` expanded.
     pub path: PathBuf,
     pub remote: Option<String>,
-    pub sensitive: bool,
     pub environments: Vec<Environment>,
     pub services: Vec<Service>,
     pub groups: Vec<Group>,
@@ -234,9 +233,6 @@ impl Project {
     }
     pub fn environment(&self, name: &str) -> Option<&Environment> {
         self.environments.iter().find(|e| e.name == name)
-    }
-    pub fn data_root(&self) -> PathBuf {
-        crate::paths::project_data_root(&self.path, self.sensitive)
     }
     pub fn resolve_dir(&self, cwd: Option<&str>) -> PathBuf {
         match cwd {

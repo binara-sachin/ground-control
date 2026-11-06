@@ -94,10 +94,7 @@ pub fn load_log(app: &mut App, force: bool) {
     app.dash.log.reset();
     if let Some((project, service)) = target {
         app.dash.log.loading = true;
-        app.request(
-            Request::ServiceLog { project: project.clone(), id: service.clone(), max_bytes: 64 * 1024 },
-            Tag::ServiceLog { project, service },
-        );
+        app.request(Request::ServiceLog { project: project.clone(), id: service.clone() }, Tag::ServiceLog { project, service });
     }
     app.sync_subscription();
 }
@@ -111,7 +108,7 @@ pub fn open_full_log(app: &mut App, project: &str, service: &str) {
         view,
         follow_service: Some((project.to_string(), service.to_string())),
     })));
-    app.request(Request::ServiceLog { project: project.into(), id: service.into(), max_bytes: 2 * 1024 * 1024 }, Tag::FullLog);
+    app.request(Request::ServiceLog { project: project.into(), id: service.into() }, Tag::FullLog);
     app.sync_subscription();
 }
 

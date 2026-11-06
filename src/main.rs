@@ -5,9 +5,9 @@ fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => groundcontrol::tui::run(),
-        ["svc-exec", project, service, launch] => {
+        ["svc-exec", project, service] => {
             let code = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt.block_on(groundcontrol::services::worker::run(project, service, launch)),
+                Ok(rt) => rt.block_on(groundcontrol::services::worker::run(project, service)),
                 Err(e) => {
                     eprintln!("groundcontrol: {e}");
                     1
@@ -15,13 +15,9 @@ fn main() -> std::process::ExitCode {
             };
             return std::process::ExitCode::from(code as u8);
         }
-        ["run-exec", id] => {
-            let Ok(id) = id.parse::<i64>() else {
-                eprintln!("groundcontrol: run-exec needs a run id");
-                return std::process::ExitCode::from(2);
-            };
+        ["run-exec"] => {
             let code = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt.block_on(groundcontrol::runs::worker::run(id)),
+                Ok(rt) => rt.block_on(groundcontrol::runs::worker::run()),
                 Err(e) => {
                     eprintln!("groundcontrol: {e}");
                     1
@@ -36,8 +32,8 @@ fn main() -> std::process::ExitCode {
         _ => {
             eprintln!(
                 "usage: groundcontrol                               open the TUI\n       \
-                 groundcontrol svc-exec <project> <service> <launch>   run a service (inside its tmux window)\n       \
-                 groundcontrol run-exec <run-id>                     run a pipeline run (inside its tmux window)"
+                 groundcontrol svc-exec <project> <service>   run a service (inside its tmux window)\n       \
+                 groundcontrol run-exec                       run a pipeline run (inside its tmux window)"
             );
             return std::process::ExitCode::from(2);
         }

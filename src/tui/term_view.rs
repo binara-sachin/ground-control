@@ -1,4 +1,4 @@
-//! Output pane (§10.4): raw step output is fed through a `vt100` parser and
+//! Output pane (§10.4): output captured from a tmux pane is fed through a `vt100` parser and
 //! the parsed screen is drawn, so colours, `\r` progress lines and
 //! box-drawing tables render as in a terminal. 120 columns wide; the pane
 //! scrolls horizontally when narrower.
@@ -21,8 +21,6 @@ pub struct TermView {
     parser: vt100::Parser,
     raw: Vec<u8>,
     rows: u16,
-    /// Bytes of the source stream already fed (log offset).
-    pub offset: u64,
     /// Stick to the newest output.
     pub follow: bool,
     /// Lines scrolled back from the bottom when not following.
@@ -50,7 +48,6 @@ impl TermView {
             parser: vt100::Parser::new(nz(24), nz(COLUMNS), SCROLLBACK),
             raw: Vec::new(),
             rows: 24,
-            offset: 0,
             follow: true,
             scroll: 0,
             hscroll: 0,
@@ -73,6 +70,17 @@ impl TermView {
             let cut = self.raw.len() - MAX_RAW / 2;
             self.raw.drain(..cut);
         }
+    }
+
+    /// Replaces the content with `data`, keeping the scroll position and
+    /// follow mode. Output is re-read whole from the tmux pane, so this is how
+    /// views stay current.
+    pub fn replace(&mut self, data: &str) {
+        let (follow, scroll, hscroll, rows) = (self.follow, self.scroll, self.hscroll, self.rows);
+        *self = TermView::new();
+        self.feed(data);
+        self.resize(rows);
+        (self.follow, self.scroll, self.hscroll) = (follow, scroll, hscroll);
     }
 
     pub fn reset(&mut self) {

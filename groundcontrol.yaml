@@ -12,7 +12,6 @@ projects:
   finance-analyzer:
     path: ~/code/finance-analyzer                     # TODO(§13.6): confirm
     remote: github.com/binara-sachin/finance-analyzer # TODO(§13.6): confirm
-    sensitive: true
     environments:
       prod: { protected: true }
 

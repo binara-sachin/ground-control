@@ -1,5 +1,6 @@
 //! Secret masking (§9.3). Every `env_file` value of 6 or more characters is
-//! replaced with `***` before output reaches a log file or a TUI. The streaming
+//! replaced with `***` before output reaches the tmux pane, and so before any
+//! TUI sees it. The streaming
 //! masker holds back only the shortest tail that could still be the start of a
 //! secret, so a secret split across two chunks is still caught without delaying
 //! ordinary output.

@@ -146,13 +146,13 @@ fn unresolved_references() {
 
 #[test]
 fn unknown_keys_and_types_have_positions() {
-    let src = "projects:\n  app:\n    path: /tmp\n    sensitiv: true\n";
+    let src = "projects:\n  app:\n    path: /tmp\n    remot: x\n";
     let errs = errors(src);
     assert_eq!(errs.len(), 1);
-    assert!(errs[0].message.contains("unknown key `sensitiv`"));
+    assert!(errs[0].message.contains("unknown key `remot`"));
     assert_eq!((errs[0].line, errs[0].col), (4, 5));
-    let errs = errors("projects:\n  app:\n    path: /tmp\n    sensitive: maybe\n");
-    assert_eq!(errs[0].line, 4);
+    let errs = errors("projects:\n  app:\n    path: /tmp\n    environments:\n      prod: { protected: maybe }\n");
+    assert_eq!(errs[0].line, 5);
 }
 
 #[test]

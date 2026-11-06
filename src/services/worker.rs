@@ -1,18 +1,18 @@
-//! `groundcontrol svc-exec <project> <service> <launch>`: runs one service in
-//! the foreground of its tmux window (docs/architecture.md, "Services").
+//! `groundcontrol svc-exec <project> <service>`: runs one service in the
+//! foreground of its tmux window (docs/architecture.md, "Services").
 //!
-//! The worker holds the service lock for its whole life and is the only
-//! writer of the service's row while it does. It releases the lock last,
-//! after the child's process group is gone and the final row is written, so a
-//! new start never races the old process for its port.
+//! The worker publishes the service's state as its window's `@gc_*` options,
+//! in the tmux server's memory. Its window stays alive (not dead) until the
+//! service's process group is gone and the final state is written, so a new
+//! start never races the old process for its port. If an older live window
+//! already runs the same service, the worker closes its own window instead.
 //!
-//! Stopping: the stop-request flag in the store (what the TUI uses), C-c in
-//! the window, SIGTERM, or SIGHUP when the window is closed. All of them end
-//! the child's process group and leave a `stopped` row.
+//! Stopping: the `@gc_stop` option (what the TUI sets), C-c in the window,
+//! SIGTERM, or SIGHUP when the window is closed. All of them end the child's
+//! process group and leave the state `stopped`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
-use std::os::unix::fs::DirBuilderExt;
 use std::time::{Duration, Instant};
 
 use nix::sys::signal::Signal;
@@ -20,15 +20,15 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 
 use super::policy::{self, Next};
-use super::{HEALTH_INTERVAL, HEALTH_START_TIMEOUT, blank_row, health};
+use super::{HEALTH_INTERVAL, HEALTH_START_TIMEOUT, health};
 use crate::config::{Config, Health, Project, Service};
-use crate::logfile::RotatingFile;
 use crate::mask::Masker;
 use crate::process;
 use crate::protocol::{ServiceState, now};
-use crate::store::{Store, StoredService};
+use crate::tmux::Tmux;
 
-const TICK: Duration = Duration::from_millis(250);
+/// How often a starting service's health check is tried.
+const START_CHECK: Duration = Duration::from_millis(300);
 /// A service without a health check counts as healthy once it has stayed up this long.
 const NO_CHECK_GRACE: Duration = Duration::from_millis(700);
 
@@ -71,6 +71,39 @@ pub(crate) async fn tell(msg: &str) {
     }
 }
 
+/// Waits for the TUI to write a request to the worker's window. One `tmux
+/// wait-for` child stays blocked for as long as nothing happens, so an idle
+/// worker starts no processes; the TUI signals the channel after each write.
+pub(crate) struct Waker {
+    tmux: Tmux,
+    channel: String,
+    waiting: Option<Wait>,
+}
+
+/// A blocked `tmux wait-for`.
+type Wait = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+impl Waker {
+    pub(crate) fn new(tmux: Tmux, window: i64) -> Waker {
+        Waker { tmux, channel: crate::tmux::wake_channel(window), waiting: None }
+    }
+
+    /// Resolves when the window has been sent a request. Safe to drop
+    /// unfinished (in a `select!`): the same wait carries on next time.
+    pub(crate) async fn woken(&mut self) {
+        let waiting = self.waiting.get_or_insert_with(|| {
+            let (tmux, channel) = (self.tmux.clone(), self.channel.clone());
+            Box::pin(async move { tmux.wait_for(&channel).await })
+        });
+        let result = waiting.await;
+        self.waiting = None;
+        if result.is_err() {
+            // The tmux server is going away; don't spin.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+}
+
 /// Closes the pane this worker runs in, when it runs in tmux.
 pub(crate) async fn close_own_pane() {
     if let Ok(pane_id) = std::env::var("TMUX_PANE") {
@@ -78,99 +111,124 @@ pub(crate) async fn close_own_pane() {
     }
 }
 
+/// What the worker publishes about the service in its window's options.
+#[derive(Default)]
+struct Published {
+    status: Option<ServiceState>,
+    healthy: bool,
+    pid: Option<i32>,
+    started_at: Option<i64>,
+    restart_count: u32,
+    last_exit_code: Option<i32>,
+    message: Option<String>,
+}
+
 struct Worker {
-    store: Store,
-    row: StoredService,
+    tmux: Tmux,
+    waker: Waker,
+    /// `$TMUX_PANE`: options set on it land on the worker's window.
+    pane: String,
+    project: String,
+    service: String,
+    state: Published,
 }
 
 impl Worker {
-    fn save(&mut self) {
-        if let Err(e) = self.store.save_service(&self.row) {
-            say(&format!("cannot record state: {e}"));
+    async fn save(&mut self) {
+        let r = &self.state;
+        let opt = |v: Option<String>| v.unwrap_or_default();
+        let options = [
+            ("state", r.status.map(|s| s.as_str().to_string()).unwrap_or_default()),
+            ("healthy", if r.healthy { "1" } else { "0" }.to_string()),
+            ("pid", opt(r.pid.map(|p| p.to_string()))),
+            ("started", opt(r.started_at.map(|t| t.to_string()))),
+            ("restarts", r.restart_count.to_string()),
+            ("exit", opt(r.last_exit_code.map(|c| c.to_string()))),
+            ("msg", opt(r.message.clone())),
+        ];
+        if let Err(e) = self.tmux.set_options(&self.pane, &options).await {
+            say(&format!("cannot publish state: {e}"));
         }
     }
 
-    fn set(&mut self, f: impl FnOnce(&mut StoredService)) {
-        f(&mut self.row);
-        self.save();
+    async fn set(&mut self, f: impl FnOnce(&mut Published)) {
+        f(&mut self.state);
+        self.save().await;
     }
 
-    fn stop_requested(&self) -> bool {
-        self.store.service_stop_requested(&self.row.project, &self.row.service).unwrap_or(false)
+    async fn stop_requested(&self) -> bool {
+        self.tmux.options(&self.pane, &["stop"]).await.is_ok_and(|v| v[0] == "1")
     }
 
-    /// Ends the worker without a process: records why and returns exit code 1.
-    fn refuse(&mut self, msg: &str) -> i32 {
+    /// Ends the worker without a process: publishes why and returns exit code 1.
+    async fn refuse(&mut self, msg: &str) -> i32 {
         say(msg);
         self.set(|r| {
-            r.status = ServiceState::Stopped;
+            r.status = Some(ServiceState::Stopped);
             r.healthy = false;
             r.pid = None;
             r.message = Some(msg.to_string());
-        });
+        })
+        .await;
         1
     }
 }
 
 /// Entry point. Returns the process exit code.
-pub async fn run(project_id: &str, service_id: &str, launch: &str) -> i32 {
-    let state = crate::paths::state_dir();
-    if let Err(e) = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&state) {
-        say(&format!("cannot create {}: {e}", state.display()));
+pub async fn run(project_id: &str, service_id: &str) -> i32 {
+    let Ok(pane) = std::env::var("TMUX_PANE") else {
+        say("svc-exec runs inside a tmux window that GroundControl opens");
+        return 1;
+    };
+    let tmux = Tmux::default_server();
+    // An older live window already runs this service: leave it alone.
+    let mine = match tmux.pane_window(&pane).await {
+        Ok(id) => id,
+        Err(e) => {
+            say(&format!("cannot find this service's window: {e}"));
+            return 1;
+        }
+    };
+    let windows = tmux.windows().await.unwrap_or_default();
+    if let Some(older) = super::live_window(&windows, project_id, service_id)
+        && older.id < mine
+    {
+        say(&format!("{project_id}/{service_id} is already running in window @{}", older.id));
+        close_own_pane().await;
         return 1;
     }
-    let lock_path = crate::paths::service_lock_path(&state, project_id, service_id);
-    let _lock = match crate::lock::acquire(&lock_path) {
-        Ok(Some(l)) => l,
-        Ok(None) => {
-            say(&format!("{project_id}/{service_id} is already running in another window"));
-            // Duplicate window names would make every later target ambiguous.
-            close_own_pane().await;
-            return 1;
-        }
-        Err(e) => {
-            say(&format!("cannot take the service lock: {e}"));
-            return 1;
-        }
-    };
-    let store = match Store::open(&state.join(crate::paths::DB_FILE)) {
-        Ok(s) => s,
-        Err(e) => {
-            say(&format!("cannot open the state database: {e}"));
-            return 1;
-        }
-    };
-    let mut row = blank_row(project_id, service_id);
-    row.launch = Some(launch.to_string());
-    let mut w = Worker { store, row };
+    let waker = Waker::new(tmux.clone(), mine);
+    let mut w = Worker { tmux, waker, pane, project: project_id.to_string(), service: service_id.to_string(), state: Published::default() };
     let mut signals = match Signals::install() {
         Ok(s) => s,
-        Err(e) => return w.refuse(&format!("cannot install signal handlers: {e}")),
+        Err(e) => return w.refuse(&format!("cannot install signal handlers: {e}")).await,
     };
 
     let Some(config) = crate::config::load_file(&crate::paths::config_path()).config else {
-        return w.refuse("groundcontrol.yaml is invalid; see the Health screen");
+        return w.refuse("groundcontrol.yaml is invalid; see the Health screen").await;
     };
-    let Some(project) = config.project(project_id) else { return w.refuse(&format!("unknown project `{project_id}`")) };
-    let Some(svc) = project.service(service_id) else { return w.refuse(&format!("unknown service `{service_id}` in {project_id}")) };
+    let Some(project) = config.project(project_id) else { return w.refuse(&format!("unknown project `{project_id}`")).await };
+    let Some(svc) = project.service(service_id) else {
+        return w.refuse(&format!("unknown service `{service_id}` in {project_id}")).await;
+    };
     serve(&mut w, &mut signals, &config, project, svc).await
 }
 
 async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: &Project, svc: &Service) -> i32 {
     if let Some(reason) = &project.disabled {
-        return w.refuse(&format!("{} is disabled: {reason}", project.id));
+        return w.refuse(&format!("{} is disabled: {reason}", project.id)).await;
     }
     if let Err(e) = crate::git::check_remote(&project.path, project.remote.as_deref()).await {
-        return w.refuse(&e);
+        return w.refuse(&e).await;
     }
     if let Some(port) = svc.health.as_ref().and_then(Health::port)
         && health::port_in_use(port).await
     {
-        return w.refuse(&format!("port {port} is in use (not started by GroundControl)"));
+        return w.refuse(&format!("port {port} is in use (not started by GroundControl)")).await;
     }
     let dir = project.resolve_dir(svc.cwd.as_deref());
     if !dir.is_dir() {
-        return w.refuse(&format!("working directory {} does not exist", dir.display()));
+        return w.refuse(&format!("working directory {} does not exist", dir.display())).await;
     }
     let mut env: BTreeMap<String, String> = config.env.iter().cloned().collect();
     let mut secrets = Vec::new();
@@ -182,10 +240,9 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                     env.insert(k, v);
                 }
             }
-            Err(e) => return w.refuse(&e),
+            Err(e) => return w.refuse(&e).await,
         }
     }
-    let log_path = crate::paths::service_log_path(&project.id, &project.path, project.sensitive, &svc.id);
 
     let mut crashes = VecDeque::new();
     // Only the very first launch can "fail to start". After that, a restart
@@ -193,39 +250,31 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
     let mut first = true;
     loop {
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        let mut log = RotatingFile::new(&log_path);
-        let _ = writeln!(log, "\n── {stamp} starting: {} ──", svc.start);
         say(&format!("{stamp} starting: {}", svc.start));
 
         let spawned = match process::spawn_shell(&svc.start, &dir, &env) {
             Ok(s) => s,
-            Err(e) => return w.refuse(&format!("cannot start: {e}")),
+            Err(e) => return w.refuse(&format!("cannot start: {e}")).await,
         };
         let pgid = spawned.pid;
         let spawned_at = Instant::now();
         w.set(|r| {
-            r.status = ServiceState::Starting;
+            r.status = Some(ServiceState::Starting);
             r.healthy = false;
             r.pid = Some(pgid);
             r.started_at = Some(now());
             r.message = None;
-        });
+        })
+        .await;
 
-        // Output → mask → pane and rotated log.
+        // Output → mask → pane. The pane's scrollback is the only copy.
         let mut output = spawned.output;
         let mut masker = Masker::new(secrets.clone());
         let pump = tokio::spawn(async move {
-            let mut write = |data: &[u8]| {
-                if !data.is_empty() {
-                    pane(data);
-                    let _ = log.write_all(data);
-                    let _ = log.flush();
-                }
-            };
             while let Some(chunk) = output.recv().await {
-                write(&masker.push(&chunk));
+                pane(&masker.push(&chunk));
             }
-            write(&masker.flush());
+            pane(&masker.flush());
         });
 
         let mut child = spawned.child;
@@ -237,13 +286,15 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
 
         let mut during_start = true;
         let deadline = spawned_at + HEALTH_START_TIMEOUT;
-        let mut next_check = Instant::now();
+        // Without a health check, the first check is due once the grace has passed.
+        let mut next_check = if svc.health.is_some() { Instant::now() } else { spawned_at + NO_CHECK_GRACE };
         let code = loop {
             let stop = tokio::select! {
                 biased;
                 _ = signals.recv() => true,
                 r = exited.wait_for(|v| v.is_some()) => break r.map(|v| v.flatten()).unwrap_or(None),
-                _ = tokio::time::sleep(TICK) => w.stop_requested(),
+                _ = w.waker.woken() => w.stop_requested().await,
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next_check)) => false,
             };
             if stop {
                 return stop_service(w, pgid, &mut exited, pump).await;
@@ -260,16 +311,19 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                     during_start = false;
                     next_check = Instant::now() + HEALTH_INTERVAL;
                     w.set(|r| {
-                        r.status = ServiceState::Running;
+                        r.status = Some(ServiceState::Running);
                         r.healthy = true;
-                    });
+                    })
+                    .await;
                     say("healthy");
-                } else if Instant::now() >= deadline {
+                } else if Instant::now() < deadline {
+                    next_check = Instant::now() + START_CHECK;
+                } else {
                     let msg = format!("health check did not pass within {}s", HEALTH_START_TIMEOUT.as_secs());
                     let code = stop_group(pgid, &mut exited).await;
                     if first {
                         finish_output(pump).await;
-                        return w.refuse(&msg);
+                        return w.refuse(&msg).await;
                     }
                     say(&msg);
                     break code;
@@ -277,11 +331,12 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
             } else {
                 next_check = Instant::now() + HEALTH_INTERVAL;
                 let state = if ok { ServiceState::Running } else { ServiceState::Unhealthy };
-                if w.row.healthy != ok || w.row.status != state {
+                if w.state.healthy != ok || w.state.status != Some(state) {
                     w.set(|r| {
-                        r.status = state;
+                        r.status = Some(state);
                         r.healthy = ok;
-                    });
+                    })
+                    .await;
                 }
             }
         };
@@ -294,49 +349,54 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
         finish_output(pump).await;
         let next = policy::after_exit(svc.restart, during_start && first, code, &mut crashes, Instant::now());
         first = false;
-        w.row.pid = None;
-        w.row.healthy = false;
-        w.row.last_exit_code = code;
+        w.state.pid = None;
+        w.state.healthy = false;
+        w.state.last_exit_code = code;
         match next {
             Next::Stopped { message } => {
                 say(&message);
                 w.set(|r| {
-                    r.status = ServiceState::Stopped;
+                    r.status = Some(ServiceState::Stopped);
                     r.message = Some(message);
-                });
+                })
+                .await;
                 return 0;
             }
             Next::Crashed { message, gave_up } => {
                 say(&message);
                 w.set(|r| {
-                    r.status = ServiceState::Crashed;
+                    r.status = Some(ServiceState::Crashed);
                     r.message = Some(message);
-                });
+                })
+                .await;
                 if gave_up {
                     pane(b"\x07");
-                    tell(&format!("{}/{} crashed: {}", w.row.project, w.row.service, w.row.message.as_deref().unwrap_or(""))).await;
+                    tell(&format!("{}/{} crashed: {}", w.project, w.service, w.state.message.as_deref().unwrap_or(""))).await;
                 }
                 return 1;
             }
             Next::Restart { delay, message } => {
                 say(&message);
                 w.set(|r| {
-                    r.status = ServiceState::Restarting;
+                    r.status = Some(ServiceState::Restarting);
                     r.restart_count += 1;
                     r.message = Some(message);
-                });
-                let until = Instant::now() + delay;
-                while Instant::now() < until {
+                })
+                .await;
+                let until = tokio::time::Instant::now() + delay;
+                loop {
                     let stop = tokio::select! {
                         _ = signals.recv() => true,
-                        _ = tokio::time::sleep(TICK.min(until.saturating_duration_since(Instant::now()))) => w.stop_requested(),
+                        _ = w.waker.woken() => w.stop_requested().await,
+                        _ = tokio::time::sleep_until(until) => break,
                     };
                     if stop {
                         say("stopped");
                         w.set(|r| {
-                            r.status = ServiceState::Stopped;
+                            r.status = Some(ServiceState::Stopped);
                             r.message = None;
-                        });
+                        })
+                        .await;
                         return 0;
                     }
                 }
@@ -366,16 +426,17 @@ async fn stop_service(
     pump: tokio::task::JoinHandle<()>,
 ) -> i32 {
     say("stopping");
-    w.set(|r| r.status = ServiceState::Stopping);
+    w.set(|r| r.status = Some(ServiceState::Stopping)).await;
     let code = stop_group(pgid, exited).await;
     finish_output(pump).await;
     w.set(|r| {
-        r.status = ServiceState::Stopped;
+        r.status = Some(ServiceState::Stopped);
         r.healthy = false;
         r.pid = None;
         r.last_exit_code = code;
         r.message = None;
-    });
+    })
+    .await;
     say("stopped");
     0
 }
