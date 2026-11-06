@@ -46,7 +46,7 @@ three are started by GroundControl as the command of a tmux window.
 |---|---|---|---|
 | `groundcontrol` | Your terminal or a tmux popup | While open | TUI: dashboard, launcher, viewer, approvals |
 | `groundcontrol run-exec <run-id>` | tmux window `gc-<project>:run-<id>` | One pipeline run | Executes the steps, writes state and logs |
-| `groundcontrol svc-exec <project> <service>` | tmux window `gc-<project>:<service>` | While the service is up | Runs one service: env file, masking, logs, health, restart policy |
+| `groundcontrol svc-exec <project> <service> <launch>` | tmux window `gc-<project>:svc-<service>` | While the service is up | Runs one service: env file, masking, logs, health, restart policy |
 | `groundcontrol cli …` (later) | Anywhere | One command | Scriptable `start`, `stop`, `run`, `status` |
 
 There is no socket, no protocol server and no background process of
@@ -67,7 +67,9 @@ you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI) ──reads
 - Default tmux server (no `-L` socket), so the windows show up in your normal
   `tmux ls` and `choose-tree`.
 - One detached session per project, `gc-<project>`, created on first use with
-  `tmux new-session -d`. Windows: one per running service, one per active run.
+  `tmux new-session -d`. Windows: `svc-<service>` per running service and
+  `run-<id>` per active run. The prefixes keep the two apart whatever a
+  service is called. Ids are escaped for tmux (`_` → `__`, `.` → `_d`).
 - Windows set `remain-on-exit on`, so a crashed service's last output stays
   visible until it's restarted or closed.
 - The TUI gets a key (`t`) that attaches or switches to the selected
@@ -120,18 +122,33 @@ process:
 - Runs the health check (HTTP 200 or TCP port) every 5 s and writes the
   status to `service_state`.
 - Handles `restart: on-failure` with the existing back-off, and the "crashed
-  after 5 crashes in 5 minutes" rule. After giving up, it stays open with
-  the last output and a `crashed` banner.
-- Stop: the TUI sends `tmux send-keys C-c` to the window. `svc-exec` traps
-  that, terminates its child group, and exits. `tmux kill-window` is the
-  fallback after 15 s.
-- `depends_on` and groups: a shared `services::start(project, targets)`
-  function, called from the TUI or from a `service:` step in `run-exec`,
+  after 5 crashes in 5 minutes" rule (`services::policy`, a pure function).
+  After giving up it rings the bell and exits. The dead pane
+  (`remain-on-exit`) keeps the last output until the next start replaces it.
+- Ownership: the worker takes the service lock before writing anything, is
+  the only writer of the service's row while it runs, and releases the lock
+  last, after the process group is gone and the final row is written. A
+  worker that loses the lock race closes its own pane, so window names stay
+  unique. Each launch carries a token, so a starter never mistakes an older
+  row for its own launch.
+- Stop: the TUI sets `service_state.stop_requested`, which the worker polls.
+  `send-keys C-c` isn't used for this, because tmux keeps keys for itself
+  while a pane is in copy mode. C-c in the window still works by hand.
+  `tmux kill-window` is the fallback after 15 s: the worker handles SIGHUP
+  (and SIGTERM) the same way and still ends the child's process group.
+- `depends_on` and groups: `services::control(ctx, config, project, target,
+  action)`, called from the TUI or from a `service:` step in `run-exec`,
   opens the dependency windows in order and waits for each one to report
   `healthy` in SQLite before starting the next. It stops them in reverse
   order.
 - A port already in use refuses the start with "port N is in use (not
   started by GroundControl)". The `lsof` call that named the PID is removed.
+
+**Known limitation:** if a worker is SIGKILLed or panics, its child's process
+group keeps running. The status then shows "worker exited unexpectedly", and
+the next start of a service with a health port refuses with "port N is in use
+(not started by GroundControl)", which is misleading in this case. Stop the
+leftover process by hand.
 
 **Removed on purpose:** the restore after a daemon restart, the
 `kern.boottime` comparison, adopting and killing orphans (`looks_like_ours`,
@@ -143,8 +160,10 @@ reboot nothing comes back until you start it. That is the point.
 Several TUIs can be open at once (two popups, for example), so in-memory
 maps can't enforce "one run per project" any more.
 
-- `run-exec` holds `flock(<state>/locks/run-<project>.lock)` for its whole
-  lifetime. `svc-exec` holds `svc-<project>-<service>.lock`.
+- `run-exec` holds `flock(<state>/locks/<project>/run.lock)` for its whole
+  lifetime. `svc-exec` holds `<state>/locks/<project>/services/<service>.lock`.
+  Separate folders keep project `a-b` from colliding with project `a`'s
+  service `b`.
 - The kernel releases a lock when its process dies, so there are no stale
   locks and no PID checks. "Is it alive?" is a non-blocking `flock` probe.
 - The TUI tries the lock before inserting a run. `run-exec` takes it again
@@ -205,7 +224,7 @@ The socket push events are replaced with polling:
 | `daemon/supervisor.rs` | The slot logic becomes the body of `svc-exec`. `start_order` and the start/stop orchestration go to `services.rs`. `restore`, `shutdown`, `port_owner` and the orphan code are deleted |
 | `daemon/process.rs` | Drop `-l`, `looks_like_ours`, `terminate_orphan_group` and `shell_output`. Keep `spawn_shell` and `terminate` |
 | `daemon/system.rs` | Delete `boot_time` and `notify`. Rewrite the tool check in-process |
-| `daemon/store.rs` | Move to `store.rs`. Add `runs.cancel_requested`, `updated_at` columns, and the conditional approval update. Drop `pid`/`pgid` from `service_state` |
+| `daemon/store.rs` | Move to `store.rs`. Add `runs.cancel_requested`, `updated_at` columns, and the conditional approval update. Done for services (v2): `healthy`, `message`, `launch`, `updated_at` and `stop_requested`. `pid`/`pgid` stay for display only; nothing signals them from outside the worker |
 | New `tmux.rs` | `ensure_session`, `new_window`, `send_keys`, `kill_window`, `list_windows` (`#{window_name} #{pane_dead} #{pane_dead_status}`) |
 | New `lock.rs` | `flock` acquire and probe |
 | `protocol.rs` | Keep the data types (`RunSummary`, `ServiceStatus`, …). Drop the request/response envelope and `PROTOCOL_VERSION` |
@@ -240,6 +259,12 @@ working with little or no change.
 3. `run-exec`, with approvals and cancel through SQLite. Port the pipeline
    parts of the e2e test.
 4. The TUI `Engine` and poll loop. Delete the client, server and daemon.
+   **Cutover:** the installed LaunchAgent must be booted out before any
+   worker runs against the real state folder. On a same-boot restart, the
+   old daemon's `restore()` would SIGTERM a worker's child (`/bin/zsh -c …`
+   passes `looks_like_ours`) and start the service itself, and
+   `clear_desired_services` would overwrite rows that workers own. Until
+   then, only the tests launch `svc-exec`, against temporary state.
 5. Health screen, notifications, Makefile cleanup and the old-agent
    removal target.
 6. Spec and README revision. Manual pass on the Mac with the security tool

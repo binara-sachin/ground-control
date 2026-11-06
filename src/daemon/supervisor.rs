@@ -1,14 +1,12 @@
 //! Service supervisor (§6.5): start/stop/restart of services and groups,
 //! health checks, the crash-restart policy and restore after a daemon restart.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::watch;
 
 use super::logfile::RotatingFile;
@@ -18,6 +16,8 @@ use super::{Daemon, system};
 use crate::config::{Config, Health, Project, RestartPolicy, Service, ServiceAction};
 use crate::mask::Masker;
 use crate::protocol::{Event, ServiceState, ServiceStatus, now};
+use crate::services::health::{check_health, port_in_use};
+use crate::services::start_order;
 
 pub const HEALTH_START_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -81,28 +81,6 @@ impl Slot {
     fn is_up(&self) -> bool {
         self.st.lock().unwrap().state.is_up()
     }
-}
-
-/// Dependency order for a set of services: dependencies first.
-pub fn start_order(project: &Project, members: &[String]) -> Vec<String> {
-    fn visit(p: &Project, id: &str, seen: &mut HashSet<String>, out: &mut Vec<String>) {
-        if !seen.insert(id.to_string()) {
-            return;
-        }
-        if let Some(s) = p.service(id) {
-            for d in &s.depends_on {
-                visit(p, d, seen, out);
-            }
-        }
-        out.push(id.to_string());
-    }
-    let mut seen = HashSet::new();
-    let mut all = Vec::new();
-    for m in members {
-        visit(project, m, &mut seen, &mut all);
-    }
-    let wanted: HashSet<&String> = members.iter().collect();
-    all.into_iter().filter(|s| wanted.contains(s)).collect()
 }
 
 impl Supervisor {
@@ -183,6 +161,10 @@ fn persist(d: &Daemon, slot: &Slot) {
             restart_count: st.restart_count,
             last_exit_code: st.last_exit_code,
             status: st.state,
+            healthy: st.healthy,
+            message: st.message.clone(),
+            launch: None,
+            updated_at: None,
         }
     };
     d.with_store(|db| db.save_service(&s));
@@ -592,45 +574,6 @@ async fn on_exit_inner(d: &Arc<Daemon>, slot: &Arc<Slot>, generation: u64, code:
     }
 }
 
-pub async fn check_health(h: &Health) -> bool {
-    match h {
-        Health::Port(p) => port_in_use(*p).await,
-        Health::Url(u) => http_ok(u).await,
-    }
-}
-
-/// True when something accepts TCP connections on the port (IPv4 or IPv6 loopback).
-pub async fn port_in_use(port: u16) -> bool {
-    for addr in [format!("127.0.0.1:{port}"), format!("[::1]:{port}")] {
-        if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(&addr)).await {
-            return true;
-        }
-    }
-    false
-}
-
-/// Minimal HTTP/1.1 GET that expects status 200. Local, plain HTTP only.
-pub async fn http_ok(url: &str) -> bool {
-    let Some((host, port, path)) = crate::config::parse_http_url(url) else { return false };
-    let attempt = async {
-        let mut stream = TcpStream::connect((host.as_str(), port)).await.ok()?;
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUser-Agent: groundcontrol\r\nConnection: close\r\n\r\n");
-        stream.write_all(req.as_bytes()).await.ok()?;
-        let mut buf = [0u8; 64];
-        let mut n = 0;
-        while n < 12 {
-            let m = stream.read(&mut buf[n..]).await.ok()?;
-            if m == 0 {
-                break;
-            }
-            n += m;
-        }
-        let head = String::from_utf8_lossy(&buf[..n]).to_string();
-        Some(head.split_whitespace().nth(1) == Some("200"))
-    };
-    matches!(tokio::time::timeout(Duration::from_secs(3), attempt).await, Ok(Some(true)))
-}
-
 /// PID listening on a TCP port, via `lsof`.
 async fn port_owner(port: u16) -> Option<i32> {
     let out = tokio::process::Command::new("lsof")
@@ -712,37 +655,5 @@ pub async fn shutdown(d: &Arc<Daemon>) {
     }
     for t in tasks {
         let _ = t.await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn order_puts_dependencies_first() {
-        let src = "projects:\n  p:\n    path: /tmp\n    services:\n      webapp: { start: a, depends_on: [backend] }\n      backend: { start: b, depends_on: [postgres] }\n      postgres: { start: c }\n";
-        let c = crate::config::load_str(src).config.unwrap();
-        let p = c.project("p").unwrap();
-        let members = vec!["webapp".to_string(), "postgres".to_string(), "backend".to_string()];
-        assert_eq!(start_order(p, &members), ["postgres", "backend", "webapp"]);
-        assert_eq!(start_order(p, &["webapp".to_string()]), ["webapp"]);
-    }
-
-    #[tokio::test]
-    async fn http_check() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            for status in ["200 OK", "503 Service Unavailable"] {
-                let (mut s, _) = listener.accept().await.unwrap();
-                let mut buf = [0u8; 512];
-                let _ = s.read(&mut buf).await;
-                let _ = s.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes()).await;
-            }
-        });
-        assert!(http_ok(&format!("http://127.0.0.1:{port}/health")).await);
-        assert!(!http_ok(&format!("http://127.0.0.1:{port}/health")).await);
-        assert!(port_in_use(port).await || true);
     }
 }

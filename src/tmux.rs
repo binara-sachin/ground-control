@@ -208,6 +208,11 @@ impl Tmux {
         }
     }
 
+    /// Closes one pane by its id (`$TMUX_PANE`, e.g. `%12`).
+    pub async fn kill_pane(&self, pane_id: &str) -> Result<(), String> {
+        self.tmux(&["kill-pane", "-t", pane_id]).await.map(|_| ())
+    }
+
     /// Sends keys such as `C-c` to a window. A missing window is an error.
     pub async fn send_keys(&self, project: &str, name: &str, keys: &[&str]) -> Result<(), String> {
         let target = window_target(project, name);

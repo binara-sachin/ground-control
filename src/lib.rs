@@ -12,6 +12,7 @@ pub mod lock;
 pub mod mask;
 pub mod paths;
 pub mod protocol;
+pub mod services;
 pub mod tmux;
 pub mod tui;
 pub mod yaml;

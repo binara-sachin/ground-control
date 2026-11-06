@@ -25,11 +25,19 @@ pub struct Spawned {
 /// Runs `/bin/zsh -l -c <command>` in `dir`, stdin from `/dev/null`, in a new
 /// process group whose id equals the child's pid.
 pub fn spawn_shell(command: &str, dir: &Path, env: &BTreeMap<String, String>) -> std::io::Result<Spawned> {
+    spawn(&["-l", "-c", command], dir, env)
+}
+
+/// Like `spawn_shell`, but `/bin/zsh -c` without `-l`: tmux-hosted workers
+/// already inherit the user's interactive environment.
+pub fn spawn_plain_shell(command: &str, dir: &Path, env: &BTreeMap<String, String>) -> std::io::Result<Spawned> {
+    spawn(&["-c", command], dir, env)
+}
+
+fn spawn(args: &[&str], dir: &Path, env: &BTreeMap<String, String>) -> std::io::Result<Spawned> {
     let (reader, writer) = std::io::pipe()?;
     let mut cmd = Command::new(SHELL);
-    cmd.arg("-l")
-        .arg("-c")
-        .arg(command)
+    cmd.args(args)
         .current_dir(dir)
         .envs(env)
         .stdin(Stdio::null())

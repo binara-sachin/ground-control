@@ -26,8 +26,11 @@ pub fn socket_path() -> PathBuf {
     state_dir().join("gc.sock")
 }
 
+/// File name of the SQLite store inside the state folder.
+pub const DB_FILE: &str = "state.db";
+
 pub fn db_path() -> PathBuf {
-    state_dir().join("state.db")
+    state_dir().join(DB_FILE)
 }
 
 pub fn daemon_log_path() -> PathBuf {
@@ -85,14 +88,14 @@ pub fn service_log_path(project: &str, project_path: &Path, sensitive: bool, ser
     }
 }
 
-/// `locks/<project>/run.lock`: held by a project's active run for its lifetime.
-pub fn run_lock_path(project: &str) -> PathBuf {
-    state_dir().join("locks").join(project).join("run.lock")
+/// `<state>/locks/<project>/run.lock`: held by a project's active run for its lifetime.
+pub fn run_lock_path(state: &Path, project: &str) -> PathBuf {
+    state.join("locks").join(project).join("run.lock")
 }
 
-/// `locks/<project>/services/<service>.lock`: held by the service's worker while it is up.
-pub fn service_lock_path(project: &str, service: &str) -> PathBuf {
-    state_dir().join("locks").join(project).join("services").join(format!("{service}.lock"))
+/// `<state>/locks/<project>/services/<service>.lock`: held by the service's worker while it is up.
+pub fn service_lock_path(state: &Path, project: &str, service: &str) -> PathBuf {
+    state.join("locks").join(project).join("services").join(format!("{service}.lock"))
 }
 
 /// Run-scoped scratch files (`$GC_OUTPUT`). Never in a repository.
