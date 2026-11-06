@@ -90,6 +90,11 @@ pub fn unescape(s: &str) -> String {
     out
 }
 
+/// `display-message` expands `#{…}` formats; `##` is a literal `#`.
+pub fn escape_format(s: &str) -> String {
+    s.replace('#', "##")
+}
+
 /// Parses `list-windows -F '#{window_name} #{pane_dead} #{pane_dead_status}'`.
 /// tmux turns tabs into `_` in formats, so the fields are space-separated;
 /// escaped names never contain spaces.
@@ -213,6 +218,22 @@ impl Tmux {
         self.tmux(&["kill-pane", "-t", pane_id]).await.map(|_| ())
     }
 
+    /// Shows `msg` in the status line of every attached client, whatever
+    /// session it is looking at. A bell in a detached `gc-*` session is only
+    /// flagged there, so this is how a worker gets noticed. No clients: no-op.
+    pub async fn tell_clients(&self, msg: &str) -> Result<(), String> {
+        let clients = match self.tmux(&["list-clients", "-F", "#{client_name}"]).await {
+            Ok(out) => out,
+            Err(e) if is_missing(&e) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let text = format!("GroundControl: {}", escape_format(msg));
+        for c in clients.lines().filter(|c| !c.is_empty()) {
+            let _ = self.tmux(&["display-message", "-c", c, "-d", "8000", &text]).await;
+        }
+        Ok(())
+    }
+
     /// Sends keys such as `C-c` to a window. A missing window is an error.
     pub async fn send_keys(&self, project: &str, name: &str, keys: &[&str]) -> Result<(), String> {
         let target = window_target(project, name);
@@ -273,6 +294,11 @@ mod tests {
             ]
         );
         assert_eq!(parse_windows("a__b_dc 0 ")[0].name, "a_b.c");
+    }
+
+    #[test]
+    fn format_escaping() {
+        assert_eq!(escape_format("run #412 needs #{approval}"), "run ##412 needs ##{approval}");
     }
 
     #[test]

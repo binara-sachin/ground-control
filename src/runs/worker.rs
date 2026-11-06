@@ -20,7 +20,7 @@ use crate::config::{Config, Pipeline, Project, ServiceAction, StepKind};
 use crate::mask::Masker;
 use crate::process;
 use crate::protocol::*;
-use crate::services::worker::{Signals, close_own_pane, pane, say};
+use crate::services::worker::{Signals, close_own_pane, pane, say, tell};
 use crate::store::Store;
 
 const TICK: Duration = Duration::from_millis(250);
@@ -152,6 +152,7 @@ pub async fn run(id: i64) -> i32 {
     } else {
         if status == RunStatus::Failed {
             pane(b"\x07");
+            tell(&format!("{}/{} {text}", project.id, pipeline.id)).await;
         }
         1
     }
@@ -394,6 +395,7 @@ async fn approve_step(exec: &mut Exec, idx: usize, message: &str) -> StepOutcome
     exec.db(|s| s.set_run_status(id, RunStatus::AwaitingApproval, None, None));
     say(&format!("waiting for approval in GroundControl: {message}"));
     pane(b"\x07");
+    tell(&format!("run #{id} is waiting for approval: {message}")).await;
 
     let deadline = Instant::now() + APPROVAL_TTL;
     let decided = loop {

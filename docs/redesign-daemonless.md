@@ -73,7 +73,7 @@ you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI) ──reads
   service is called. Ids are escaped for tmux (`_` → `__`, `.` → `_d`).
 - Windows set `remain-on-exit on`, so a crashed service's last output stays
   visible until it's restarted or closed.
-- The TUI gets a key (`t`) that attaches or switches to the selected
+- Not built yet (spec Phase 2): a TUI key (`t`) that attaches or switches to the selected
   service's or run's window. This was already in Phase 2.
 - tmux becomes a hard requirement. The TUI checks for it at startup and
   explains what to do if it's missing.
@@ -83,7 +83,8 @@ you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI) ──reads
 - Workers run steps and services as `/bin/zsh -c <command>`, **not** `-l`.
   tmux windows already inherit your interactive environment, so the
   `.zprofile` PATH requirement in the README goes away.
-- Each step and service shell starts in its own session (`setsid`), so it
+- Each step and service shell starts in its own session (`setsid`, a new
+  process behaviour to include when checking alerts), so it
   has no controlling terminal even though its worker runs in a pane: it
   can't read the pane's size or prompt on `/dev/tty`. Stdin stays
   `/dev/null`, as before.
@@ -192,12 +193,15 @@ The socket push events are replaced with polling:
 `osascript` is removed. Instead:
 
 - The TUI's attention markers (`!`) and approval banner are unchanged.
-- Workers ring the tmux bell (`\a` in their pane). With `monitor-bell on`,
-  tmux marks the window in your status line and can show a message.
+- Workers send a status-line message to every attached tmux client
+  (`display-message -c`), because a bell in a detached `gc-*` session is only
+  flagged inside that session, and ring the bell in their own pane. With no
+  client attached, nobody is told. (An earlier draft relied on the bell
+  alone; testing showed it never reaches your own session.)
 - Not built yet: an optional `notify: terminal-notifier` config setting, off
   by default, for desktop notifications through that signed Homebrew app,
-  so that your unsigned binary never scripts the UI. Add it only if the
-  tmux bell turns out not to be enough.
+  so that your unsigned binary never scripts the UI. Add it if approvals
+  get missed while no tmux client is attached.
 
 ### Health screen
 
@@ -234,7 +238,7 @@ The socket push events are replaced with polling:
 | New `tmux.rs` | `ensure_session`, `new_window`, `send_keys`, `kill_window`, `list_windows` (`#{window_name} #{pane_dead} #{pane_dead_status}`) |
 | New `lock.rs` | `flock` acquire and probe |
 | `protocol.rs` | Keep the data types (`RunSummary`, `ServiceStatus`, …). Drop the request/response envelope and `PROTOCOL_VERSION` |
-| `tui/app.rs` | Replace the `Client` with `Engine` calls and a poll loop that emits the same `Msg` values. Delete the "daemon not running" screen and the `launchctl kickstart` key (line 706). Add the `t` attach key |
+| `tui/app.rs` | Replace the `Client` with `Engine` calls and a poll loop that emits the same `Msg` values. Delete the "daemon not running" screen and the `launchctl kickstart` key (line 706). The `t` attach key is not built yet |
 | `main.rs` | Add `run-exec` and `svc-exec`. Remove `daemon` |
 | `Makefile`, `packaging/` | Remove the plist and launchctl targets |
 | `tests/daemon_e2e.rs` | Becomes `tests/workers_e2e.rs`. It drives `run-exec` and `svc-exec` directly, plus a tmux-backed test that's skipped when tmux isn't installed |
@@ -252,8 +256,8 @@ working with little or no change.
 - §6.3 Approvals: decisions through SQLite. Same UI rules.
 - §6.5 Services: `svc-exec` per window. Restore-after-restart removed.
 - §6.6 Startup health: on-demand checks, no daemon uptime.
-- §10.3 Screens: remove the daemon-not-running screen, add the attach key.
-- §10.5 Notifications: tmux bell, optional terminal-notifier.
+- §10.3 Screens: remove the daemon-not-running screen (the attach key is Phase 2).
+- §10.5 Notifications: messages to attached tmux clients plus the bell; optional terminal-notifier (not built).
 - §10.6 Client protocol: removed.
 - §11 Storage: new columns, lock folder, no socket.
 

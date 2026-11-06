@@ -95,7 +95,7 @@ whose path is missing.
 - **Dashboard.** Approval banner, projects (branch, tree, ahead/behind), services and groups of the selected project, recent runs, and the selected service's last 50 log lines. `s` starts or stops, `r` restarts, `l` opens the full log. A running service is the tmux window `gc-<project>:svc-<service>`; `C-c` there stops it too.
 - **Project.** `enter` opens the run dialog, `d` does a dry run, `e` switches environment. On the services pane, `s`, `r` and `l` work as on the dashboard.
 - **Run dialog.** Shows a live pattern check for each input, dirty and unpushed warnings, destructive warnings and the step outline. `enter` starts the run; `ctrl+d` does a dry run. For protected runs, this dialog is the confirmation.
-- **Run view.** Steps, outputs and live terminal output (colours, `\r` progress, wide characters). `f` toggles follow, `y` and `Y` copy the command or output, `c` cancels the run. `a` approves (a protected run asks for a second `y`) and `x` rejects. The run is also the tmux window `gc-<project>:run-<id>`, which rings the bell when it needs approval or fails.
+- **Run view.** Steps, outputs and live terminal output (colours, `\r` progress, wide characters). `f` toggles follow, `y` and `Y` copy the command or output, `c` cancels the run. `a` approves (a protected run asks for a second `y`) and `x` rejects. The run is also the tmux window `gc-<project>:run-<id>`. When it needs approval or fails, every attached tmux client shows a message in its status line; with no tmux client attached, nobody is told until a TUI opens.
 - **History.** `/` filters (`project:… pipeline:… env:… status:…`), `s` cycles the status filter, `ctrl+u` clears the filter, `enter` opens a run and `D` shows a run's saved diff.
 - **Health.** Tool check (resolved on `PATH` without running anything), tmux and Docker reachability (Docker only while this screen is open), config errors with line and column, reload times, the version, the state folder and the config path.
 
@@ -113,8 +113,8 @@ make lint
 workers in a private tmux server and skip themselves when tmux is missing.
 `make lint` runs rustfmt and clippy with `-D warnings`.
 
-The code builds and its tests pass on Linux too; only `make remove-old-agent`
-(launchd) and `pbcopy` are macOS-specific. To try it without installing, point
+The code is meant to build on Linux too, but this revision has only been tested
+on macOS; `make remove-old-agent` (launchd) and `pbcopy` are macOS-specific. To try it without installing, point
 it at a scratch state folder from inside tmux:
 
 ```bash

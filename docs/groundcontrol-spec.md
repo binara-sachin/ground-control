@@ -41,7 +41,7 @@ Every process therefore has a visible, interactive parent: Terminal → tmux →
 | Conditions, parallel steps, pipelines spanning projects | Not in MVP |
 | Built-in providers (GitHub, Cloudflare API clients) | Not planned; everything is a shell step |
 | Plugin system | Not planned |
-| Linux or Windows support | Not planned; macOS only (the code builds and its tests pass on Linux) |
+| Linux or Windows support | Not planned; macOS only (revision 2 built and passed its tests on Linux; revision 3 has not been checked there) |
 
 ## 4. Constraints
 
@@ -144,7 +144,7 @@ Rust was chosen over Go for reasons other than performance, which is not a facto
 
 ### 6.3 Approval steps (`approve:`)
 
-- The run pauses with the status `awaiting_approval`. The worker rings the tmux bell, and every open TUI shows an approval banner.
+- The run pauses with the status `awaiting_approval`. The worker alerts every attached tmux client (§10.5), and every open TUI shows an approval banner.
 - **Approving happens only in the run view**, where the previous step's output is on screen. The dashboard banner offers only "review", which opens the run view.
 - **Approving a protected run takes two keypresses:** approve, then a confirm prompt that names the project, environment and approval message. **Rejecting takes one key**, because rejecting is always safe.
 - **Reject** ends the run with the status `rejected`, which is distinct from `failed`.
@@ -171,7 +171,7 @@ The main use is recording the D1 Time Travel bookmark before a migration.
 
 **Crash restarts (default `restart: on-failure`).**
 - Waits between restart attempts grow from 1 second to a maximum of 60 seconds.
-- After 5 crashes within 5 minutes, the service is marked **crashed** and its worker rings the tmux bell and exits. The window keeps the last output; the TUI shows the last 50 lines of its log.
+- After 5 crashes within 5 minutes, the service is marked **crashed** and its worker alerts the attached tmux clients (§10.5) and exits. The window keeps the last output; the TUI shows the last 50 lines of its log.
 
 **`restart: never`.**
 - Exit code 0 shows as **stopped**.
@@ -494,7 +494,11 @@ The TUI is the only interface. The mockups shared during the interview set the *
 
 ### 10.5 Notifications
 
-Workers ring the tmux bell (`\a` in their pane) when a run fails, when an approval is waiting, and when a service crashes and stops restarting. With tmux's default `monitor-bell`, the window is marked in the status line. Successful runs are silent. GroundControl never runs `osascript`. A bell only informs; approving still requires the TUI.
+Workers raise an alert when a run fails, when an approval is waiting, and when a service crashes and stops restarting:
+- a message in the status line of **every attached tmux client** (`display-message`), whichever session it is looking at, because the `gc-<project>` sessions are detached and a bell there is only flagged inside that session;
+- the tmux bell in the worker's own pane, which marks the window in `gc-<project>` (visible in `choose-tree` or when attached).
+
+Successful runs are silent. GroundControl never runs `osascript`. When no tmux client is attached (for example the TUI and every terminal are closed), nobody is told: a waiting approval is only seen the next time a TUI opens, and expires after 30 minutes. An alert only informs; approving still requires the TUI.
 
 ### 10.6 Engine requests
 
@@ -546,7 +550,7 @@ Config is never stored in SQLite; `groundcontrol.yaml` is the only source of tru
 - Pipelines: environments, typed inputs, `approve:`, `service:` steps, step outputs, dry run, all §8 safety checks.
 - Services and groups: health checks, restart policy, rotated logs.
 - TUI: Dashboard, Project, Run dialog, Run view with output pane, History, Health.
-- Secret masking; tmux bell notifications.
+- Secret masking; alerts to attached tmux clients.
 - finance-analyzer rollback pipelines (D1 bookmark restore and Worker rollback).
 - Projects: **finance-analyzer**, **Git Internals Dashboard** (services only), **tmux-ui-manager**.
 

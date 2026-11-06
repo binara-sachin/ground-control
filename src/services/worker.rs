@@ -64,6 +64,13 @@ impl Signals {
     }
 }
 
+/// Shows a message to every attached tmux client (see `Tmux::tell_clients`).
+pub(crate) async fn tell(msg: &str) {
+    if std::env::var_os("TMUX").is_some() {
+        let _ = crate::tmux::Tmux::default_server().tell_clients(msg).await;
+    }
+}
+
 /// Closes the pane this worker runs in, when it runs in tmux.
 pub(crate) async fn close_own_pane() {
     if let Ok(pane_id) = std::env::var("TMUX_PANE") {
@@ -312,6 +319,7 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                 });
                 if gave_up {
                     pane(b"\x07");
+                    tell(&format!("{}/{} crashed: {}", w.row.project, w.row.service, w.row.message.as_deref().unwrap_or(""))).await;
                 }
                 return 1;
             }

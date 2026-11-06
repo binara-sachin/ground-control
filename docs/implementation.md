@@ -23,7 +23,7 @@ the decisions taken where the spec left room, and what is still open.
 - [x] Per-step timeout (default 15m); cancel sends `SIGTERM` to the group, then `SIGKILL` after 10 s
 - [x] One run per project, enforced by the project's run lock; a second trigger is rejected, never queued
 - [x] `approve:` steps:
-  - pause with `awaiting_approval` and ring the tmux bell; the worker polls the store for the decision
+  - pause with `awaiting_approval` and alert the attached tmux clients; the worker polls the store for the decision
   - expire after 30 minutes with `cancelled (approval expired)`
   - the first answer wins; later answers get `already_decided`
   - a rejection gives the distinct status `rejected`
@@ -49,7 +49,7 @@ the decisions taken where the spec left room, and what is still open.
 - [x] Stop through a stop-request flag the worker polls (works while the pane is in copy mode); `C-c` and closing the window stop it too
 - [x] A service's worker is the only writer of its row while it holds the lock, and releases the lock after its process group is gone; each launch carries a token
 - [x] Nothing is restored after a reboot or logout
-- [x] Notifications are the tmux bell, from the worker's pane
+- [x] Alerts are a status-line message to every attached tmux client plus the bell in the worker's pane
 
 ### TUI (§10)
 
@@ -98,7 +98,7 @@ the decisions taken where the spec left room, and what is still open.
 
 ## Verification
 
-- `cargo test` (on macOS with tmux 3.8, and on Linux):
+- `cargo test` (on macOS with tmux 3.8; Linux has not been checked since revision 3):
   - unit tests: config rules, YAML positions, masking at every split point, env files, git parsing, remote normalisation, store (including concurrent migration, cancel and interrupt), locks, tmux escaping and parsing, the restart policy, health checks, process sessions and groups, log rotation, terminal rendering and run-view log sync
   - `tmux_e2e`: windows, argv commands, exact targets, dead panes, ids with `.` and `_`
   - `services_e2e`: port in use, health checks, failed start, on-failure restarts, group stop, masking in pane and log, stop in copy mode, `C-c`, closing the window, a duplicate worker closing itself
@@ -114,7 +114,8 @@ the decisions taken where the spec left room, and what is still open.
 - **Steps that leave background processes** holding the output pipe: the step still finishes when its main process exits; GroundControl stops reading after 2 s.
 - **Text checks are seatbelts.** The blocked-command and `--remote` checks are textual, as the spec says. Masking does not catch encoded or transformed secrets.
 - **A SIGKILLed worker** leaves its child process group running (see Leftover processes).
-- **No desktop notifications.** The tmux bell is the only signal; an optional `terminal-notifier` setting is described but not built.
+- **No desktop notifications.** Alerts reach attached tmux clients only; with none attached, a waiting approval goes unseen until a TUI opens (and expires after 30 minutes). Only the no-client path and the `#` escaping of the client message are tested; delivery to a really attached client has not been checked. An optional `terminal-notifier` setting is described but not built.
+- **Old runs with large logs.** The run view re-reads every followed step log from the start once (up to 1 MB per step per poll) and drops what it already has. Correct, but wasteful for big logs.
 
 ## Suggested next steps
 
