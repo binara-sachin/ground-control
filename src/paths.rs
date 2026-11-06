@@ -22,10 +22,6 @@ pub fn state_dir() -> PathBuf {
 /// File name of the SQLite store inside the state folder.
 pub const DB_FILE: &str = "state.db";
 
-pub fn db_path() -> PathBuf {
-    state_dir().join(DB_FILE)
-}
-
 pub const CONFIG_FILE: &str = "groundcontrol.yaml";
 
 /// Location of `groundcontrol.yaml`, in this order:

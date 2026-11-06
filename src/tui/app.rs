@@ -92,7 +92,7 @@ pub enum ConfirmAction {
 
 pub struct App {
     pub conn: Conn,
-    pub client: Option<std::sync::Arc<Engine>>,
+    pub engine: Option<std::sync::Arc<Engine>>,
     pub tx: UnboundedSender<Msg>,
     pub quit: bool,
     pub nav: Vec<View>,
@@ -120,7 +120,7 @@ impl App {
     pub fn new(tx: UnboundedSender<Msg>) -> App {
         App {
             conn: Conn::Connecting,
-            client: None,
+            engine: None,
             tx,
             quit: false,
             nav: vec![View::Dashboard],
@@ -145,10 +145,10 @@ impl App {
     // ── requests ──
 
     pub fn request(&self, req: Request, tag: Tag) {
-        let Some(client) = self.client.clone() else { return };
+        let Some(engine) = self.engine.clone() else { return };
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let r = client.request(req).await;
+            let r = engine.request(req).await;
             let _ = tx.send(Msg::Reply(tag, r));
         });
     }
@@ -190,7 +190,7 @@ impl App {
         self.push(View::Project(project::ProjectView::new(id)));
     }
 
-    /// First connection attempt.
+    /// Opens the engine for the first time.
     pub fn start(&mut self) {
         self.connect();
     }
@@ -236,7 +236,7 @@ impl App {
 
     /// Subscribes to the topics the current screen needs (§10.6).
     pub fn sync_subscription(&mut self) {
-        if self.client.is_none() {
+        if self.engine.is_none() {
             return;
         }
         let mut topics: BTreeSet<String> = ["runs", "services", "git", "config"].iter().map(|s| s.to_string()).collect();
@@ -276,12 +276,12 @@ impl App {
             }
             Msg::Input(_) => {}
             Msg::Tick => self.on_tick(),
-            Msg::Connected(client) => {
-                self.client = Some(client);
+            Msg::Connected(engine) => {
+                self.engine = Some(engine);
                 self.on_connected();
             }
             Msg::ConnectFailed(e) => {
-                self.client = None;
+                self.engine = None;
                 self.conn = Conn::Failed(e);
                 self.next_connect = Instant::now() + Duration::from_secs(2);
             }
@@ -293,7 +293,7 @@ impl App {
 
     fn on_tick(&mut self) {
         let now = Instant::now();
-        if self.client.is_none() && !matches!(self.conn, Conn::Connecting) && now >= self.next_connect {
+        if self.engine.is_none() && !matches!(self.conn, Conn::Connecting) && now >= self.next_connect {
             self.connect();
         }
         if self.refetch_projects_at.is_some_and(|t| now >= t) {
@@ -310,7 +310,7 @@ impl App {
             None => true,
             Some(t) => matches!(self.top(), View::Health) && t.elapsed() >= Duration::from_secs(5),
         };
-        if self.client.is_some() && due {
+        if self.engine.is_some() && due {
             self.last_health = Some(now);
             self.request(Request::HealthGet, Tag::Health);
         }

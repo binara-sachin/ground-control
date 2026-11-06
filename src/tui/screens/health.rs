@@ -78,11 +78,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
                 cell(sym, style, 1),
                 cell(t.name.clone(), theme::text(), 8),
                 cell(word, style, 7),
-                cell(
-                    t.path.clone().unwrap_or_else(|| "not on the PATH of /bin/zsh -l (move PATH setup to ~/.zprofile)".into()),
-                    theme::muted(),
-                    0,
-                ),
+                cell(t.path.clone().unwrap_or_else(|| "not on PATH (steps inherit the tmux server's PATH)".into()), theme::muted(), 0),
             ],
             w,
             1,

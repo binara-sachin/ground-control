@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::protocol::*;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 pub const PAGE_SIZE: u32 = 200;
 
 pub struct Store {
@@ -40,9 +40,8 @@ pub struct NewStep {
 pub struct StoredService {
     pub project: String,
     pub service: String,
-    pub desired_running: bool,
+    /// The service's process (its process-group leader), for display only.
     pub pid: Option<i32>,
-    pub pgid: Option<i32>,
     pub started_at: Option<Timestamp>,
     pub restart_count: u32,
     pub last_exit_code: Option<i32>,
@@ -127,36 +126,15 @@ impl Store {
                 step_index INTEGER,
                 PRIMARY KEY (run_id, key)
             );
-            CREATE TABLE IF NOT EXISTS service_state (
-                project TEXT NOT NULL,
-                service TEXT NOT NULL,
-                desired_state TEXT NOT NULL,
-                pid INTEGER,
-                pgid INTEGER,
-                started_at INTEGER,
-                restart_count INTEGER NOT NULL DEFAULT 0,
-                last_exit_code INTEGER,
-                status TEXT NOT NULL,
-                PRIMARY KEY (project, service)
-            );
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
             "#,
         )?;
-        // v2: service rows written by tmux-hosted workers.
-        for (col, ty) in [
-            ("healthy", "INTEGER NOT NULL DEFAULT 0"),
-            ("message", "TEXT"),
-            ("launch", "TEXT"),
-            ("updated_at", "INTEGER"),
-            ("stop_requested", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            add_column(&conn, "service_state", col, ty)?;
-        }
-        // v2: runs executed by tmux-hosted workers are cancelled through the store.
+        // Runs executed by tmux-hosted workers are cancelled through the store.
         add_column(&conn, "runs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")?;
+        migrate_service_state(&conn)?;
         let store = Store { conn };
         store.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(store)
@@ -228,11 +206,6 @@ impl Store {
             "UPDATE steps SET status = ?3, started_at = ?4, log_path = ?5 WHERE run_id = ?1 AND idx = ?2",
             params![run, idx as i64, status.as_str(), at, log_path],
         )?;
-        Ok(())
-    }
-
-    pub fn set_step_status(&self, run: i64, idx: usize, status: StepStatus) -> rusqlite::Result<()> {
-        self.conn.execute("UPDATE steps SET status = ?3 WHERE run_id = ?1 AND idx = ?2", params![run, idx as i64, status.as_str()])?;
         Ok(())
     }
 
@@ -468,19 +441,16 @@ impl Store {
 
     pub fn save_service(&self, s: &StoredService) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO service_state (project, service, desired_state, pid, pgid, started_at, restart_count, last_exit_code, status,
+            "INSERT INTO service_state (project, service, pid, started_at, restart_count, last_exit_code, status,
                healthy, message, launch, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(project, service) DO UPDATE SET desired_state = excluded.desired_state, pid = excluded.pid,
-               pgid = excluded.pgid, started_at = excluded.started_at, restart_count = excluded.restart_count,
-               last_exit_code = excluded.last_exit_code, status = excluded.status, healthy = excluded.healthy,
-               message = excluded.message, launch = excluded.launch, updated_at = excluded.updated_at",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(project, service) DO UPDATE SET pid = excluded.pid, started_at = excluded.started_at,
+               restart_count = excluded.restart_count, last_exit_code = excluded.last_exit_code, status = excluded.status,
+               healthy = excluded.healthy, message = excluded.message, launch = excluded.launch, updated_at = excluded.updated_at",
             params![
                 s.project,
                 s.service,
-                if s.desired_running { "running" } else { "stopped" },
                 s.pid,
-                s.pgid,
                 s.started_at,
                 s.restart_count,
                 s.last_exit_code,
@@ -492,11 +462,6 @@ impl Store {
             ],
         )?;
         Ok(())
-    }
-
-    pub fn services(&self) -> rusqlite::Result<Vec<StoredService>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {SERVICE_COLS} FROM service_state"))?;
-        stmt.query_map([], service_from_row)?.collect()
     }
 
     pub fn service(&self, project: &str, service: &str) -> rusqlite::Result<Option<StoredService>> {
@@ -532,33 +497,63 @@ impl Store {
             .optional()?
             .is_some_and(|v| v != 0))
     }
-
-    /// The Mac rebooted: nothing should come back up.
-    pub fn clear_desired_services(&self) -> rusqlite::Result<()> {
-        self.conn.execute("UPDATE service_state SET desired_state = 'stopped', pid = NULL, pgid = NULL, status = 'stopped'", [])?;
-        Ok(())
-    }
 }
 
-const SERVICE_COLS: &str = "project, service, desired_state, pid, pgid, started_at, restart_count, last_exit_code, status, \
-     healthy, message, launch, updated_at";
+const SERVICE_COLS: &str = "project, service, pid, started_at, restart_count, last_exit_code, status, healthy, message, launch, updated_at";
 
 fn service_from_row(r: &Row) -> rusqlite::Result<StoredService> {
     Ok(StoredService {
         project: r.get(0)?,
         service: r.get(1)?,
-        desired_running: r.get::<_, String>(2)? == "running",
-        pid: r.get(3)?,
-        pgid: r.get(4)?,
-        started_at: r.get(5)?,
-        restart_count: r.get(6)?,
-        last_exit_code: r.get(7)?,
-        status: ServiceState::parse(&r.get::<_, String>(8)?),
-        healthy: r.get(9)?,
-        message: r.get(10)?,
-        launch: r.get(11)?,
-        updated_at: r.get(12)?,
+        pid: r.get(2)?,
+        started_at: r.get(3)?,
+        restart_count: r.get(4)?,
+        last_exit_code: r.get(5)?,
+        status: ServiceState::parse(&r.get::<_, String>(6)?),
+        healthy: r.get(7)?,
+        message: r.get(8)?,
+        launch: r.get(9)?,
+        updated_at: r.get(10)?,
     })
+}
+
+/// Creates `service_state`. Its rows are live state that workers rewrite, not
+/// history, so a table from an older schema (which still had the daemon's
+/// `desired_state` and `pgid` columns) is dropped and recreated rather than
+/// migrated column by column. `BEGIN IMMEDIATE` keeps two processes opening
+/// the store together from both doing it.
+fn migrate_service_state(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        let old = conn.prepare("SELECT 1 FROM pragma_table_info('service_state') WHERE name = 'desired_state'")?.exists([])?;
+        if old {
+            conn.execute_batch("DROP TABLE service_state")?;
+        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS service_state (
+                project TEXT NOT NULL,
+                service TEXT NOT NULL,
+                pid INTEGER,
+                started_at INTEGER,
+                restart_count INTEGER NOT NULL DEFAULT 0,
+                last_exit_code INTEGER,
+                status TEXT NOT NULL,
+                healthy INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                launch TEXT,
+                updated_at INTEGER,
+                stop_requested INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (project, service)
+            )",
+        )
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// `ALTER TABLE … ADD COLUMN` unless the column exists. Two processes opening
@@ -718,8 +713,28 @@ mod tests {
         let path = dir.path().join("state.db");
         let a = Store::open(&path).unwrap();
         let b = Store::open(&path).unwrap();
-        assert_eq!(b.meta("schema_version").unwrap().as_deref(), Some("2"));
+        assert_eq!(b.meta("schema_version").unwrap().as_deref(), Some("3"));
         drop((a, b));
+    }
+
+    #[test]
+    fn old_service_table_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE service_state (project TEXT NOT NULL, service TEXT NOT NULL, desired_state TEXT NOT NULL,
+               pid INTEGER, pgid INTEGER, started_at INTEGER, restart_count INTEGER NOT NULL DEFAULT 0,
+               last_exit_code INTEGER, status TEXT NOT NULL, PRIMARY KEY (project, service));
+             INSERT INTO service_state (project, service, desired_state, status) VALUES ('p', 's', 'running', 'running');",
+        )
+        .unwrap();
+        drop(conn);
+        let s = Store::open(&path).unwrap();
+        assert!(s.service("p", "s").unwrap().is_none(), "old rows are dropped");
+        let row = StoredService { project: "p".into(), service: "s".into(), ..crate::services::blank_row("p", "s") };
+        s.save_service(&row).unwrap();
+        assert!(s.service("p", "s").unwrap().is_some());
     }
 
     #[test]
@@ -728,9 +743,7 @@ mod tests {
         let svc = StoredService {
             project: "gi".into(),
             service: "postgres".into(),
-            desired_running: true,
             pid: Some(10),
-            pgid: Some(10),
             started_at: Some(5),
             restart_count: 1,
             last_exit_code: None,
@@ -741,10 +754,8 @@ mod tests {
             updated_at: None,
         };
         s.save_service(&svc).unwrap();
-        let back = s.services().unwrap();
-        assert!(back[0].desired_running);
-        assert_eq!(back[0].status, ServiceState::Running);
         let one = s.service("gi", "postgres").unwrap().unwrap();
+        assert_eq!((one.status, one.pid), (ServiceState::Running, Some(10)));
         assert!(one.healthy);
         assert_eq!((one.message.as_deref(), one.launch.as_deref()), (Some("ok"), Some("t1")));
         assert!(one.updated_at.is_some());
@@ -757,9 +768,5 @@ mod tests {
         assert!(s.service_stop_requested("gi", "postgres").unwrap());
         s.begin_service_launch(&svc).unwrap();
         assert!(!s.service_stop_requested("gi", "postgres").unwrap());
-        s.clear_desired_services().unwrap();
-        assert!(!s.services().unwrap()[0].desired_running);
-        s.set_meta("last_saved_at", "42").unwrap();
-        assert_eq!(s.meta("last_saved_at").unwrap().as_deref(), Some("42"));
     }
 }

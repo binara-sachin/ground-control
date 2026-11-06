@@ -1,4 +1,4 @@
-//! Services without a daemon (docs/redesign-daemonless.md, "Services"): each
+//! Services (docs/architecture.md, "Services"): each
 //! running service is a `groundcontrol svc-exec` worker in the tmux window
 //! `gc-<project>:svc-<service>`. This module starts and stops those windows
 //! in dependency order and reads their state back; `worker` is the window's
@@ -70,9 +70,7 @@ pub(crate) fn blank_row(project: &str, service: &str) -> StoredService {
     StoredService {
         project: project.to_string(),
         service: service.to_string(),
-        desired_running: false,
         pid: None,
-        pgid: None,
         started_at: None,
         restart_count: 0,
         last_exit_code: None,
@@ -292,7 +290,6 @@ async fn stop_one(ctx: &Ctx, project: &Project, id: &str) -> Result<(), String> 
     // service being acknowledged.
     ctx.with_lock(&project.id, id, |r| {
         r.status = ServiceState::Stopped;
-        r.desired_running = false;
         r.healthy = false;
         r.pid = None;
         r.message = None;

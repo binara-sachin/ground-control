@@ -1,5 +1,5 @@
 //! tmux control: every run and service lives in a window of a per-project
-//! session, `gc-<project>` (docs/redesign-daemonless.md, "tmux layout").
+//! session, `gc-<project>` (docs/architecture.md, "tmux layout").
 //!
 //! Commands are passed to tmux as argv, after `--`, so tmux executes them
 //! directly instead of through a shell. Targets always use exact matching

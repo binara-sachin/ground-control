@@ -1,7 +1,7 @@
 # GroundControl: Personal Local Developer Platform — Specification
 
-> Status: **Draft for approval** · Owner: Sachin · Date: 2026-11-06 · Revision 3 (no daemon: tmux-hosted workers)
-> Revision 3 removes the `launchd` daemon. Why and how: [`redesign-daemonless.md`](redesign-daemonless.md).
+> Status: **Draft for approval** · Owner: Sachin · Date: 2026-11-06 · Revision 3 (TUI with tmux-hosted workers)
+> Processes, shared state and the reasons behind them: [`architecture.md`](architecture.md).
 > Binary, config file and state folder use the lowercase form `groundcontrol`. Values written as `<...>` are commands or paths still to be filled in (see §13).
 
 ---
@@ -41,7 +41,7 @@ Every process therefore has a visible, interactive parent: Terminal → tmux →
 | Conditions, parallel steps, pipelines spanning projects | Not in MVP |
 | Built-in providers (GitHub, Cloudflare API clients) | Not planned; everything is a shell step |
 | Plugin system | Not planned |
-| Linux or Windows support | Not planned; macOS only (revision 2 built and passed its tests on Linux; revision 3 has not been checked there) |
+| Linux or Windows support | Not planned; macOS only |
 
 ## 4. Constraints
 
@@ -107,7 +107,6 @@ Rust was chosen over Go for reasons other than performance, which is not a facto
 ### 5.4 Install and update
 
 - **Install:** `make install` builds the binary to `~/.local/bin/groundcontrol` and links the repository's `groundcontrol.yaml` into the state folder, so the TUI finds it from any directory. Nothing is registered to start at login.
-- **Migrating from the daemon versions:** `make install` (and `make remove-old-agent`) boots out and deletes the old `dev.binara.groundcontrol` launchd agent first.
 - **Opening the TUI:** run `groundcontrol` in any terminal. The recommended setup is a tmux popup binding in `~/.tmux.conf`, for example `bind g display-popup -E -w 90% -h 85% groundcontrol`.
 - **Update:** `git pull && make install`. Running workers keep the binary they started with; new windows use the new one.
 - **Config location:** `GC_CONFIG` if set, else `<state>/groundcontrol.yaml` (the link), else `./groundcontrol.yaml`. The TUI passes the resolved path to every worker window.
@@ -502,7 +501,7 @@ Successful runs are silent. GroundControl never runs `osascript`. When no tmux c
 
 ### 10.6 Engine requests
 
-The TUI talks to its in-process engine with the requests the daemon's socket protocol used to carry. There is no socket, envelope or handshake.
+The TUI talks to its in-process engine with these requests. There is no socket, envelope or handshake.
 
 | Request | Purpose |
 |---|---|
@@ -519,7 +518,7 @@ The TUI talks to its in-process engine with the requests the daemon's socket pro
 
 ## 11. Data and state storage
 
-**Database:** `~/Library/Application Support/GroundControl/state.db` (SQLite, WAL mode, schema version 2). The TUI and every worker open it with a busy timeout.
+**Database:** `~/Library/Application Support/GroundControl/state.db` (SQLite, WAL mode, schema version 3). The TUI and every worker open it with a busy timeout.
 
 | Table | Key columns |
 |---|---|
@@ -527,7 +526,7 @@ The TUI talks to its in-process engine with the requests the daemon's socket pro
 | `steps` | run_id, index, name, kind (`run`, `approve`, `service`), command, status, exit_code, started_at, finished_at, log_path |
 | `approvals` | run_id, step_index, status, requested_at, decided_at, expires_at |
 | `outputs` | run_id, key, value |
-| `service_state` | project, service, status, healthy, message, launch (token of the launch that wrote it), stop_requested, pid and pgid (display only), started_at, restart_count, last_exit_code, updated_at |
+| `service_state` | project, service, status, healthy, message, launch (token of the launch that wrote it), stop_requested, pid (display only), started_at, restart_count, last_exit_code, updated_at |
 | `meta` | schema_version |
 
 **Files** (under `~/Library/Application Support/GroundControl/` unless noted):
@@ -577,5 +576,4 @@ Config is never stored in SQLite; `groundcontrol.yaml` is the only source of tru
 7. **Local sign-in for the Git Internals Dashboard.** Does local testing still need an Asgardeo login, or is there a development bypass?
 8. **YAML crate.** Choose a maintained Rust YAML parser that reports line and column positions for validation errors.
 9. **TUI details:** minimum terminal size, the tmux popup key binding, and final theme colours.
-10. ~~`launchd` label~~: no longer used (revision 3).
-11. ~~`.zprofile` prerequisite~~: no longer needed; steps inherit the tmux server's environment (revision 3).
+10. **Security tool:** confirm that the endpoint-security alerts no longer fire with this design (see [`architecture.md`](architecture.md)).

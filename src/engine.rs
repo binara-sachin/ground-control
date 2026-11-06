@@ -1,7 +1,6 @@
-//! The TUI's in-process engine (docs/redesign-daemonless.md, "Live updates in
-//! the TUI"). It answers the same `Request`s the old daemon's socket did, and
-//! turns what tmux-hosted workers write (the store, step and service logs)
-//! into the same `Event`s by polling. It owns no runs and no services:
+//! The TUI's in-process engine (docs/architecture.md, "The TUI"). It answers
+//! the TUI's `Request`s and turns what tmux-hosted workers write (the store,
+//! step and service logs) into `Event`s by polling. It owns no runs and no services:
 //! quitting the TUI stops only the engine.
 
 use std::collections::{HashMap, HashSet};
@@ -129,7 +128,7 @@ impl Engine {
         self.config_status.lock().unwrap().clone()
     }
 
-    /// Answers one request, the way the daemon's socket server did.
+    /// Answers one request from the TUI.
     pub async fn request(&self, req: Request) -> Result<Response, RequestError> {
         let db_err = |e: String| rerr(ErrorCode::Internal, e);
         match req {
@@ -475,7 +474,7 @@ fn changed<K: std::hash::Hash + Eq>(map: &mut HashMap<K, String>, key: K, value:
     }
 }
 
-/// Turns store and log-file changes into events (the daemon pushed these).
+/// Turns store and log-file changes into events.
 async fn state_poller(e: Arc<Engine>) {
     let mut seen = Seen::default();
     let mut tick = 0u64;

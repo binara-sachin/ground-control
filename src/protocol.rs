@@ -1,6 +1,5 @@
-//! The TUI's requests to its engine, the engine's responses and events, and
-//! the data types they carry. These were the daemon's socket protocol
-//! (§10.6); they are now in-process, so there is no envelope or handshake.
+//! The TUI's requests to its in-process engine, the engine's responses and
+//! events, and the data types they carry (§10.6).
 
 use std::collections::BTreeMap;
 
@@ -49,7 +48,7 @@ pub struct RunStartParams {
     pub inputs: BTreeMap<String, String>,
     pub dry_run: bool,
     /// Set by the TUI once the user has seen the confirmation dialog of a
-    /// protected run. The daemon refuses protected runs without it.
+    /// protected run. `runs::start` refuses protected runs without it.
     pub confirmed: bool,
 }
 
@@ -114,7 +113,6 @@ impl RunFilter {
 pub enum ErrorCode {
     BadRequest,
     NotFound,
-    Busy,
     Refused,
     AlreadyDecided,
     Internal,
@@ -162,20 +160,6 @@ pub enum Event {
         service: String,
         data: String,
     },
-}
-
-impl Event {
-    /// The subscription topic this event belongs to.
-    pub fn topic(&self) -> String {
-        match self {
-            Event::Run(_) | Event::Step { .. } | Event::Approval(_) | Event::Output { .. } => "runs".into(),
-            Event::Service(_) => "services".into(),
-            Event::Git { .. } => "git".into(),
-            Event::Projects | Event::Config(_) => "config".into(),
-            Event::Log(c) => format!("log:{}", c.run),
-            Event::ServiceLog { project, service, .. } => format!("service-log:{project}/{service}"),
-        }
-    }
 }
 
 // ── data ──────────────────────────────────────────────────────────────────

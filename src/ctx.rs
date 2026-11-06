@@ -1,4 +1,4 @@
-//! What the TUI and the workers share without a daemon: the tmux server, the
+//! What the TUI and the workers share: the tmux server, the
 //! `groundcontrol` binary the windows run, the state folder, the config file
 //! and a connection to the store. Passed explicitly, so tests can run side by
 //! side with their own state folder and tmux server.

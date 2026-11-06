@@ -1,5 +1,6 @@
-# GroundControl configuration (spec §7). Edited by hand only; the daemon
-# reloads it on save and keeps the previous good config if this one is invalid.
+# GroundControl configuration (spec §7). Edited by hand only. An open TUI
+# reloads it on save and keeps the previous good config if this one is invalid;
+# each run or service window uses the config as it was when it started.
 #
 # Values marked TODO(§13.x) are still open questions in the spec. They are
 # written as commands that fail loudly instead of guessing, so nothing runs

@@ -1,5 +1,5 @@
 //! `groundcontrol run-exec <run-id>`: executes one recorded run in the
-//! foreground of its tmux window (docs/redesign-daemonless.md, "Pipeline runs").
+//! foreground of its tmux window (docs/architecture.md, "Pipeline runs").
 //!
 //! The worker holds the project's run lock for the whole run, so a project
 //! never has two runs at once. Step output goes, masked, to the pane and to

@@ -1,5 +1,5 @@
 //! `groundcontrol svc-exec <project> <service> <launch>`: runs one service in
-//! the foreground of its tmux window (docs/redesign-daemonless.md, "Services").
+//! the foreground of its tmux window (docs/architecture.md, "Services").
 //!
 //! The worker holds the service lock for its whole life and is the only
 //! writer of the service's row while it does. It releases the lock last,
@@ -104,7 +104,6 @@ impl Worker {
         say(msg);
         self.set(|r| {
             r.status = ServiceState::Stopped;
-            r.desired_running = false;
             r.healthy = false;
             r.pid = None;
             r.message = Some(msg.to_string());
@@ -143,7 +142,6 @@ pub async fn run(project_id: &str, service_id: &str, launch: &str) -> i32 {
     };
     let mut row = blank_row(project_id, service_id);
     row.launch = Some(launch.to_string());
-    row.desired_running = true;
     let mut w = Worker { store, row };
     let mut signals = match Signals::install() {
         Ok(s) => s,
@@ -209,7 +207,6 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
             r.status = ServiceState::Starting;
             r.healthy = false;
             r.pid = Some(pgid);
-            r.pgid = Some(pgid);
             r.started_at = Some(now());
             r.message = None;
         });
@@ -305,7 +302,6 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                 say(&message);
                 w.set(|r| {
                     r.status = ServiceState::Stopped;
-                    r.desired_running = false;
                     r.message = Some(message);
                 });
                 return 0;
@@ -314,7 +310,6 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                 say(&message);
                 w.set(|r| {
                     r.status = ServiceState::Crashed;
-                    r.desired_running = false;
                     r.message = Some(message);
                 });
                 if gave_up {
@@ -340,7 +335,6 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
                         say("stopped");
                         w.set(|r| {
                             r.status = ServiceState::Stopped;
-                            r.desired_running = false;
                             r.message = None;
                         });
                         return 0;
@@ -377,7 +371,6 @@ async fn stop_service(
     finish_output(pump).await;
     w.set(|r| {
         r.status = ServiceState::Stopped;
-        r.desired_running = false;
         r.healthy = false;
         r.pid = None;
         r.last_exit_code = code;

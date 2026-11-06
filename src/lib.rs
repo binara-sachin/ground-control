@@ -2,8 +2,8 @@
 //!
 //! One binary. `groundcontrol` opens the TUI. `groundcontrol svc-exec` and
 //! `groundcontrol run-exec` are the commands of the tmux windows that run
-//! services and pipeline runs (docs/redesign-daemonless.md). There is no
-//! daemon and nothing starts at login.
+//! services and pipeline runs (docs/architecture.md). Nothing runs in the
+//! background on its own and nothing starts at login.
 
 pub mod config;
 pub mod ctx;

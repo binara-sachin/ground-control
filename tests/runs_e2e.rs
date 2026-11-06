@@ -1,4 +1,4 @@
-//! End-to-end tests for daemonless runs: real `groundcontrol run-exec`
+//! End-to-end tests for runs: real `groundcontrol run-exec`
 //! workers in windows of a private tmux server, driven through `runs::start`,
 //! `decide` and `cancel`. Skipped when tmux is not installed.
 

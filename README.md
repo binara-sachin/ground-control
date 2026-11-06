@@ -11,7 +11,7 @@ local test stacks.
 - Implementation status, decisions and open items: [`docs/implementation.md`](docs/implementation.md)
 - Design references: [`design/`](design/)
 
-There is no daemon and nothing starts at login. One Rust binary plays two roles:
+Nothing runs in the background on its own and nothing starts at login. One Rust binary plays two roles:
 
 | Command | What it is |
 |---|---|
@@ -23,7 +23,7 @@ service, and you can attach to any of them (`tmux ls`). Every process has a
 visible parent: Terminal → tmux → `groundcontrol` → your command. GroundControl
 opens no socket or network listener, installs no background agent, holds no
 credentials and needs no root. Why it is built this way:
-[`docs/redesign-daemonless.md`](docs/redesign-daemonless.md).
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Install (macOS)
 
@@ -35,8 +35,7 @@ make install
 
 This builds `~/.local/bin/groundcontrol` and links this repository's
 `groundcontrol.yaml` into `~/Library/Application Support/GroundControl/`, so the
-TUI finds it from any directory. If a launchd agent from an earlier, daemon-based
-version is installed, `make install` boots it out and deletes it first.
+TUI finds it from any directory. It registers nothing to start at login.
 
 To update: `git pull && make install`. Running workers keep the binary they
 started with; new windows use the new one.
@@ -47,7 +46,7 @@ Open the TUI from any terminal with `groundcontrol`. A tmux popup works well:
 bind g display-popup -E -w 90% -h 85% groundcontrol
 ```
 
-Other targets: `make uninstall` (keeps history and logs) and `make remove-old-agent`.
+`make uninstall` removes both and keeps history and logs.
 
 Steps run under `/bin/zsh -c` inside tmux, so they inherit your interactive
 shell's environment (PATH, `brew shellenv`, version managers). Each step and
@@ -113,9 +112,9 @@ make lint
 workers in a private tmux server and skip themselves when tmux is missing.
 `make lint` runs rustfmt and clippy with `-D warnings`.
 
-The code is meant to build on Linux too, but this revision has only been tested
-on macOS; `make remove-old-agent` (launchd) and `pbcopy` are macOS-specific. To try it without installing, point
-it at a scratch state folder from inside tmux:
+It has only been tested on macOS. It is meant to build on Linux too, where the
+clipboard falls back from `pbcopy` to `wl-copy` or `xclip`. To try it without
+installing, point it at a scratch state folder from inside tmux:
 
 ```bash
 GC_STATE_DIR=/tmp/gc GC_CONFIG=$PWD/groundcontrol.yaml cargo run

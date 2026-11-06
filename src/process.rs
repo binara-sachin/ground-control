@@ -1,5 +1,5 @@
 //! Spawning shell commands in their own session and process group with stdout and stderr
-//! merged into one ordered stream (§6.1, §5.1 Log writer).
+//! merged into one ordered stream (§6.1).
 
 use std::collections::BTreeMap;
 use std::io::Read;

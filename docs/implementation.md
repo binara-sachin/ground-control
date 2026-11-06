@@ -5,15 +5,15 @@ the decisions taken where the spec left room, and what is still open.
 
 ## Checklist (spec §12 MVP)
 
-### Architecture (revision 3: no daemon)
+### Architecture ([`architecture.md`](architecture.md))
 
 - [x] `groundcontrol` is the TUI with an in-process engine (`engine.rs`): config loading, validation (§7.4) with line and column, hot reload that keeps the last good config, git polling, live updates by polling the store and log files, and ending runs whose worker is gone (`runs::reap`)
 - [x] Runs execute in `groundcontrol run-exec <id>` in the tmux window `gc-<project>:run-<id>` (`runs/worker.rs`); services in `groundcontrol svc-exec` in `gc-<project>:svc-<service>` (`services/worker.rs`)
 - [x] tmux control with argv commands and exact `=session:=window` targets; ids escaped for tmux (`tmux.rs`)
 - [x] `flock` locks per project run and per service, released by the kernel when the holder exits (`lock.rs`)
-- [x] SQLite store opened by every process (busy timeout set first, WAL); schema v2 adds `runs.cancel_requested` and the worker-owned service columns, with a migration that is safe when two processes open the store together (`store.rs`)
+- [x] SQLite store opened by every process (busy timeout set first, WAL); schema v3: `runs.cancel_requested` and a `service_state` table owned by the service workers; an older `service_state` is dropped and recreated, under `BEGIN IMMEDIATE` so two processes opening the store together are safe (`store.rs`)
 - [x] Tool check resolves on `PATH` in-process; tmux checked at TUI start and on the Health screen; Docker only while the Health screen is open
-- [x] No socket, no protocol envelope, no `launchd`, no `osascript`, `ps`, `lsof` or `sysctl`
+- [x] No socket, no `launchd`, no `osascript`, `ps`, `lsof` or `sysctl`; nothing starts at login
 
 ### Pipelines (§6, §8)
 
@@ -43,7 +43,7 @@ the decisions taken where the spec left room, and what is still open.
 
 - [x] HTTP-200 and TCP-port health checks; the 30 s start deadline; without a check, alive counts as healthy
 - [x] Starting a service starts its dependencies first and waits for them to be healthy. Groups start in dependency order and stop in reverse
-- [x] `restart: on-failure`: back-off from 1 s doubling to 60 s; after 5 crashes in 5 minutes the service is marked **crashed** and a notification fires. `restart: never`: exit 0 shows as stopped, non-zero as crashed
+- [x] `restart: on-failure`: back-off from 1 s doubling to 60 s; after 5 crashes in 5 minutes the service is marked **crashed** and the attached tmux clients are alerted. `restart: never`: exit 0 shows as stopped, non-zero as crashed
 - [x] A port in use refuses the start with "port N is in use (not started by GroundControl)"
 - [x] Rotated service logs; masked live log events for the dashboard pane
 - [x] Stop through a stop-request flag the worker polls (works while the pane is in copy mode); `C-c` and closing the window stop it too
@@ -71,7 +71,7 @@ the decisions taken where the spec left room, and what is still open.
 
 ### Install (§5.4)
 
-- [x] `make install` builds `~/.local/bin/groundcontrol`, links `groundcontrol.yaml` into the state folder, and removes the old `dev.binara.groundcontrol` launchd agent if present. Nothing starts at login
+- [x] `make install` builds `~/.local/bin/groundcontrol`, links `groundcontrol.yaml` into the state folder. Nothing starts at login
 
 ### Projects (§7.2, §7.3)
 
@@ -87,7 +87,7 @@ the decisions taken where the spec left room, and what is still open.
 | "HEAD isn't on origin" | `git rev-list --count HEAD --not --remotes=origin` > 0. The count is stored with the run. |
 | Run IDs | SQLite autoincrement integers, matching the mockups (`#412`). |
 | Service start semantics | Starting a single service starts its `depends_on` chain first. A process that exits during its first start is reported as a failed start, not fed into the restart loop. Health is re-checked every 5 s while a service runs (`unhealthy` is shown, not restarted). |
-| Removed services | When a config reload removes a service that is running, it is stopped. |
+| Removed services | A worker uses the config it started with, so a running service that is removed from the config keeps running in its window. The TUI no longer lists it; stop it with `C-c` in its window. |
 | Leftover processes | Never adopted or signalled. A worker that is SIGKILLed leaves its child running; the status says "worker exited unexpectedly" and the next start of a service with a health port reports the port as in use. |
 | Health URLs | Plain `http://` only, a minimal built-in HTTP/1.1 client (no TLS dependency). Port checks try IPv4 and IPv6 loopback, because Vite may bind only `::1`. |
 | Protected runs | The run dialog is the confirmation dialog. The TUI sends `confirmed: true`; protected runs and protected approvals are refused without it. |
@@ -98,7 +98,7 @@ the decisions taken where the spec left room, and what is still open.
 
 ## Verification
 
-- `cargo test` (on macOS with tmux 3.8; Linux has not been checked since revision 3):
+- `cargo test` (on macOS with tmux 3.8; not tested on Linux):
   - unit tests: config rules, YAML positions, masking at every split point, env files, git parsing, remote normalisation, store (including concurrent migration, cancel and interrupt), locks, tmux escaping and parsing, the restart policy, health checks, process sessions and groups, log rotation, terminal rendering and run-view log sync
   - `tmux_e2e`: windows, argv commands, exact targets, dead panes, ids with `.` and `_`
   - `services_e2e`: port in use, health checks, failed start, on-failure restarts, group stop, masking in pane and log, stop in copy mode, `C-c`, closing the window, a duplicate worker closing itself

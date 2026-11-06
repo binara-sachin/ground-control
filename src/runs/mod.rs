@@ -1,5 +1,4 @@
-//! Pipeline runs without a daemon (docs/redesign-daemonless.md, "Pipeline
-//! runs"). `start` validates and records a run, then opens the tmux window
+//! Pipeline runs (docs/architecture.md, "Pipeline runs"). `start` validates and records a run, then opens the tmux window
 //! `gc-<project>:run-<id>`, whose `groundcontrol run-exec <id>` worker
 //! executes it. Approvals and cancel go through the store, which the worker
 //! polls. Also: inputs, environments, step env, outputs and dry runs (§6.1–§6.4, §8).

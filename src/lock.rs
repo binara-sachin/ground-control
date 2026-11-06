@@ -1,5 +1,5 @@
 //! Advisory `flock` locks that mark a run or a service as owned by a live
-//! worker process (docs/redesign-daemonless.md, "Locking and concurrency").
+//! worker process (docs/architecture.md, "Locking").
 //!
 //! The kernel releases a lock when the process holding it exits, however it
 //! exits, so a lock can never go stale and no PID is ever checked or signalled.

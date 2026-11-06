@@ -1,4 +1,4 @@
-//! End-to-end tests for daemonless services: real `groundcontrol svc-exec`
+//! End-to-end tests for services: real `groundcontrol svc-exec`
 //! workers in windows of a private tmux server, driven through
 //! `services::control`. Skipped when tmux is not installed.
 
