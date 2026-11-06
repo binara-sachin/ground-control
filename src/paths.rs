@@ -1,9 +1,6 @@
-//! Filesystem locations used by the daemon and the TUI (§11).
+//! Filesystem locations used by the TUI and the workers (§11).
 
 use std::path::{Path, PathBuf};
-
-/// `launchd` label of the daemon's user agent.
-pub const LAUNCHD_LABEL: &str = "dev.binara.groundcontrol";
 
 /// Folder name used inside sensitive repositories.
 pub const REPO_STATE_DIR: &str = ".groundcontrol";
@@ -22,10 +19,6 @@ pub fn state_dir() -> PathBuf {
     }
 }
 
-pub fn socket_path() -> PathBuf {
-    state_dir().join("gc.sock")
-}
-
 /// File name of the SQLite store inside the state folder.
 pub const DB_FILE: &str = "state.db";
 
@@ -33,19 +26,23 @@ pub fn db_path() -> PathBuf {
     state_dir().join(DB_FILE)
 }
 
-pub fn daemon_log_path() -> PathBuf {
-    state_dir().join("daemon.log")
-}
+pub const CONFIG_FILE: &str = "groundcontrol.yaml";
 
-/// Location of `groundcontrol.yaml`.
+/// Location of `groundcontrol.yaml`, in this order:
 ///
-/// `GC_CONFIG` (set in the launchd plist by `make install`) wins; otherwise the
-/// file next to the current directory is used.
+/// 1. `GC_CONFIG` (the TUI passes it on to every worker window);
+/// 2. `<state>/groundcontrol.yaml`, the symlink `make install` points at the
+///    repository's file, so the TUI finds it from any folder;
+/// 3. `groundcontrol.yaml` in the current directory.
 pub fn config_path() -> PathBuf {
     if let Some(p) = std::env::var_os("GC_CONFIG") {
         return expand_tilde(&PathBuf::from(p));
     }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("groundcontrol.yaml")
+    let installed = state_dir().join(CONFIG_FILE);
+    if installed.exists() {
+        return installed;
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(CONFIG_FILE)
 }
 
 pub fn home_dir() -> PathBuf {

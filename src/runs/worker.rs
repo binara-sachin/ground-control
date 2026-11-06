@@ -17,11 +17,11 @@ use tokio::time::Instant;
 
 use super::{APPROVAL_TTL, approval_vars, expand_message, fmt_secs, gc_vars, parse_outputs, step_env};
 use crate::config::{Config, Pipeline, Project, ServiceAction, StepKind};
-use crate::daemon::process;
-use crate::daemon::store::Store;
 use crate::mask::Masker;
+use crate::process;
 use crate::protocol::*;
 use crate::services::worker::{Signals, close_own_pane, pane, say};
+use crate::store::Store;
 
 const TICK: Duration = Duration::from_millis(250);
 /// How long a succeeded run's window stays open before it closes itself.
@@ -319,7 +319,7 @@ async fn run_step(
             return StepOutcome::Failed(Some(msg));
         }
     };
-    let mut spawned = match process::spawn_plain_shell(command, dir, vars) {
+    let mut spawned = match process::spawn_shell(command, dir, vars) {
         Ok(s) => s,
         Err(e) => {
             log.write(format!("groundcontrol: cannot start step: {e}\n").as_bytes());

@@ -114,7 +114,7 @@ impl RunDialog {
                 }
                 if g.origin_matches == Some(false) {
                     warnings.push(Line::styled(
-                        "× origin does not match the configured remote; the daemon will refuse this run.",
+                        "× origin does not match the configured remote; GroundControl will refuse this run.",
                         theme::danger(),
                     ));
                 }

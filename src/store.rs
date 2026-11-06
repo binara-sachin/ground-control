@@ -1,5 +1,5 @@
-//! SQLite store (§11). The daemon, the TUI and the tmux-hosted workers each
-//! open their own connection (WAL, with a busy timeout). Secrets and step
+//! SQLite store (§11). The TUI and the tmux-hosted workers each open their
+//! own connection (WAL, with a busy timeout). Secrets and step
 //! output never enter it.
 
 use std::collections::BTreeMap;
@@ -343,15 +343,6 @@ impl Store {
             .optional()
     }
 
-    /// Runs left active by a previous daemon process are closed out.
-    pub fn recover_interrupted(&self, now: Timestamp) -> rusqlite::Result<Vec<i64>> {
-        let ids: Vec<i64> = self.active_runs()?.into_iter().map(|(id, _, _)| id).collect();
-        for id in &ids {
-            self.interrupt_run(*id, RunStatus::Cancelled, "daemon restarted", now)?;
-        }
-        Ok(ids)
-    }
-
     /// Ends a run that can no longer finish on its own: running or waiting
     /// steps are cancelled, the rest skipped, a pending approval cancelled.
     pub fn interrupt_run(&self, id: i64, status: RunStatus, reason: &str, now: Timestamp) -> rusqlite::Result<()> {
@@ -684,19 +675,6 @@ mod tests {
         assert_eq!(s.decide_approval(a, 1, ApprovalStatus::Rejected, 101).unwrap(), Ok(()));
         assert_eq!(s.decide_approval(a, 1, ApprovalStatus::Approved, 102).unwrap(), Err(ApprovalStatus::Rejected));
         assert!(s.waiting_approvals().unwrap().is_empty());
-    }
-
-    #[test]
-    fn recovery_closes_active_runs() {
-        let s = Store::open_in_memory().unwrap();
-        let a = new_run(&s, "fa", "deploy", Some("prod"));
-        s.start_step(a, 0, 101, StepStatus::Running, None).unwrap();
-        assert_eq!(s.recover_interrupted(200).unwrap(), vec![a]);
-        let d = s.run_detail(a).unwrap().unwrap();
-        assert_eq!(d.summary.status, RunStatus::Cancelled);
-        assert_eq!(d.summary.reason.as_deref(), Some("daemon restarted"));
-        assert_eq!(d.steps[0].status, StepStatus::Cancelled);
-        assert_eq!(d.steps[1].status, StepStatus::Skipped);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! TUI state and message handling. The TUI holds no state of its own beyond
-//! the screen: everything comes from the daemon's responses and events.
+//! the screen: everything comes from the engine's responses and events, which
+//! it reads from what the tmux-hosted workers record.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -9,15 +10,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::screens::{dashboard, dialog, history, project, run_view};
 use super::term_view::TermView;
-use crate::client::{Client, ConnectError, Incoming, RequestError};
+use crate::engine::{Engine, RequestError};
 use crate::protocol::*;
 
 pub enum Msg {
     Input(TermEvent),
     Tick,
-    Connected(Client),
-    ConnectFailed(ConnectError),
-    Daemon(Incoming),
+    Connected(std::sync::Arc<Engine>),
+    ConnectFailed(String),
+    Event(Event),
     Reply(Tag, Result<Response, RequestError>),
     Toast(String, Level),
 }
@@ -51,8 +52,8 @@ pub enum Level {
 pub enum Conn {
     Connecting,
     Connected,
-    NotRunning(String),
-    Mismatch(String),
+    /// The state folder or database could not be opened.
+    Failed(String),
 }
 
 pub enum View {
@@ -91,7 +92,7 @@ pub enum ConfirmAction {
 
 pub struct App {
     pub conn: Conn,
-    pub client: Option<Client>,
+    pub client: Option<std::sync::Arc<Engine>>,
     pub tx: UnboundedSender<Msg>,
     pub quit: bool,
     pub nav: Vec<View>,
@@ -194,16 +195,18 @@ impl App {
         self.connect();
     }
 
+    /// Opens the state and starts the engine's pollers. Nothing runs in the
+    /// background once the TUI quits.
     fn connect(&mut self) {
         self.conn = Conn::Connecting;
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            match Client::connect(&crate::paths::socket_path()).await {
-                Ok((client, mut rx)) => {
-                    let _ = tx.send(Msg::Connected(client));
-                    while let Some(m) = rx.recv().await {
-                        let gone = matches!(m, Incoming::Disconnected);
-                        if tx.send(Msg::Daemon(m)).is_err() || gone {
+            match crate::ctx::Ctx::from_env() {
+                Ok(ctx) => {
+                    let (engine, mut rx) = Engine::open(ctx);
+                    let _ = tx.send(Msg::Connected(engine));
+                    while let Some(e) = rx.recv().await {
+                        if tx.send(Msg::Event(e)).is_err() {
                             break;
                         }
                     }
@@ -237,6 +240,9 @@ impl App {
             return;
         }
         let mut topics: BTreeSet<String> = ["runs", "services", "git", "config"].iter().map(|s| s.to_string()).collect();
+        if matches!(self.top(), View::Health) {
+            topics.insert("health".into());
+        }
         for v in &self.nav {
             if let View::Run(r) = v {
                 topics.insert(format!("log:{}", r.id));
@@ -276,18 +282,10 @@ impl App {
             }
             Msg::ConnectFailed(e) => {
                 self.client = None;
-                self.conn = match e {
-                    ConnectError::VersionMismatch { .. } => Conn::Mismatch(e.to_string()),
-                    _ => Conn::NotRunning(e.to_string()),
-                };
+                self.conn = Conn::Failed(e);
                 self.next_connect = Instant::now() + Duration::from_secs(2);
             }
-            Msg::Daemon(Incoming::Disconnected) => {
-                self.client = None;
-                self.conn = Conn::NotRunning("connection to the daemon was lost".into());
-                self.next_connect = Instant::now() + Duration::from_secs(1);
-            }
-            Msg::Daemon(Incoming::Event(e)) => self.on_event(e),
+            Msg::Event(e) => self.on_event(e),
             Msg::Reply(tag, r) => self.on_reply(tag, r),
             Msg::Toast(m, l) => self.toast(m, l),
         }
@@ -306,8 +304,13 @@ impl App {
             self.refetch_recent_at = None;
             self.request(Request::RunsQuery { filter: RunFilter::default(), page: 0 }, Tag::Recent);
         }
-        let health_every = if matches!(self.top(), View::Health) { Duration::from_secs(5) } else { Duration::from_secs(60) };
-        if self.client.is_some() && self.last_health.is_none_or(|t| t.elapsed() >= health_every) {
+        // Checked once at start for the attention markers, then only while the
+        // Health screen is open: nothing probes the system on a timer.
+        let due = match self.last_health {
+            None => true,
+            Some(t) => matches!(self.top(), View::Health) && t.elapsed() >= Duration::from_secs(5),
+        };
+        if self.client.is_some() && due {
             self.last_health = Some(now);
             self.request(Request::HealthGet, Tag::Health);
         }
@@ -587,7 +590,6 @@ impl App {
         if !matches!(self.conn, Conn::Connected) {
             match k.code {
                 KeyCode::Char('q') => self.quit = true,
-                KeyCode::Char('k') => self.kickstart(),
                 KeyCode::Char('r') => {
                     self.next_connect = Instant::now();
                     if !matches!(self.conn, Conn::Connecting) {
@@ -694,30 +696,6 @@ impl App {
                 _ => Some(Overlay::Confirm(c)),
             },
         }
-    }
-
-    /// Offers `launchctl kickstart` for the agent (§5.4). Never runs the daemon in-process.
-    fn kickstart(&mut self) {
-        let restart = matches!(self.conn, Conn::Mismatch(_));
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let uid = nix::unistd::getuid().as_raw();
-            let target = format!("gui/{uid}/{}", crate::paths::LAUNCHD_LABEL);
-            let mut cmd = tokio::process::Command::new("launchctl");
-            cmd.arg("kickstart");
-            if restart {
-                cmd.arg("-k");
-            }
-            cmd.arg(&target);
-            let msg = match cmd.output().await {
-                Ok(o) if o.status.success() => (format!("launchctl kickstart {target}: ok"), Level::Success),
-                Ok(o) => (format!("launchctl failed: {}", String::from_utf8_lossy(&o.stderr).trim()), Level::Error),
-                Err(e) => (format!("cannot run launchctl: {e} (is the agent installed? run `make install`)"), Level::Error),
-            };
-            let _ = tx.send(Msg::Toast(msg.0, msg.1));
-        });
-        self.next_connect = Instant::now() + Duration::from_millis(800);
-        self.conn = Conn::NotRunning("waiting for the daemon to start…".into());
     }
 
     /// Whether a screen tab needs attention (`!` in the top bar).

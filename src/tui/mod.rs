@@ -1,5 +1,5 @@
-//! The TUI (`groundcontrol` with no arguments): a client of the daemon.
-//! Quitting it never stops a run or a service.
+//! The TUI (`groundcontrol` with no arguments). Runs and services live in
+//! tmux windows, so quitting it never stops a run or a service.
 
 mod app;
 mod screens;
@@ -128,10 +128,9 @@ fn draw(app: &mut App, f: &mut Frame) {
     match &app.conn {
         Conn::Connected => draw_view(app, f, body),
         Conn::Connecting => {
-            f.render_widget(para(vec![Line::styled(" connecting to the daemon…", theme::muted())]), body);
+            f.render_widget(para(vec![Line::styled(" opening GroundControl's state…", theme::muted())]), body);
         }
-        Conn::NotRunning(e) => draw_disconnected(f, body, "GroundControl daemon is not running", e, "k", "start it (launchctl kickstart)"),
-        Conn::Mismatch(e) => draw_disconnected(f, body, "Daemon version mismatch", e, "k", "restart the daemon (launchctl kickstart -k)"),
+        Conn::Failed(e) => draw_failed(f, body, e),
     }
     if matches!(app.conn, Conn::Connected) {
         draw_overlay(app, f, body);
@@ -149,21 +148,18 @@ fn draw_view(app: &mut App, f: &mut Frame, area: Rect) {
     }
 }
 
-fn draw_disconnected(f: &mut Frame, area: Rect, title: &str, detail: &str, key: &str, action: &str) {
-    let r = centered(area, 84, 9);
+fn draw_failed(f: &mut Frame, area: Rect, detail: &str) {
+    let r = centered(area, 84, 8);
     clear(f, r);
-    let inner = framed_alert(f, r, title, false);
+    let inner = framed_alert(f, r, "Cannot open GroundControl's state", false);
     let w = inner.width as usize;
     let lines = vec![
         Line::raw(""),
         clip_line(vec![Span::styled(format!(" {detail}"), theme::text())], w),
-        Line::styled(" The TUI never runs the daemon itself; it is a launchd user agent.", theme::muted()),
         Line::styled(" Retrying automatically.", theme::muted()),
         Line::raw(""),
         Line::from(vec![
-            Span::styled(format!(" {key} "), theme::key()),
-            Span::styled(action.to_string(), theme::text()),
-            Span::styled("    r ", theme::key()),
+            Span::styled(" r ", theme::key()),
             Span::styled("retry now", theme::text()),
             Span::styled("    q ", theme::key()),
             Span::styled("quit", theme::text()),
@@ -205,10 +201,8 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
         left.push(Span::styled(label, if n == root { active } else { tab }));
     }
     let mut right = Vec::new();
-    if let Some(h) = &app.health {
-        right.push(Span::styled(format!("daemon up {}   ", fmt_age_long(crate::protocol::now() - h.started_at)), bar));
-    } else if !matches!(app.conn, Conn::Connected) {
-        right.push(Span::styled("daemon down   ", bar));
+    if !matches!(app.conn, Conn::Connected) {
+        right.push(Span::styled("state unavailable   ", bar));
     }
     if let Some(c) = &app.config {
         let t = c.loaded_at.map(fmt_clock).unwrap_or_default();
@@ -230,17 +224,6 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
 }
 
-fn fmt_age_long(secs: i64) -> String {
-    let s = secs.max(0);
-    if s < 3600 {
-        format!("{}m", s / 60)
-    } else if s < 86400 {
-        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
-    } else {
-        format!("{}d{}h", s / 86400, (s % 86400) / 3600)
-    }
-}
-
 /// A key and its label in the bottom bar.
 type Hint = (&'static str, &'static str);
 
@@ -248,7 +231,7 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(Block::default().style(Style::new().bg(theme::BAR_BG)), area);
     let connected = matches!(app.conn, Conn::Connected);
     let (hints, right): (Vec<Hint>, Vec<Hint>) = if !connected {
-        (vec![("k", "start daemon"), ("r", "retry")], vec![("q", "quit")])
+        (vec![("r", "retry")], vec![("q", "quit")])
     } else {
         match &app.overlay {
             Some(Overlay::Dialog(d)) => (dialog::hints(d), vec![]),

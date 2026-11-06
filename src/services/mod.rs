@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, Health, Project, Service, ServiceAction};
 pub use crate::ctx::Ctx;
-use crate::daemon::store::StoredService;
 use crate::lock;
 use crate::protocol::{ServiceState, ServiceStatus, Timestamp, now};
+use crate::store::StoredService;
 use crate::tmux::NewWindow;
 
 pub const HEALTH_START_TIMEOUT: Duration = Duration::from_secs(30);

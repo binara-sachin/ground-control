@@ -22,11 +22,11 @@ use tokio::sync::watch;
 use super::policy::{self, Next};
 use super::{HEALTH_INTERVAL, HEALTH_START_TIMEOUT, blank_row, health};
 use crate::config::{Config, Health, Project, Service};
-use crate::daemon::logfile::RotatingFile;
-use crate::daemon::process;
-use crate::daemon::store::{Store, StoredService};
+use crate::logfile::RotatingFile;
 use crate::mask::Masker;
+use crate::process;
 use crate::protocol::{ServiceState, now};
+use crate::store::{Store, StoredService};
 
 const TICK: Duration = Duration::from_millis(250);
 /// A service without a health check counts as healthy once it has stayed up this long.
@@ -192,7 +192,7 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
         let _ = writeln!(log, "\n── {stamp} starting: {} ──", svc.start);
         say(&format!("{stamp} starting: {}", svc.start));
 
-        let spawned = match process::spawn_plain_shell(&svc.start, &dir, &env) {
+        let spawned = match process::spawn_shell(&svc.start, &dir, &env) {
             Ok(s) => s,
             Err(e) => return w.refuse(&format!("cannot start: {e}")),
         };

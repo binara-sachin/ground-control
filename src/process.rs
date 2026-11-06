@@ -1,4 +1,4 @@
-//! Spawning shell commands in their own process group with stdout and stderr
+//! Spawning shell commands in their own session and process group with stdout and stderr
 //! merged into one ordered stream (§6.1, §5.1 Log writer).
 
 use std::collections::BTreeMap;
@@ -22,15 +22,11 @@ pub struct Spawned {
     pub output: mpsc::Receiver<Vec<u8>>,
 }
 
-/// Runs `/bin/zsh -l -c <command>` in `dir`, stdin from `/dev/null`, in a new
-/// session and process group whose id equals the child's pid.
+/// Runs `/bin/zsh -c <command>` in `dir`, stdin from `/dev/null`, in a new
+/// session and process group whose id equals the child's pid. Not a login
+/// shell: tmux-hosted workers already inherit the user's interactive
+/// environment.
 pub fn spawn_shell(command: &str, dir: &Path, env: &BTreeMap<String, String>) -> std::io::Result<Spawned> {
-    spawn(&["-l", "-c", command], dir, env)
-}
-
-/// Like `spawn_shell`, but `/bin/zsh -c` without `-l`: tmux-hosted workers
-/// already inherit the user's interactive environment.
-pub fn spawn_plain_shell(command: &str, dir: &Path, env: &BTreeMap<String, String>) -> std::io::Result<Spawned> {
     spawn(&["-c", command], dir, env)
 }
 
@@ -46,7 +42,7 @@ fn spawn(args: &[&str], dir: &Path, env: &BTreeMap<String, String>) -> std::io::
         .kill_on_drop(false);
     // A new session: the child leads its own process group (pgid == pid) and
     // has no controlling terminal. Inside a tmux pane this keeps steps from
-    // reading the pane's size or prompting on `/dev/tty`, as under launchd.
+    // reading the pane's size or prompting on `/dev/tty`, as a detached process would be.
     // SAFETY: `setsid` is async-signal-safe and touches no shared state.
     unsafe {
         cmd.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(std::io::Error::from));
@@ -103,51 +99,6 @@ pub async fn terminate(child: &mut Child, pgid: i32) -> Option<i32> {
     status.and_then(|s| s.code())
 }
 
-/// Whether the group leader still looks like a process GroundControl started
-/// (`/bin/zsh -l -c …`), so a reused PID is never signalled.
-pub async fn looks_like_ours(pgid: i32) -> bool {
-    let out = tokio::process::Command::new("ps").args(["-o", "args=", "-p", &pgid.to_string()]).stdin(Stdio::null()).output().await;
-    match out {
-        Ok(o) => {
-            let args = String::from_utf8_lossy(&o.stdout);
-            args.contains("zsh") && args.contains(" -c ")
-        }
-        Err(_) => false,
-    }
-}
-
-/// Terminates a group we no longer hold a `Child` handle for (left over from a
-/// previous daemon process).
-pub async fn terminate_orphan_group(pgid: i32) {
-    if !group_alive(pgid) {
-        return;
-    }
-    signal_group(pgid, Signal::SIGTERM);
-    let deadline = tokio::time::Instant::now() + KILL_GRACE;
-    while group_alive(pgid) && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    if group_alive(pgid) {
-        signal_group(pgid, Signal::SIGKILL);
-    }
-}
-
-/// Runs a short command through the login shell and returns trimmed stdout.
-pub async fn shell_output(command: &str, timeout: Duration) -> Result<String, String> {
-    let mut cmd = Command::new(SHELL);
-    cmd.arg("-l").arg("-c").arg(command).stdin(Stdio::null()).kill_on_drop(true);
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Err(_) => Err("timed out".into()),
-        Ok(Err(e)) => Err(e.to_string()),
-        Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
-        Ok(Ok(out)) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let msg = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-            Err(if msg.is_empty() { format!("exit {}", out.status.code().unwrap_or(-1)) } else { msg.to_string() })
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,8 +130,8 @@ mod tests {
 
     #[tokio::test]
     async fn no_controlling_terminal() {
-        let s = spawn_plain_shell("if (exec 3</dev/tty) 2>/dev/null; then echo tty; else echo none; fi", Path::new("/"), &BTreeMap::new())
-            .unwrap();
+        let s =
+            spawn_shell("if (exec 3</dev/tty) 2>/dev/null; then echo tty; else echo none; fi", Path::new("/"), &BTreeMap::new()).unwrap();
         let pid = s.pid;
         let (out, _) = collect(s).await;
         assert_eq!(out, "none\n");

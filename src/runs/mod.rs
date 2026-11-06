@@ -15,8 +15,8 @@ use regex::Regex;
 
 use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
-use crate::daemon::store::{NewRun, NewStep};
 use crate::protocol::*;
+use crate::store::{NewRun, NewStep};
 use crate::tmux::NewWindow;
 
 pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
@@ -307,7 +307,7 @@ fn run_lock_path(ctx: &Ctx, project: &str) -> PathBuf {
 }
 
 /// The project's active run, if its worker holds the project lock.
-fn busy_run(ctx: &Ctx, project: &str) -> Option<i64> {
+pub fn busy_run(ctx: &Ctx, project: &str) -> Option<i64> {
     if !crate::lock::is_held(&run_lock_path(ctx, project)).unwrap_or(false) {
         return None;
     }

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use groundcontrol::config::Config;
 use groundcontrol::ctx::Ctx;
-use groundcontrol::daemon::store::NewRun;
 use groundcontrol::protocol::*;
 use groundcontrol::runs;
+use groundcontrol::store::NewRun;
 use groundcontrol::tmux::Tmux;
 
 struct Env {

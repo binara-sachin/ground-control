@@ -7,7 +7,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::daemon::store::Store;
+use crate::store::Store;
 use crate::tmux::Tmux;
 
 pub struct Ctx {
@@ -23,7 +23,11 @@ impl Ctx {
     pub fn new(tmux: Tmux, exe: PathBuf, state_dir: PathBuf, config_path: PathBuf) -> Result<Ctx, String> {
         // Workers start in the project folder, so relative paths would resolve wrongly there.
         let state_dir = std::path::absolute(&state_dir).map_err(|e| e.to_string())?;
-        let config_path = std::path::absolute(&config_path).map_err(|e| e.to_string())?;
+        // Resolved through symlinks, so the watcher sees edits to the real file.
+        let config_path = match std::fs::canonicalize(&config_path) {
+            Ok(p) => p,
+            Err(_) => std::path::absolute(&config_path).map_err(|e| e.to_string())?,
+        };
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

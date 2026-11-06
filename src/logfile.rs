@@ -1,5 +1,5 @@
-//! Append-only log files with size-based rotation (service logs and the
-//! daemon's own log: 10 MB, 3 files kept).
+//! Append-only log files with size-based rotation (service logs: 10 MB, 3
+//! files kept).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
