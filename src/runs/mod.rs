@@ -367,7 +367,10 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
             Ok((path, summary)) => {
                 let _ = ctx.db(|s| s.set_run_diff(run_id, &path.to_string_lossy(), &summary));
             }
-            Err(e) => tracing::warn!(run_id, "could not save diff: {e}"),
+            // The run still goes ahead; its record says the diff is missing.
+            Err(e) => {
+                let _ = ctx.db(|s| s.set_run_diff(run_id, "", &format!("diff not saved: {e}")));
+            }
         }
     }
 

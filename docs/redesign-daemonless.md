@@ -1,7 +1,8 @@
 # GroundControl redesign: no daemon, tmux-hosted
 
-Status: proposal · Date: 2026-11-06 · Supersedes the daemon architecture in
-[`groundcontrol-spec.md`](groundcontrol-spec.md) §5 once approved.
+Status: implemented (build steps 1–6 below) · Date: 2026-11-06 · The spec,
+[`groundcontrol-spec.md`](groundcontrol-spec.md) revision 3, now describes this
+design. What remains: checking it against the security tool (build step 6).
 
 ## Why
 

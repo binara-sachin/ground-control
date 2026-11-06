@@ -11,35 +11,35 @@ local test stacks.
 - Implementation status, decisions and open items: [`docs/implementation.md`](docs/implementation.md)
 - Design references: [`design/`](design/)
 
-One Rust binary has two modes:
+There is no daemon and nothing starts at login. One Rust binary plays two roles:
 
 | Command | What it is |
 |---|---|
-| `groundcontrol daemon` | The daemon, run by `launchd` as a user agent. It owns every run and every service. |
-| `groundcontrol` | The TUI. It is a client of the daemon; quitting it never stops a run or a service. |
+| `groundcontrol` | The TUI, the only interface. Open it when you need it. |
+| `groundcontrol svc-exec …`, `groundcontrol run-exec …` | Workers. GroundControl starts one per service and per pipeline run, each as the command of its own tmux window in a session per project (`gc-<project>`). You never type these. |
 
-The daemon listens only on a Unix socket (`0600`, with a peer UID check). It
-opens no network listener, holds no credentials and needs no root.
+tmux keeps the workers alive, so quitting the TUI never stops a run or a
+service, and you can attach to any of them (`tmux ls`). Every process has a
+visible parent: Terminal → tmux → `groundcontrol` → your command. GroundControl
+opens no socket or network listener, installs no background agent, holds no
+credentials and needs no root. Why it is built this way:
+[`docs/redesign-daemonless.md`](docs/redesign-daemonless.md).
 
 ## Install (macOS)
 
-Prerequisites: Rust (stable). Move your PATH setup from `~/.zshrc` to
-`~/.zprofile`, because steps run under `/bin/zsh -l -c`, which reads only
-`.zprofile`. That includes PATH exports, `brew shellenv` and any Node or Rust
-version managers.
+Prerequisites: Rust (stable) and tmux.
 
 ```bash
 make install
 ```
 
-This does three things:
+This builds `~/.local/bin/groundcontrol` and links this repository's
+`groundcontrol.yaml` into `~/Library/Application Support/GroundControl/`, so the
+TUI finds it from any directory. If a launchd agent from an earlier, daemon-based
+version is installed, `make install` boots it out and deletes it first.
 
-1. Builds `~/.local/bin/groundcontrol`.
-2. Writes `~/Library/LaunchAgents/dev.binara.groundcontrol.plist`, which points `GC_CONFIG` at this repo's `groundcontrol.yaml`.
-3. Loads and starts the agent.
-
-To update: `git pull && make install`. This rebuilds the binary and restarts the
-daemon. Services that were running come back, because it is the same boot.
+To update: `git pull && make install`. Running workers keep the binary they
+started with; new windows use the new one.
 
 Open the TUI from any terminal with `groundcontrol`. A tmux popup works well:
 
@@ -47,13 +47,19 @@ Open the TUI from any terminal with `groundcontrol`. A tmux popup works well:
 bind g display-popup -E -w 90% -h 85% groundcontrol
 ```
 
-Other targets: `make restart`, `make logs` (tails the daemon log), `make uninstall` (keeps state).
+Other targets: `make uninstall` (keeps history and logs) and `make remove-old-agent`.
+
+Steps run under `/bin/zsh -c` inside tmux, so they inherit your interactive
+shell's environment (PATH, `brew shellenv`, version managers). Each step and
+service starts in its own session with stdin from `/dev/null` and no controlling
+terminal, so nothing can stop and wait for input.
 
 ## Configuration
 
 `groundcontrol.yaml` at the root of this repository is the only configuration.
-It is edited by hand; the TUI never writes it. The daemon reloads it on save. An
-invalid file is rejected, the previous valid config stays active, and the errors
+It is edited by hand; the TUI never writes it. An open TUI reloads it on save,
+and each worker uses the config as it was when it started. An invalid file is
+rejected, the previous valid config stays active, and the errors
 (with line and column) appear on the Health screen (`3`).
 
 The schema is spec §7.1, plus one optional pipeline field, `warning:`. It holds a
@@ -86,12 +92,12 @@ whose path is missing.
 | `?` | Help, with the keys for every screen |
 | `q` | Quit the TUI (runs and services keep going) |
 
-- **Dashboard.** Approval banner, projects (branch, tree, ahead/behind), services and groups of the selected project, recent runs, and the selected service's last 50 log lines. `s` starts or stops, `r` restarts, `l` opens the full log.
+- **Dashboard.** Approval banner, projects (branch, tree, ahead/behind), services and groups of the selected project, recent runs, and the selected service's last 50 log lines. `s` starts or stops, `r` restarts, `l` opens the full log. A running service is the tmux window `gc-<project>:svc-<service>`; `C-c` there stops it too.
 - **Project.** `enter` opens the run dialog, `d` does a dry run, `e` switches environment. On the services pane, `s`, `r` and `l` work as on the dashboard.
 - **Run dialog.** Shows a live pattern check for each input, dirty and unpushed warnings, destructive warnings and the step outline. `enter` starts the run; `ctrl+d` does a dry run. For protected runs, this dialog is the confirmation.
-- **Run view.** Steps, outputs and live terminal output (colours, `\r` progress, wide characters). `f` toggles follow, `y` and `Y` copy the command or output, `c` cancels the run. `a` approves (a protected run asks for a second `y`) and `x` rejects.
+- **Run view.** Steps, outputs and live terminal output (colours, `\r` progress, wide characters). `f` toggles follow, `y` and `Y` copy the command or output, `c` cancels the run. `a` approves (a protected run asks for a second `y`) and `x` rejects. The run is also the tmux window `gc-<project>:run-<id>`, which rings the bell when it needs approval or fails.
 - **History.** `/` filters (`project:… pipeline:… env:… status:…`), `s` cycles the status filter, `ctrl+u` clears the filter, `enter` opens a run and `D` shows a run's saved diff.
-- **Health.** Tool check, Docker and tmux reachability, config errors with line and column, reload times, and the daemon version and uptime.
+- **Health.** Tool check (resolved on `PATH` without running anything), tmux and Docker reachability (Docker only while this screen is open), config errors with line and column, reload times, the version, the state folder and the config path.
 
 ## Development
 
@@ -103,22 +109,19 @@ make test
 make lint
 ```
 
-`make test` runs unit tests and end-to-end daemon tests; `make lint` runs rustfmt and clippy with `-D warnings`.
+`make test` runs the unit tests and the end-to-end tests, which start real
+workers in a private tmux server and skip themselves when tmux is missing.
+`make lint` runs rustfmt and clippy with `-D warnings`.
 
-The code builds and its tests pass on Linux too; only `make install`
-(launchd), notifications (`osascript`) and `pbcopy` are macOS-specific. To try
-it without installing, point both modes at a scratch state folder:
-
-```bash
-GC_STATE_DIR=/tmp/gc GC_CONFIG=$PWD/groundcontrol.yaml cargo run -- daemon
-```
+The code builds and its tests pass on Linux too; only `make remove-old-agent`
+(launchd) and `pbcopy` are macOS-specific. To try it without installing, point
+it at a scratch state folder from inside tmux:
 
 ```bash
-GC_STATE_DIR=/tmp/gc cargo run
+GC_STATE_DIR=/tmp/gc GC_CONFIG=$PWD/groundcontrol.yaml cargo run
 ```
 
-Set `GC_LOG_STDERR=1` to mirror the daemon log to stderr. On Linux, `/bin/zsh`
-must be installed, because steps always run under it.
+On Linux, `/bin/zsh` must be installed, because steps always run under it.
 
 ### Layout
 
@@ -126,13 +129,20 @@ must be installed, because steps always run under it.
 src/
   config/        groundcontrol.yaml: typed config, parsing with positions, validation (§7)
   yaml.rs        YAML tree with line/column positions (yaml-rust2 event parser)
-  protocol.rs    client protocol types (§10.6)
-  client.rs      socket client shared by the TUI and the end-to-end tests
+  protocol.rs    requests, responses, events and data types (§10.6)
+  engine.rs      the TUI's in-process engine: requests, polling, config watch
+  ctx.rs         what the TUI and workers share: tmux server, binary, state, config
+  runs/          recording runs, approvals and cancel; the run-exec worker
+  services/      start/stop in dependency order, health, restart policy; the svc-exec worker
+  tmux.rs        tmux sessions and windows (argv commands, exact targets)
+  lock.rs        flock run and service locks
+  store.rs       SQLite store (§11)
+  process.rs     spawning steps in their own session and process group
+  logfile.rs     rotated log files
   mask.rs        streaming secret masker (§9.3)
   envfile.rs     .env parsing
   git.rs         status parsing, repository guard, snapshots and diffs
-  paths.rs       state folder, socket, logs (§11)
-  daemon/        store (SQLite), runner, supervisor, socket server, host integration
+  paths.rs       state folder, config, logs, locks (§11)
   tui/           app state, screens, theme tokens, vt100 output pane
-tests/daemon_e2e.rs   drives the real daemon binary over its socket
+tests/           tmux, services, runs and engine end-to-end tests
 ```

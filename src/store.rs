@@ -208,7 +208,9 @@ impl Store {
         Ok(id)
     }
 
+    /// Records a run's saved diff. An empty path records only the summary (the diff could not be saved).
     pub fn set_run_diff(&self, id: i64, path: &str, summary: &str) -> rusqlite::Result<()> {
+        let path = (!path.is_empty()).then_some(path);
         self.conn.execute("UPDATE runs SET diff_path = ?2, diff_summary = ?3 WHERE id = ?1", params![id, path, summary])?;
         Ok(())
     }
