@@ -85,6 +85,16 @@ pub fn service_log_path(project: &str, project_path: &Path, sensitive: bool, ser
     }
 }
 
+/// `locks/<project>/run.lock`: held by a project's active run for its lifetime.
+pub fn run_lock_path(project: &str) -> PathBuf {
+    state_dir().join("locks").join(project).join("run.lock")
+}
+
+/// `locks/<project>/services/<service>.lock`: held by the service's worker while it is up.
+pub fn service_lock_path(project: &str, service: &str) -> PathBuf {
+    state_dir().join("locks").join(project).join("services").join(format!("{service}.lock"))
+}
+
 /// Run-scoped scratch files (`$GC_OUTPUT`). Never in a repository.
 pub fn run_tmp_dir(run_id: i64) -> PathBuf {
     state_dir().join("tmp").join(run_id.to_string())
