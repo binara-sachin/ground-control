@@ -300,10 +300,8 @@ impl Engine {
             docker,
             tmux,
             config: self.config_status(),
-            daemon_version: VERSION.to_string(),
-            protocol: PROTOCOL_VERSION,
+            version: VERSION.to_string(),
             started_at: self.started_at,
-            pid: std::process::id(),
             state_dir: self.ctx.state_dir.display().to_string(),
         }
     }

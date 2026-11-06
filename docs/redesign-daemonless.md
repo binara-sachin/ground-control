@@ -193,9 +193,10 @@ The socket push events are replaced with polling:
 - The TUI's attention markers (`!`) and approval banner are unchanged.
 - Workers ring the tmux bell (`\a` in their pane). With `monitor-bell on`,
   tmux marks the window in your status line and can show a message.
-- Optional, off by default: `notify: terminal-notifier` in the config, if
-  you install it from Homebrew. It's a signed, widely-known app, so it isn't
-  your unsigned binary scripting the UI.
+- Not built yet: an optional `notify: terminal-notifier` config setting, off
+  by default, for desktop notifications through that signed Homebrew app,
+  so that your unsigned binary never scripts the UI. Add it only if the
+  tmux bell turns out not to be enough.
 
 ### Health screen
 

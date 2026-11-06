@@ -1,8 +1,6 @@
-//! Client protocol (§10.6): newline-delimited JSON over the Unix socket.
-//!
-//! The first message from each side is a [`Hello`]. After that the client sends
-//! [`ClientMessage`]s and the daemon answers with [`ServerMessage`]s: a response
-//! carrying the request's `id`, or an unsolicited event.
+//! The TUI's requests to its engine, the engine's responses and events, and
+//! the data types they carry. These were the daemon's socket protocol
+//! (§10.6); they are now in-process, so there is no envelope or handshake.
 
 use std::collections::BTreeMap;
 
@@ -10,34 +8,9 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::config::{Diagnostic, Health, InputKind, RestartPolicy, ServiceAction, Severity};
 
-pub const PROTOCOL_VERSION: u32 = 1;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Timestamp = i64; // unix seconds
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Hello {
-    pub hello: HelloBody,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HelloBody {
-    pub protocol: u32,
-    pub version: String,
-}
-
-impl Hello {
-    pub fn current() -> Self {
-        Hello { hello: HelloBody { protocol: PROTOCOL_VERSION, version: VERSION.to_string() } }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientMessage {
-    pub id: u64,
-    #[serde(flatten)]
-    pub request: Request,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -134,32 +107,6 @@ impl RunFilter {
         }
         parts.join(" ")
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ServerMessage {
-    Response {
-        id: u64,
-        #[serde(flatten)]
-        body: ResponseBody,
-    },
-    Event {
-        event: Event,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ResponseBody {
-    Result(Box<Response>),
-    Error(ErrorBody),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorBody {
-    pub code: ErrorCode,
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -668,10 +615,9 @@ pub struct HealthInfo {
     pub docker: Option<Reachability>,
     pub tmux: Option<Reachability>,
     pub config: ConfigStatus,
-    pub daemon_version: String,
-    pub protocol: u32,
+    pub version: String,
+    /// When this TUI opened.
     pub started_at: Timestamp,
-    pub pid: u32,
     pub state_dir: String,
 }
 
@@ -684,27 +630,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_round_trip() {
-        let m = ClientMessage { id: 7, request: Request::RunCancel { id: 412 } };
-        let s = serde_json::to_string(&m).unwrap();
-        assert_eq!(s, r#"{"id":7,"method":"run.cancel","params":{"id":412}}"#);
-        let back: ClientMessage = serde_json::from_str(&s).unwrap();
-        assert!(matches!(back.request, Request::RunCancel { id: 412 }));
-        let unit: ClientMessage = serde_json::from_str(r#"{"id":1,"method":"projects.list"}"#).unwrap();
-        assert!(matches!(unit.request, Request::ProjectsList));
-    }
-
-    #[test]
-    fn server_messages_are_distinguishable() {
-        let r = ServerMessage::Response { id: 3, body: ResponseBody::Result(Box::new(Response::Ok)) };
-        let s = serde_json::to_string(&r).unwrap();
-        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Response { id: 3, .. }));
-        let e = ServerMessage::Event { event: Event::Projects };
-        let s = serde_json::to_string(&e).unwrap();
-        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Event { .. }));
-        let err = ServerMessage::Response { id: 4, body: ResponseBody::Error(ErrorBody { code: ErrorCode::Busy, message: "x".into() }) };
-        let s = serde_json::to_string(&err).unwrap();
-        assert!(matches!(serde_json::from_str::<ServerMessage>(&s).unwrap(), ServerMessage::Response { body: ResponseBody::Error(_), .. }));
+    fn request_names() {
+        let s = serde_json::to_string(&Request::RunCancel { id: 412 }).unwrap();
+        assert_eq!(s, r#"{"method":"run.cancel","params":{"id":412}}"#);
+        assert!(matches!(serde_json::from_str(r#"{"method":"projects.list"}"#).unwrap(), Request::ProjectsList));
     }
 
     #[test]
