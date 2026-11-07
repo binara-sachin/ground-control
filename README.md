@@ -131,9 +131,10 @@ src/
   protocol.rs    requests, responses, events and data types (§10.6)
   engine.rs      the TUI's in-process engine: requests, polling, config watch
   ctx.rs         what the TUI and workers share: tmux server, binary, config
-  runs/          starting runs, run state in window options, approvals, cancel; the run-exec worker
+  runs/          starting runs, approvals, cancel; the run-exec worker
   services/      start/stop in dependency order, health, restart policy; the svc-exec worker
-  tmux.rs        the ground-control session, windows and their @gc_* options
+  window.rs      the window schema: every @gc_* option of run and service windows, and its format
+  tmux.rs        the ground-control session and its windows; moves @gc_* options without knowing them
   process.rs     spawning steps in their own session and process group
   mask.rs        streaming secret masker (§9.3)
   envfile.rs     .env parsing

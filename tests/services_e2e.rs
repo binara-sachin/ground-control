@@ -145,7 +145,7 @@ async fn masking_and_stop_paths() {
     t.send_keys(sleeper, &["C-c"]).await.unwrap();
     let s = wait_status(&env, "sleeper", |s| s.state == ServiceState::Stopped).await;
     assert_eq!(s.message, None);
-    assert!(env.window(sleeper).await.unwrap().dead);
+    assert!(env.windows().await.services.iter().find(|w| w.id == sleeper).unwrap().dead);
 
     // A second worker for a running service gives up and closes its own window.
     control(&env, "sleeper", ServiceAction::Start).await.unwrap();

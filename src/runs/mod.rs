@@ -18,11 +18,10 @@ use regex::Regex;
 use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
 use crate::protocol::*;
-use crate::tmux::{NewWindow, Window, decode, encode, target};
+use crate::tmux::{NewWindow, target};
+use crate::window::{self, RunParams, RunWindow, Windows};
 
 pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
-/// `@gc_kind` of a run window.
-pub const KIND: &str = "run";
 
 pub type ReqError = (ErrorCode, String);
 
@@ -227,9 +226,8 @@ pub fn dry_run_plan(
                 (run.clone(), dir.display().to_string(), names, Some(timeout.as_secs()))
             }
             StepKind::Approve { message } => {
-                let mut vars: BTreeMap<String, String> = config.env.iter().cloned().collect();
-                vars.extend(inputs.iter().map(|(k, v)| (format!("INPUT_{}", k.to_ascii_uppercase()), v.clone())));
-                vars.insert("GC_ENV".into(), env.unwrap_or("").into());
+                // The same variables as a real run; outputs aren't known yet, so `$OUTPUT_*` stays as written.
+                let vars = approval_vars(config, project, env, &inputs, &BTreeMap::new(), &gc);
                 (format!("pause for approval: {}", expand_message(message, &vars)), String::new(), Vec::new(), Some(APPROVAL_TTL.as_secs()))
             }
             StepKind::Service { action, target } => (format!("{} {target}", action.as_str()), String::new(), Vec::new(), None),
@@ -260,140 +258,39 @@ pub fn dry_run_plan(
     }
 }
 
-// ── run state in window options ─────────────────────────────────────────
-
-/// One step's progress, as the worker publishes it in `@gc_steps`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct StepState {
-    pub status: Option<StepStatus>,
-    pub exit_code: Option<i32>,
-    pub started_at: Option<Timestamp>,
-    pub finished_at: Option<Timestamp>,
-}
-
-/// `status:exit:started:finished` per step, joined by `,`.
-pub fn encode_steps(steps: &[StepState]) -> String {
-    let n = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_default();
-    steps
-        .iter()
-        .map(|s| {
-            format!(
-                "{}:{}:{}:{}",
-                s.status.map(StepStatus::as_str).unwrap_or("pending"),
-                n(s.exit_code.map(i64::from)),
-                n(s.started_at),
-                n(s.finished_at)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-pub fn decode_steps(s: &str) -> Vec<StepState> {
-    s.split(',')
-        .filter(|e| !e.is_empty())
-        .map(|e| {
-            let mut it = e.split(':');
-            let status = it.next().map(StepStatus::parse);
-            let mut num = || it.next().and_then(|v| v.parse::<i64>().ok());
-            StepState { status, exit_code: num().map(|c| c as i32), started_at: num(), finished_at: num() }
-        })
-        .collect()
-}
-
-/// `key=<encoded value>` per output, joined by `,`.
-pub fn encode_outputs(outputs: &[(String, String, usize)]) -> String {
-    outputs.iter().map(|(k, v, i)| format!("{k}={i}={}", encode(v))).collect::<Vec<_>>().join(",")
-}
-
-pub fn decode_outputs(s: &str) -> Vec<OutputInfo> {
-    s.split(',')
-        .filter_map(|e| {
-            let mut it = e.splitn(3, '=');
-            let key = it.next()?.to_string();
-            let step_index = it.next()?.parse().ok();
-            Some(OutputInfo { key, value: decode(it.next()?), step_index })
-        })
-        .collect()
-}
-
-/// The run's approval, as published in `@gc_approval`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApprovalState {
-    pub step: usize,
-    pub status: ApprovalStatus,
-    pub requested_at: Timestamp,
-    pub expires_at: Timestamp,
-    pub decided_at: Option<Timestamp>,
-    pub message: String,
-}
-
-/// `step:status:requested:expires:decided:<encoded message>`.
-pub fn encode_approval(a: &ApprovalState) -> String {
-    format!(
-        "{}:{}:{}:{}:{}:{}",
-        a.step,
-        a.status.as_str(),
-        a.requested_at,
-        a.expires_at,
-        a.decided_at.map(|t| t.to_string()).unwrap_or_default(),
-        encode(&a.message)
-    )
-}
-
-pub fn decode_approval(s: &str) -> Option<ApprovalState> {
-    let mut it = s.splitn(6, ':');
-    Some(ApprovalState {
-        step: it.next()?.parse().ok()?,
-        status: ApprovalStatus::parse(it.next()?),
-        requested_at: it.next()?.parse().ok()?,
-        expires_at: it.next()?.parse().ok()?,
-        decided_at: it.next()?.parse().ok(),
-        message: decode(it.next()?),
-    })
-}
-
-/// The run windows, oldest first.
-pub fn run_windows(windows: &[Window]) -> Vec<&Window> {
-    let mut v: Vec<&Window> = windows.iter().filter(|w| w.opt("kind") == Some(KIND)).collect();
-    v.sort_by_key(|w| w.id);
-    v
-}
-
-fn run_status(w: &Window) -> (RunStatus, Option<String>) {
-    let status = w.opt("state").and_then(RunStatus::parse).unwrap_or(RunStatus::Running);
-    if w.dead && status.is_active() {
+fn run_status(w: &RunWindow) -> (RunStatus, Option<String>) {
+    if w.dead && w.state.is_active() {
         // The worker died without publishing an end (killed hard).
         return (RunStatus::Cancelled, Some("worker exited unexpectedly".into()));
     }
-    (status, w.opt("reason").map(str::to_string))
+    (w.state, w.reason.clone())
 }
 
-pub fn summary(w: &Window) -> RunSummary {
+pub fn summary(w: &RunWindow) -> RunSummary {
     let (status, reason) = run_status(w);
-    let num = |k: &str| w.opt(k).and_then(|v| v.parse::<i64>().ok());
+    let p = &w.params;
     RunSummary {
         id: w.id,
-        project: w.opt("project").unwrap_or_default().to_string(),
-        pipeline: w.opt("pipeline").unwrap_or_default().to_string(),
-        env: w.opt("env").map(str::to_string),
+        project: p.project.clone(),
+        pipeline: p.pipeline.clone(),
+        env: p.env.clone(),
         status,
         reason,
-        branch: w.opt("branch").map(str::to_string),
-        commit: w.opt("commit").map(str::to_string),
-        dirty: w.opt("dirty") == Some("1"),
-        unpushed: num("unpushed").is_some_and(|n| n > 0),
-        protected: w.opt("protected") == Some("1"),
-        started_at: num("started").unwrap_or(0),
-        finished_at: num("finished"),
+        branch: p.branch.clone(),
+        commit: p.commit.clone(),
+        dirty: p.dirty,
+        unpushed: p.unpushed.is_some_and(|n| n > 0),
+        protected: p.protected,
+        started_at: p.started,
+        finished_at: w.finished,
     }
 }
 
 /// A run's detail. Step names and commands come from the config; their
 /// progress from the window.
-pub fn detail(config: &Config, w: &Window) -> RunDetail {
+pub fn detail(config: &Config, w: &RunWindow) -> RunDetail {
     let s = summary(w);
-    let states = decode_steps(w.opt("steps").unwrap_or(""));
+    let states = &w.steps;
     let outline: Vec<(String, StepKindName, String, Option<String>)> = config
         .project(&s.project)
         .and_then(|p| p.pipeline(&s.pipeline))
@@ -436,8 +333,8 @@ pub fn detail(config: &Config, w: &Window) -> RunDetail {
         })
         .collect();
     let approvals = w
-        .opt("approval")
-        .and_then(decode_approval)
+        .approval
+        .clone()
         .map(|a| {
             let status = if w.dead && a.status == ApprovalStatus::Pending { ApprovalStatus::Cancelled } else { a.status };
             vec![ApprovalInfo {
@@ -456,18 +353,18 @@ pub fn detail(config: &Config, w: &Window) -> RunDetail {
         })
         .unwrap_or_default();
     RunDetail {
-        inputs: w.opt("inputs").and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default(),
+        inputs: w.params.inputs.clone(),
         steps,
         approvals,
-        outputs: decode_outputs(w.opt("outputs").unwrap_or("")),
-        unpushed_count: w.opt("unpushed").and_then(|v| v.parse().ok()),
+        outputs: w.outputs.clone(),
+        unpushed_count: w.params.unpushed,
         summary: s,
     }
 }
 
 /// The project's run in progress: a live run window whose run is active.
-pub fn busy_run(windows: &[Window], project: &str) -> Option<i64> {
-    run_windows(windows).into_iter().find(|w| !w.dead && w.opt("project") == Some(project) && run_status(w).0.is_active()).map(|w| w.id)
+pub fn busy_run(windows: &Windows, project: &str) -> Option<i64> {
+    windows.runs.iter().find(|w| !w.dead && w.params.project == project && run_status(w).0.is_active()).map(|w| w.id)
 }
 
 /// Validates a run and opens its worker's window. One run per project: a
@@ -483,7 +380,7 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
     let inputs = resolve_inputs(pipeline, &params.inputs).map_err(|e| err(ErrorCode::BadRequest, e))?;
     let protected = pipeline.is_protected(project, env);
 
-    let windows = ctx.tmux.windows().await.map_err(|e| err(ErrorCode::Internal, e))?;
+    let windows = window::list(&ctx.tmux).await.map_err(|e| err(ErrorCode::Internal, e))?;
     let mut blockers = common_blockers(project).await;
     if let Some(id) = busy_run(&windows, &project.id) {
         blockers.push(format!("{} already has run #{id} in progress", project.id));
@@ -500,29 +397,25 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
 
     // The project's earlier failed runs keep their dead window for reading
     // until this one replaces them.
-    for w in run_windows(&windows) {
-        if w.dead && w.opt("project") == Some(&project.id) {
+    for w in &windows.runs {
+        if w.dead && w.params.project == project.id {
             let _ = ctx.tmux.kill_window(w.id).await;
         }
     }
     let snap = crate::git::snapshot(&project.path).await;
-    let bit = |b: bool| if b { "1" } else { "0" }.to_string();
-    let initial = StepState { status: Some(StepStatus::Pending), ..Default::default() };
-    let options = [
-        ("kind", KIND.to_string()),
-        ("project", project.id.clone()),
-        ("pipeline", pipeline.id.clone()),
-        ("env", env.unwrap_or("").to_string()),
-        ("inputs", serde_json::to_string(&inputs).unwrap_or_else(|_| "{}".into())),
-        ("protected", bit(protected)),
-        ("branch", snap.branch.clone().unwrap_or_default()),
-        ("commit", snap.commit.clone().unwrap_or_default()),
-        ("dirty", bit(snap.dirty)),
-        ("unpushed", snap.unpushed.map(|n| n.to_string()).unwrap_or_default()),
-        ("started", now().to_string()),
-        ("state", RunStatus::Running.as_str().to_string()),
-        ("steps", encode_steps(&vec![initial; pipeline.steps.len()])),
-    ];
+    let params = RunParams {
+        project: project.id.clone(),
+        pipeline: pipeline.id.clone(),
+        env: env.map(str::to_string),
+        inputs,
+        protected,
+        branch: snap.branch,
+        commit: snap.commit,
+        dirty: snap.dirty,
+        unpushed: snap.unpushed,
+        started: now(),
+    };
+    let options = RunWindow::create(&params, pipeline.steps.len());
     let argv = [ctx.exe.to_string_lossy().into_owned(), "run-exec".into()];
     let name = format!("{}/{}", project.id, pipeline.id);
     let id = ctx
@@ -533,9 +426,9 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
     Ok(Response::RunStarted { id })
 }
 
-async fn active_window(ctx: &Ctx, id: i64) -> Result<Window, ReqError> {
-    match ctx.tmux.window(id).await.map_err(|e| err(ErrorCode::Internal, e))? {
-        Some(w) if w.opt("kind") == Some(KIND) && !w.dead && run_status(&w).0.is_active() => Ok(w),
+async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, ReqError> {
+    match window::run(&ctx.tmux, id).await.map_err(|e| err(ErrorCode::Internal, e))? {
+        Some(w) if !w.dead && run_status(&w).0.is_active() => Ok(w),
         _ => Err(err(ErrorCode::NotFound, format!("run #{id} is not active"))),
     }
 }
@@ -543,34 +436,33 @@ async fn active_window(ctx: &Ctx, id: i64) -> Result<Window, ReqError> {
 /// Asks a run's worker to cancel it.
 pub async fn cancel(ctx: &Ctx, id: i64) -> Result<Response, ReqError> {
     active_window(ctx, id).await?;
-    ctx.tmux.request(id, &[("cancel", "1".into())]).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    ctx.tmux.request(id, &RunWindow::cancel_request()).await.map_err(|e| err(ErrorCode::Internal, e))?;
     Ok(Response::Ok)
 }
 
-/// Records an approval decision on the run's window; the waiting worker polls
-/// for it. The first answer wins.
+/// Records an approval decision on the run's window and wakes the waiting
+/// worker. The first answer wins.
 pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<Response, ReqError> {
     let w = active_window(ctx, id).await?;
     let approval = w
-        .opt("approval")
-        .and_then(decode_approval)
+        .approval
         .filter(|a| a.step == step)
         .ok_or_else(|| err(ErrorCode::NotFound, format!("run #{id} has no approval at step {}", step + 1)))?;
-    if decision == Decision::Approve && w.opt("protected") == Some("1") && !confirmed {
+    if decision == Decision::Approve && w.params.protected && !confirmed {
         return Err(err(ErrorCode::Refused, "approving a protected run needs the confirm keypress"));
     }
-    let existing = ctx.tmux.options(&target(id), &["decision"]).await.map_err(|e| err(ErrorCode::Internal, e))?;
-    if approval.status != ApprovalStatus::Pending || !existing[0].is_empty() {
-        // `@gc_decision` is `<status>:<step>`; show only the status.
-        let recorded = existing[0].split(':').next().unwrap_or_default();
-        let already = if recorded.is_empty() { approval.status.as_str() } else { recorded };
-        return Err(err(ErrorCode::AlreadyDecided, format!("already decided: {already}")));
+    // Read fresh: another TUI may have answered since the listing.
+    let (_, existing) = window::run_requests(&ctx.tmux, &target(id)).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    if approval.status != ApprovalStatus::Pending || existing.is_some() {
+        let already = existing.map_or(approval.status, |d| d.status);
+        return Err(err(ErrorCode::AlreadyDecided, format!("already decided: {}", already.as_str())));
     }
-    let value = match decision {
+    let status = match decision {
         Decision::Approve => ApprovalStatus::Approved,
         Decision::Reject => ApprovalStatus::Rejected,
     };
-    ctx.tmux.request(id, &[("decision", format!("{}:{step}", value.as_str()))]).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    let request = RunWindow::decision_request(window::Decision { status, step });
+    ctx.tmux.request(id, &request).await.map_err(|e| err(ErrorCode::Internal, e))?;
     Ok(Response::Ok)
 }
 
@@ -615,27 +507,24 @@ projects:
     }
 
     #[test]
-    fn state_encodings_round_trip() {
-        let steps = vec![
-            StepState { status: Some(StepStatus::Succeeded), exit_code: Some(0), started_at: Some(10), finished_at: Some(12) },
-            StepState { status: Some(StepStatus::Running), exit_code: None, started_at: Some(12), finished_at: None },
-            StepState { status: Some(StepStatus::Pending), ..Default::default() },
-        ];
-        assert_eq!(decode_steps(&encode_steps(&steps)), steps);
-        let outs = vec![("bm".to_string(), "a=b,c|d\nx".to_string(), 0)];
-        assert_eq!(
-            decode_outputs(&encode_outputs(&outs)),
-            vec![OutputInfo { key: "bm".into(), value: "a=b,c|d\nx".into(), step_index: Some(0) }]
-        );
-        let a = ApprovalState {
-            step: 1,
-            status: ApprovalStatus::Pending,
-            requested_at: 5,
-            expires_at: 9,
-            decided_at: None,
-            message: "Go: now?".into(),
-        };
-        assert_eq!(decode_approval(&encode_approval(&a)), Some(a));
+    fn dry_run_expands_approvals_like_a_real_run() {
+        let src = r#"
+projects:
+  p:
+    path: /tmp
+    environments:
+      prod: { protected: true, vars: { DB: ledger } }
+    pipelines:
+      x:
+        environments: [prod]
+        steps:
+          - approve: "Migrate $DB on $GC_ENV with $OUTPUT_BM?"
+          - run: "true"
+"#;
+        let c = crate::config::load_str(src).config.unwrap();
+        let p = c.project("p").unwrap();
+        let plan = dry_run_plan(&c, p, p.pipeline("x").unwrap(), Some("prod"), BTreeMap::new(), true, Vec::new());
+        assert_eq!(plan.steps[0].command, "pause for approval: Migrate ledger on prod with $OUTPUT_BM?");
     }
 
     #[test]

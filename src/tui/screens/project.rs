@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use super::super::app::{App, Level, Overlay, Tag, View};
 use super::super::theme;
 use super::super::widgets::*;
-use super::dashboard::{self, SvcRow, service_rows};
+use super::dashboard::{self, service_rows};
 use super::dialog::RunDialog;
 use crate::protocol::*;
 
@@ -111,7 +111,8 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 open_dialog(app, &p, &pl, true);
             }
         }
-        KeyCode::Char('s') | KeyCode::Char('r') | KeyCode::Char('l') | KeyCode::Enter => {
+        // The services pane's keys act on its selection, which shows only while it has focus.
+        KeyCode::Char('s') | KeyCode::Char('r') | KeyCode::Char('l') | KeyCode::Enter if v.focus == Focus::Services => {
             let rows = service_rows(&p);
             let Some(row) = rows.get(v.svc_sel.min(rows.len().saturating_sub(1))).cloned() else {
                 app.toast(format!("{} has no services", p.id), Level::Info);
@@ -119,13 +120,9 @@ pub fn key(app: &mut App, k: KeyEvent) {
             };
             match k.code {
                 KeyCode::Char('l') | KeyCode::Enter => {
-                    let svc = match &row {
-                        SvcRow::Service(s) => s.clone(),
-                        SvcRow::Group(g) => {
-                            p.groups.iter().find(|x| &x.id == g).and_then(|g| g.members.last().cloned()).unwrap_or_default()
-                        }
-                    };
-                    dashboard::open_full_log(app, &p.id, &svc);
+                    if let Some(svc) = dashboard::row_service(&p, &row) {
+                        dashboard::open_full_log(app, &p.id, &svc);
+                    }
                 }
                 c => dashboard::control(app, &p, &row, c == KeyCode::Char('r')),
             }
@@ -345,7 +342,7 @@ fn draw_detail(p: &ProjectInfo, v: &ProjectView, pl: Option<&PipelineInfo>, f: &
                 w,
             ));
         }
-        None => lines.push(Line::styled("never run", theme::muted())),
+        None => lines.push(Line::styled("no run with a window", theme::muted())),
     }
     f.render_widget(para(lines), inner);
 }

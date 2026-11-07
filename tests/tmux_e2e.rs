@@ -18,7 +18,7 @@ async fn session_windows_and_options() {
     let t = &env.ctx.tmux;
 
     // No server yet: nothing listed, closing is a no-op.
-    assert!(t.windows().await.unwrap().is_empty());
+    assert!(t.windows(&[]).await.unwrap().is_empty());
     t.kill_window(999).await.unwrap();
 
     // The first window creates the `ground-control` session. Its options are
@@ -32,8 +32,9 @@ async fn session_windows_and_options() {
     let w = env.wait_for(5, "first window exits", |w| w.iter().any(|w| w.id == first && w.dead)).await;
     let w = w.iter().find(|w| w.id == first).unwrap();
     assert_eq!(w.dead_status, Some(3));
-    assert_eq!(w.opt("kind"), Some("test"));
-    assert_eq!(w.opt("msg"), Some(tricky.as_str()), "values survive tmux untouched");
+    let listed = t.window(first, &["kind", "msg"]).await.unwrap().unwrap();
+    assert_eq!(listed.opts["kind"], "test");
+    assert_eq!(listed.opts["msg"], tricky, "values survive tmux untouched");
     let pane = t.capture(first).await.unwrap();
     assert!(pane.contains("kind=test"), "options were set before the command ran: {pane}");
     assert!(pane.contains("x=hello"), "{pane}");
@@ -64,7 +65,7 @@ async fn session_windows_and_options() {
     let w = env.wait_for(5, "C-c", |w| w.iter().any(|w| w.id == live && w.dead)).await;
     assert_eq!(w.iter().find(|w| w.id == live).unwrap().dead_status, None, "killed by a signal");
     t.kill_window(live).await.unwrap();
-    assert!(t.window(live).await.unwrap().is_none());
+    assert!(t.window(live, &[]).await.unwrap().is_none());
 
     // A lone `;` would split the tmux command, so it is refused.
     let cmd = argv(&["echo", ";"]);

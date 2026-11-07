@@ -35,10 +35,6 @@ impl Masker {
         Masker { secrets, re, carry: Vec::new() }
     }
 
-    pub fn none() -> Self {
-        Masker::new(Vec::<String>::new())
-    }
-
     pub fn is_empty(&self) -> bool {
         self.secrets.is_empty()
     }

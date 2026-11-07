@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use crate::config::{Config, StepKind};
 use crate::ctx::Ctx;
 use crate::protocol::*;
-use crate::tmux::Window;
+use crate::window::{self, RunWindow, Windows};
 
 const POLL: Duration = Duration::from_secs(1);
 const GIT_POLL: Duration = Duration::from_secs(30);
@@ -129,7 +129,7 @@ impl Engine {
         let run_err = |(c, m): crate::runs::ReqError| rerr(c, m);
         match req {
             Request::ProjectsList => {
-                let windows = self.ctx.tmux.windows().await.map_err(tmux_err)?;
+                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
                 Ok(Response::Projects(self.projects(&windows)))
             }
             Request::RunStart(p) => {
@@ -146,7 +146,7 @@ impl Engine {
                 crate::runs::decide(&self.ctx, id, step, decision, confirmed).await.map_err(run_err)
             }
             Request::RunsList => {
-                let windows = self.ctx.tmux.windows().await.map_err(tmux_err)?;
+                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
                 Ok(Response::Runs(self.run_page(&windows)))
             }
             Request::RunGet { id } => match self.run_window(id).await? {
@@ -166,7 +166,7 @@ impl Engine {
                 r.map(|msg| Response::Text { text: msg }).map_err(|e| rerr(ErrorCode::Refused, e))
             }
             Request::ServiceLog { project, id } => {
-                let windows = self.ctx.tmux.windows().await.map_err(tmux_err)?;
+                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
                 let text = match crate::services::service_windows(&windows, &project, &id).last() {
                     Some(w) => trim_capture(&self.ctx.tmux.capture(w.id).await.map_err(tmux_err)?),
                     None => String::new(),
@@ -181,24 +181,23 @@ impl Engine {
         }
     }
 
-    async fn run_window(&self, id: i64) -> Result<Option<Window>, RequestError> {
-        let w = self.ctx.tmux.window(id).await.map_err(|e| rerr(ErrorCode::Internal, e))?;
-        Ok(w.filter(|w| w.opt("kind") == Some(crate::runs::KIND)))
+    async fn run_window(&self, id: i64) -> Result<Option<RunWindow>, RequestError> {
+        window::run(&self.ctx.tmux, id).await.map_err(|e| rerr(ErrorCode::Internal, e))
     }
 
     /// Runs that still have a window, newest first, and their waiting approvals.
-    fn run_page(&self, windows: &[Window]) -> RunPage {
+    fn run_page(&self, windows: &Windows) -> RunPage {
         let config = self.config();
-        let mut details: Vec<RunDetail> = crate::runs::run_windows(windows).into_iter().map(|w| crate::runs::detail(&config, w)).collect();
+        let mut details: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
         details.reverse();
         let waiting = details.iter().flat_map(|d| d.approvals.iter()).filter(|a| a.status == ApprovalStatus::Pending).cloned().collect();
         RunPage { runs: details.into_iter().map(|d| d.summary).collect(), waiting }
     }
 
-    pub fn projects(&self, windows: &[Window]) -> Vec<ProjectInfo> {
+    pub fn projects(&self, windows: &Windows) -> Vec<ProjectInfo> {
         let config = self.config();
         let git = self.git.lock().unwrap().clone();
-        let runs: Vec<RunDetail> = crate::runs::run_windows(windows).into_iter().map(|w| crate::runs::detail(&config, w)).collect();
+        let runs: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
         config
             .projects
             .iter()
@@ -493,7 +492,7 @@ fn changed<K: std::hash::Hash + Eq>(map: &mut HashMap<K, String>, key: K, value:
 async fn state_poller(e: Arc<Engine>) {
     let mut seen = Seen::default();
     loop {
-        if let Ok(windows) = e.ctx.tmux.windows().await {
+        if let Ok(windows) = window::list(&e.ctx.tmux).await {
             let config = e.config();
             poll_runs(&e, &config, &windows, &mut seen);
             poll_services(&e, &config, &windows, &mut seen);
@@ -504,8 +503,8 @@ async fn state_poller(e: Arc<Engine>) {
     }
 }
 
-fn poll_runs(e: &Engine, config: &Config, windows: &[Window], seen: &mut Seen) {
-    let details: Vec<RunDetail> = crate::runs::run_windows(windows).into_iter().map(|w| crate::runs::detail(config, w)).collect();
+fn poll_runs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
+    let details: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(config, w)).collect();
     let ids: HashSet<i64> = details.iter().map(|d| d.summary.id).collect();
     // Runs whose window closed are forgotten; the TUI refreshes its lists.
     let before = seen.runs.len();
@@ -543,7 +542,7 @@ fn poll_runs(e: &Engine, config: &Config, windows: &[Window], seen: &mut Seen) {
     }
 }
 
-fn poll_services(e: &Engine, config: &Config, windows: &[Window], seen: &mut Seen) {
+fn poll_services(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
     for p in &config.projects {
         for s in &p.services {
             let st = crate::services::status(p, s, windows);
@@ -555,12 +554,12 @@ fn poll_services(e: &Engine, config: &Config, windows: &[Window], seen: &mut See
 }
 
 /// Re-captures the panes of the runs and services on screen and sends what changed.
-async fn poll_logs(e: &Engine, config: &Config, windows: &[Window], seen: &mut Seen) {
+async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
     let topics: Vec<String> = e.topics.lock().unwrap().iter().cloned().collect();
     let runs: HashSet<i64> = topics.iter().filter_map(|t| t.strip_prefix("log:")?.parse().ok()).collect();
     seen.logs.retain(|(run, _), _| runs.contains(run));
     for run in runs {
-        let Some(w) = windows.iter().find(|w| w.id == run && w.opt("kind") == Some(crate::runs::KIND)) else { continue };
+        let Some(w) = windows.run(run) else { continue };
         let Ok(pane) = e.ctx.tmux.capture(run).await else { continue };
         let detail = crate::runs::detail(config, w);
         let sections = split_steps(&pane, latest_started(&detail));

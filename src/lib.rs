@@ -18,4 +18,5 @@ pub mod runs;
 pub mod services;
 pub mod tmux;
 pub mod tui;
+pub mod window;
 pub mod yaml;
