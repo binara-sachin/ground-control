@@ -24,7 +24,7 @@ const GIT_POLL: Duration = Duration::from_secs(30);
 const DOCKER_EVERY: Duration = Duration::from_secs(30);
 
 /// Tools the steps are expected to find on `PATH` (§6.6).
-pub const REQUIRED_TOOLS: [&str; 9] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux", "sqlite3"];
+pub const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
 
 #[derive(Debug, Clone)]
 pub struct RequestError {
