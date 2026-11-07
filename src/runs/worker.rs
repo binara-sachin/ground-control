@@ -19,8 +19,9 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::{APPROVAL_TTL, approval_vars, expand_message, fmt_secs, gc_vars, parse_outputs, step_env};
+use super::{APPROVAL_TTL, fmt_secs, parse_outputs};
 use crate::config::{Config, Pipeline, Project, ServiceAction, StepKind};
+use crate::envlayers::{self, RunScope};
 use crate::mask::Masker;
 use crate::process;
 use crate::protocol::*;
@@ -222,7 +223,6 @@ async fn run_steps(
 ) -> (RunStatus, Option<String>) {
     let mut outputs: BTreeMap<String, String> = BTreeMap::new();
     let mut outputs_seen = 0usize;
-    let gc = gc_vars(Some(exec.id), env, out_file);
     let mut all_secrets: Vec<String> = Vec::new();
     let total = pipeline.steps.len();
 
@@ -231,20 +231,21 @@ async fn run_steps(
             return (RunStatus::Cancelled, Some("cancelled".into()));
         }
         say(&format!("{STEP_HEADER}{}/{total}: {}", idx + 1, step.label()));
+        let scope = RunScope { env, inputs, outputs: &outputs, run_id: Some(exec.id), output_file: out_file };
         let outcome = match &step.kind {
             StepKind::Run { run, cwd, env_file, timeout } => {
                 let dir = project.resolve_dir(cwd.as_deref());
-                let env_file_path = env_file.as_ref().map(|f| dir.join(f));
-                match step_env(config, project, env, env_file_path.as_deref(), inputs, &outputs, &gc) {
+                let env_file = env_file.as_ref().map(|f| dir.join(f));
+                match envlayers::step(config, project, &scope, env_file.as_deref()) {
                     Err(e) => fail_step_early(exec, idx, &e).await,
-                    Ok((vars, secrets)) => {
-                        all_secrets.extend(secrets.iter().cloned());
-                        run_step(exec, idx, run, &dir, &vars, Masker::new(secrets), *timeout).await
+                    Ok(resolved) => {
+                        all_secrets.extend(resolved.secrets().iter().cloned());
+                        run_step(exec, idx, run, &dir, resolved.vars(), Masker::new(resolved.secrets()), *timeout).await
                     }
                 }
             }
             StepKind::Approve { message } => {
-                let text = expand_message(message, &approval_vars(config, project, env, inputs, &outputs, &gc));
+                let text = envlayers::approval_message(config, project, &scope, message);
                 approve_step(exec, idx, &text).await
             }
             StepKind::Service { action, target } => service_step(exec, config, project, idx, *action, target).await,

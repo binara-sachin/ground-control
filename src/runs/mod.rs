@@ -9,7 +9,6 @@
 pub mod worker;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -17,6 +16,7 @@ use regex::Regex;
 
 use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
+use crate::envlayers::{self, Layer, RunScope};
 use crate::protocol::*;
 use crate::tmux::{NewWindow, target};
 use crate::window::{self, RunParams, RunWindow, Windows};
@@ -80,83 +80,8 @@ pub fn check_env(project: &Project, p: &Pipeline, env: Option<&str>) -> Result<(
     }
 }
 
-/// Environment for a step, in increasing precedence (§6.1). Returns the
-/// variables and the `env_file` values (for masking).
-pub fn step_env(
-    config: &Config,
-    project: &Project,
-    env: Option<&str>,
-    env_file: Option<&Path>,
-    inputs: &BTreeMap<String, String>,
-    outputs: &BTreeMap<String, String>,
-    gc: &BTreeMap<String, String>,
-) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
-    let mut vars: BTreeMap<String, String> = config.env.iter().cloned().collect();
-    if let Some(e) = env.and_then(|e| project.environment(e)) {
-        vars.extend(e.vars.iter().cloned());
-    }
-    let mut secrets = Vec::new();
-    if let Some(f) = env_file {
-        for (k, v) in crate::envfile::load(f)? {
-            secrets.push(v.clone());
-            vars.insert(k, v);
-        }
-    }
-    for (k, v) in inputs {
-        vars.insert(format!("INPUT_{}", k.to_ascii_uppercase()), v.clone());
-    }
-    for (k, v) in outputs {
-        vars.insert(format!("OUTPUT_{}", k.to_ascii_uppercase()), v.clone());
-    }
-    vars.extend(gc.iter().map(|(k, v)| (k.clone(), v.clone())));
-    Ok((vars, secrets))
-}
-
-pub fn gc_vars(run_id: Option<i64>, env: Option<&str>, output_file: &Path) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("GC_RUN_ID".into(), run_id.map(|i| i.to_string()).unwrap_or_else(|| "dry-run".into())),
-        ("GC_ENV".into(), env.unwrap_or("").into()),
-        ("GC_OUTPUT".into(), output_file.to_string_lossy().into_owned()),
-        ("FORCE_COLOR".into(), "1".into()),
-        ("CLICOLOR_FORCE".into(), "1".into()),
-        ("TERM".into(), "xterm-256color".into()),
-        ("COLUMNS".into(), "120".into()),
-    ])
-}
-
-/// Variables an approval message can refer to.
-pub fn approval_vars(
-    config: &Config,
-    project: &Project,
-    env: Option<&str>,
-    inputs: &BTreeMap<String, String>,
-    outputs: &BTreeMap<String, String>,
-    gc: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut vars: BTreeMap<String, String> = config.env.iter().cloned().collect();
-    if let Some(e) = env.and_then(|e| project.environment(e)) {
-        vars.extend(e.vars.iter().cloned());
-    }
-    vars.extend(inputs.iter().map(|(k, v)| (format!("INPUT_{}", k.to_ascii_uppercase()), v.clone())));
-    vars.extend(outputs.iter().map(|(k, v)| (format!("OUTPUT_{}", k.to_ascii_uppercase()), v.clone())));
-    vars.extend(gc.iter().map(|(k, v)| (k.clone(), v.clone())));
-    vars
-}
-
 /// `key=... >> "$GC_OUTPUT"` in a step, to list outputs a dry run can expect.
 static OUTPUT_WRITE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Za-z_][A-Za-z0-9_]*)=[^\n]*>>\s*"?\$\{?GC_OUTPUT"#).unwrap());
-
-static VAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
-
-/// Expands `$NAME` / `${NAME}` in an approval message. Unknown names stay as written.
-pub fn expand_message(msg: &str, vars: &BTreeMap<String, String>) -> String {
-    VAR_RE
-        .replace_all(msg, |c: &regex::Captures| {
-            let name = c.get(1).or_else(|| c.get(2)).unwrap().as_str();
-            vars.get(name).cloned().unwrap_or_else(|| c[0].to_string())
-        })
-        .into_owned()
-}
 
 /// Parses `key=value` lines appended to `$GC_OUTPUT`.
 pub fn parse_outputs(text: &str) -> Vec<(String, String)> {
@@ -201,40 +126,38 @@ pub fn dry_run_plan(
     protected: bool,
     blockers: Vec<String>,
 ) -> DryRunPlan {
-    let out_file = PathBuf::from("$GC_OUTPUT");
     let mut steps = Vec::new();
-    let mut known_outputs: Vec<String> = Vec::new();
+    let mut known_outputs: BTreeMap<String, String> = BTreeMap::new();
     for (i, s) in pipeline.steps.iter().enumerate() {
-        let gc = gc_vars(None, env, &out_file);
         let (command, cwd, env_names, timeout) = match &s.kind {
             StepKind::Run { run, cwd, env_file, timeout } => {
                 let dir = project.resolve_dir(cwd.as_deref());
-                let mut names: Vec<String> = config.env.iter().map(|(k, _)| k.clone()).collect();
-                if let Some(e) = env.and_then(|e| project.environment(e)) {
-                    names.extend(e.vars.iter().map(|(k, _)| k.clone()));
+                let scope = RunScope { outputs: &known_outputs, ..RunScope::preview(env, &inputs) };
+                let env_file = env_file.as_ref().map(|f| dir.join(f));
+                let (resolved, env_file_err) = envlayers::step_preview(config, project, &scope, env_file.as_deref());
+                let mut names: Vec<String> = resolved
+                    .names()
+                    .map(|(k, layer)| match layer {
+                        Layer::EnvFile => format!("{k} (env_file)"),
+                        Layer::Output => format!("{k} (if set)"),
+                        _ => k.to_string(),
+                    })
+                    .collect();
+                if let Some(e) = env_file_err {
+                    names.push(format!("<env_file error: {e}>"));
                 }
-                if let Some(f) = env_file {
-                    match crate::envfile::load(&dir.join(f)) {
-                        Ok(vars) => names.extend(vars.into_iter().map(|(k, _)| format!("{k} (env_file)"))),
-                        Err(e) => names.push(format!("<env_file error: {e}>")),
-                    }
-                }
-                names.extend(inputs.keys().map(|k| format!("INPUT_{}", k.to_ascii_uppercase())));
-                names.extend(known_outputs.iter().map(|k| format!("OUTPUT_{k} (if set)")));
-                names.extend(gc.keys().cloned());
-                names.dedup();
                 (run.clone(), dir.display().to_string(), names, Some(timeout.as_secs()))
             }
             StepKind::Approve { message } => {
-                // The same variables as a real run; outputs aren't known yet, so `$OUTPUT_*` stays as written.
-                let vars = approval_vars(config, project, env, &inputs, &BTreeMap::new(), &gc);
-                (format!("pause for approval: {}", expand_message(message, &vars)), String::new(), Vec::new(), Some(APPROVAL_TTL.as_secs()))
+                // Outputs aren't known yet, so `$OUTPUT_*` stays as written.
+                let text = envlayers::approval_message(config, project, &RunScope::preview(env, &inputs), message);
+                (format!("pause for approval: {text}"), String::new(), Vec::new(), Some(APPROVAL_TTL.as_secs()))
             }
             StepKind::Service { action, target } => (format!("{} {target}", action.as_str()), String::new(), Vec::new(), None),
         };
         if let StepKind::Run { run, .. } = &s.kind {
             for cap in OUTPUT_WRITE_RE.captures_iter(run) {
-                known_outputs.push(cap[1].to_ascii_uppercase());
+                known_outputs.insert(cap[1].to_string(), String::new());
             }
         }
         steps.push(DryRunStep {
@@ -501,12 +424,6 @@ projects:
     }
 
     #[test]
-    fn message_expansion() {
-        let vars = BTreeMap::from([("GC_ENV".to_string(), "prod".to_string()), ("INPUT_PR".to_string(), "42".to_string())]);
-        assert_eq!(expand_message("Merge PR #$INPUT_PR on ${GC_ENV}? $UNKNOWN", &vars), "Merge PR #42 on prod? $UNKNOWN");
-    }
-
-    #[test]
     fn dry_run_expands_approvals_like_a_real_run() {
         let src = r#"
 projects:
@@ -525,6 +442,49 @@ projects:
         let p = c.project("p").unwrap();
         let plan = dry_run_plan(&c, p, p.pipeline("x").unwrap(), Some("prod"), BTreeMap::new(), true, Vec::new());
         assert_eq!(plan.steps[0].command, "pause for approval: Migrate ledger on prod with $OUTPUT_BM?");
+    }
+
+    #[test]
+    fn dry_run_lists_the_env_a_real_run_gets() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "TOKEN=s3cr3t-token\nDB=from-file\n").unwrap();
+        let src = format!(
+            r#"
+env: {{ REGION: eu }}
+projects:
+  p:
+    path: {}
+    environments:
+      prod: {{ vars: {{ DB: ledger }} }}
+    pipelines:
+      x:
+        environments: [prod]
+        inputs:
+          branch: {{ type: string, pattern: "^[a-z]+$" }}
+        steps:
+          - run: echo bm=1 >> "$GC_OUTPUT"
+            env_file: .env
+          - approve: "Ship $INPUT_BRANCH to $GC_ENV with $DB?"
+          - run: "true"
+"#,
+            dir.path().display()
+        );
+        let c = crate::config::load_str(&src).config.unwrap();
+        let p = c.project("p").unwrap();
+        let inputs = BTreeMap::from([("branch".to_string(), "main".to_string())]);
+        let plan = dry_run_plan(&c, p, p.pipeline("x").unwrap(), Some("prod"), inputs.clone(), false, Vec::new());
+
+        let outputs = BTreeMap::from([("bm".to_string(), "1".to_string())]);
+        let real = |outputs: &BTreeMap<String, String>, env_file: Option<&std::path::Path>| {
+            let scope = RunScope { env: Some("prod"), inputs: &inputs, outputs, run_id: Some(7), output_file: std::path::Path::new("/o") };
+            envlayers::step(&c, p, &scope, env_file).unwrap().names().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+        };
+        let untagged = |names: &[String]| names.iter().map(|n| n.split(' ').next().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(untagged(&plan.steps[0].env_names), real(&BTreeMap::new(), Some(&dir.path().join(".env"))));
+        assert!(plan.steps[0].env_names.contains(&"DB (env_file)".to_string()));
+        assert_eq!(untagged(&plan.steps[2].env_names), real(&outputs, None));
+        assert!(plan.steps[2].env_names.contains(&"OUTPUT_BM (if set)".to_string()));
+        assert_eq!(plan.steps[1].command, "pause for approval: Ship main to prod with ledger?");
     }
 
     #[test]

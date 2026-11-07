@@ -23,3 +23,11 @@ _Avoid_: window state, keys
 **Request**:
 An option the TUI writes on a window to ask its worker to act (stop a service, cancel a run, decide an approval), followed by a wake.
 _Avoid_: command, signal, message
+
+**Env layers**:
+The ordered sources a process's environment is built from, each overriding the ones before: config `env`, the environment's `vars`, `env_file`, `INPUT_*`, `OUTPUT_*`, then `GC_*`. A service uses only config `env` and `env_file`.
+_Avoid_: step env, env precedence, approval vars
+
+**Run scope**:
+What a pipeline run adds on top of the config when its env layers are resolved: the environment, inputs, earlier steps' outputs, run id and output file. A dry run uses the same scope with no run id.
+_Avoid_: gc vars, run context

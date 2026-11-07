@@ -138,6 +138,7 @@ src/
   process.rs     spawning steps in their own session and process group
   mask.rs        streaming secret masker (§9.3)
   envfile.rs     .env parsing
+  envlayers.rs   env layers: every process environment and approval message is built here (§6.1)
   git.rs         status parsing, repository guard, run snapshots
   paths.rs       where the config is
   tui/           app state, screens, theme tokens, vt100 output pane

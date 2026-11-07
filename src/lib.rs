@@ -9,6 +9,7 @@ pub mod config;
 pub mod ctx;
 pub mod engine;
 pub mod envfile;
+pub mod envlayers;
 pub mod git;
 pub mod mask;
 pub mod paths;

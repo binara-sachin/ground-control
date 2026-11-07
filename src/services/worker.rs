@@ -11,7 +11,7 @@
 //! SIGTERM, or SIGHUP when the window is closed. All of them end the child's
 //! process group and leave the state `stopped`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -209,19 +209,11 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
     if !dir.is_dir() {
         return w.refuse(&format!("working directory {} does not exist", dir.display())).await;
     }
-    let mut env: BTreeMap<String, String> = config.env.iter().cloned().collect();
-    let mut secrets = Vec::new();
-    if let Some(f) = &svc.env_file {
-        match crate::envfile::load(&dir.join(f)) {
-            Ok(vars) => {
-                for (k, v) in vars {
-                    secrets.push(v.clone());
-                    env.insert(k, v);
-                }
-            }
-            Err(e) => return w.refuse(&e).await,
-        }
-    }
+    let env_file = svc.env_file.as_ref().map(|f| dir.join(f));
+    let env = match crate::envlayers::service(config, env_file.as_deref()) {
+        Ok(r) => r,
+        Err(e) => return w.refuse(&e).await,
+    };
 
     let mut crashes = VecDeque::new();
     // Only the very first launch can "fail to start". After that, a restart
@@ -231,7 +223,7 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         say(&format!("{stamp} starting: {}", svc.start));
 
-        let spawned = match process::spawn_shell(&svc.start, &dir, &env) {
+        let spawned = match process::spawn_shell(&svc.start, &dir, env.vars()) {
             Ok(s) => s,
             Err(e) => return w.refuse(&format!("cannot start: {e}")).await,
         };
@@ -248,7 +240,7 @@ async fn serve(w: &mut Worker, signals: &mut Signals, config: &Config, project: 
 
         // Output → mask → pane. The pane's scrollback is the only copy.
         let mut output = spawned.output;
-        let mut masker = Masker::new(secrets.clone());
+        let mut masker = Masker::new(env.secrets());
         let pump = tokio::spawn(async move {
             while let Some(chunk) = output.recv().await {
                 pane(&masker.push(&chunk));

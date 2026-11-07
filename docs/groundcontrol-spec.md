@@ -130,9 +130,12 @@ Rust was chosen over Go for reasons other than performance, which is not a facto
 3. The project environment's `vars`.
 4. The values from any `env_file`.
 5. `INPUT_<NAME>` for each pipeline input.
-6. Variables set by GroundControl itself:
+6. `OUTPUT_<KEY>` for each output an earlier step wrote (§6.4).
+7. Variables set by GroundControl itself:
    - `GC_RUN_ID` (the run's window id), `GC_ENV`, `GC_OUTPUT`
    - `FORCE_COLOR=1`, `CLICOLOR_FORCE=1`, `TERM=xterm-256color`, `COLUMNS=120`. These keep colour and table layout even though output goes to a pipe rather than a terminal. The output pane scrolls horizontally when it is narrower than 120 columns.
+
+A service's process gets only layers 1, 2 and 4 (§6.5). An approval message (§6.3) can refer to every layer except `env_file`, whose values are secret; a dry run (§8) and the project screen's step outline expand it the same way, with `GC_RUN_ID` shown as `dry-run`, and `$OUTPUT_*` (and, before inputs are chosen, `$INPUT_*`) left as written.
 
 **Input safety.** Inputs are never substituted into command text. They reach commands only as environment variables, and their `pattern` is checked before the run starts.
 

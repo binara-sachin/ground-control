@@ -193,6 +193,10 @@ pub struct StepOutline {
     pub label: String,
     /// Command, approval message, or `start <target>`.
     pub detail: String,
+    /// An approval message as it reads on each of the pipeline's environments
+    /// (key `""` when it has none), expanded like a dry run's. Inputs aren't
+    /// chosen yet, so `$INPUT_*` and `$OUTPUT_*` stay as written.
+    pub previews: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,7 @@
 //! It owns no runs and no services, and stores nothing: quitting the TUI
 //! stops only the engine.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use tokio::sync::mpsc;
 
-use crate::config::{Config, StepKind};
+use crate::config::{Config, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
+use crate::envlayers::{self, RunScope};
 use crate::protocol::*;
 use crate::window::{self, RunWindow, Windows};
 
@@ -248,6 +249,10 @@ impl Engine {
                                     StepKind::Approve { message } => message.clone(),
                                     StepKind::Service { action, target } => format!("{} {target}", action.as_str()),
                                 },
+                                previews: match &s.kind {
+                                    StepKind::Approve { message } => approval_previews(&config, p, pl, message),
+                                    _ => BTreeMap::new(),
+                                },
                             })
                             .collect(),
                         warning: pl.warning.clone(),
@@ -308,6 +313,20 @@ impl Engine {
 }
 
 static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());
+
+/// An approval step's message as a dry run on each of the pipeline's
+/// environments would show it, before inputs are chosen.
+fn approval_previews(config: &Config, project: &Project, pipeline: &Pipeline, message: &str) -> BTreeMap<String, String> {
+    let no_inputs = BTreeMap::new();
+    let envs: Vec<Option<&str>> =
+        if pipeline.environments.is_empty() { vec![None] } else { pipeline.environments.iter().map(|e| Some(e.as_str())).collect() };
+    envs.into_iter()
+        .map(|env| {
+            let text = envlayers::approval_message(config, project, &RunScope::preview(env, &no_inputs), message);
+            (env.unwrap_or("").to_string(), text)
+        })
+        .collect()
+}
 
 /// A capture without the blank rows below the last output.
 pub fn trim_capture(pane: &str) -> String {

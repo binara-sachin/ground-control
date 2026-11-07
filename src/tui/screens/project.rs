@@ -1,7 +1,7 @@
 //! Project screen (§10.3): header, pipelines with protected badges, the
 //! selected pipeline's detail, and the project's services.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -283,7 +283,6 @@ fn draw_detail(p: &ProjectInfo, v: &ProjectView, pl: Option<&PipelineInfo>, f: &
     let inner = framed(f, area, title, false);
     let w = inner.width as usize;
     let mut lines = Vec::new();
-    let vars: BTreeMap<&str, &str> = BTreeMap::from([("GC_ENV", env.as_deref().unwrap_or(""))]);
     for (i, s) in pl.steps.iter().enumerate() {
         let (kind_style, label_style) = match s.kind {
             StepKindName::Approve => (theme::warning(), theme::warning()),
@@ -291,13 +290,7 @@ fn draw_detail(p: &ProjectInfo, v: &ProjectView, pl: Option<&PipelineInfo>, f: &
             StepKindName::Run => (theme::success(), theme::text()),
         };
         let label = if s.kind == StepKindName::Approve {
-            let mut m = s.detail.clone();
-            for (k, val) in &vars {
-                if !val.is_empty() {
-                    m = m.replace(&format!("${k}"), val);
-                }
-            }
-            format!("\"{m}\"")
+            format!("\"{}\"", s.previews.get(env.as_deref().unwrap_or("")).unwrap_or(&s.detail))
         } else {
             s.label.clone()
         };
