@@ -70,9 +70,9 @@ the decisions taken where the spec left room, and what is still open.
 
 - [x] `make install` builds `~/.local/bin/groundcontrol` and links `groundcontrol.yaml` into `~/.config/ground-control/`. Nothing starts at login
 
-### Projects (§7.2, §7.3)
+### Projects (§7.2)
 
-- [x] `groundcontrol.yaml` holds finance-analyzer (including both rollback pipelines), git-internals (services only) and tmux-ui-manager. It passes validation; a unit test keeps it that way
+- [x] `groundcontrol.yaml` holds tmux-ui-manager. It passes validation; a unit test keeps it that way
 
 ## Decisions where the spec left room
 
@@ -80,7 +80,7 @@ the decisions taken where the spec left room, and what is still open.
 |---|---|
 | YAML crate (§13.8) | `yaml-rust2`'s event parser builds a small tree that carries positions (`src/yaml.rs`). Typed config is built from it, so every schema and validation error has a line and column. It also catches duplicate keys and unknown keys, so typos don't pass silently. |
 | Destructive warnings | The spec asks the run dialog to show them but gives no config field. An optional pipeline field `warning:` was added. |
-| `env_file` path | Resolved relative to the step's or service's `cwd`, which matches the Git Internals `.env` example. |
+| `env_file` path | Resolved relative to the step's or service's `cwd`. |
 | "HEAD isn't on origin" | `git rev-list --count HEAD --not --remotes=origin` > 0. The count is kept on the run's window. |
 | Run IDs | The number of the run's tmux window id (`@12` → `#12`). Ids restart when the tmux server does. |
 | Service start semantics | Starting a single service starts its `depends_on` chain first. A process that exits during its first start is reported as a failed start, not fed into the restart loop. Health is re-checked every 5 s while a service runs (`unhealthy` is shown, not restarted). |
@@ -108,18 +108,17 @@ the decisions taken where the spec left room, and what is still open.
 ## Not verified, and known limitations
 
 - **The security tool.** Whether the endpoint-security alerts stop has not been checked: run `make install` and use GroundControl with the tool active, and note which alerts, if any, still fire.
-- **Open spec items** (§13): placeholder commands (§13.1), D1 Time Travel syntax and JSON shape (§13.2), the wrangler prompt behaviour (§13.3), the production environment name (§13.4), the merge method (§13.5), repository paths (§13.6) and the Asgardeo bypass (§13.7). The config marks each of them with `TODO(§13.x)`.
+- **Open spec items** (§13): the items that belonged to finance-analyzer and git-internals were dropped with those projects. The config has no `TODO(§13.x)` markers left.
 - **Steps that leave background processes** holding the output pipe: the step still finishes when its main process exits; GroundControl stops reading after 2 s.
 - **Text checks are seatbelts.** The blocked-command and `--remote` checks are textual, as the spec says. Masking does not catch encoded or transformed secrets.
 - **A SIGKILLed worker** leaves its child process group running (see Leftover processes).
 - **No desktop notifications.** Alerts reach attached tmux clients only; with none attached, a waiting approval goes unseen until a TUI opens (and expires after 30 minutes). Only the no-client path and the `#` escaping of the client message are tested; delivery to a really attached client has not been checked. An optional `terminal-notifier` setting is described but not built.
 - **Output is bounded by scrollback.** A window keeps 50,000 lines; older output is gone. The window that creates the `ground-control` session keeps tmux's default (usually 2,000), and the session is recreated whenever all its windows have closed. A step whose header scrolled away still shows its remaining lines.
 - **tmux plugins can persist what GroundControl doesn't.** tmux-resurrect and tmux-continuum save the `ground-control` session's window names and folders to disk, and can restore them as plain shells after a reboot. They don't save `@gc_*` options, so GroundControl ignores restored windows. With `@resurrect-capture-pane-contents` on, they would also save pane output.
-- **No record after a run.** Once a run's window closes, nothing about it remains. Copy what you need, such as the D1 bookmark of a migration, while the window is open.
+- **No record after a run.** Once a run's window closes, nothing about it remains. Copy what you need, such as a restore point recorded by a migration, while the window is open.
 - **Process activity.** Workers start no processes while idle: each keeps one blocked `tmux wait-for` child and is woken by the TUI's requests. Their state updates (a few per step or state change) each start one short `tmux` call. While a TUI is open, its engine starts one `tmux list-windows` per second, plus a `tmux capture-pane` per second for the run or service on screen, and re-sends a step's whole output when it changes (heavy only for a step that prints tens of thousands of lines).
 
 ## Suggested next steps
 
 1. Run `make install`, open `groundcontrol` from a tmux popup, and use it with the security tool running.
-2. Fill in the §13 placeholders in `groundcontrol.yaml`, starting with the finance-analyzer seed command, ports and webapp deploy, and confirm the D1 bookmark extraction against wrangler 4.15x.
-3. Phase 2 items (§12): a key that switches to a service's or run's tmux window, live-vs-HEAD per environment read from the deploy targets, and Cloudflare live-version checks.
+2. Phase 2 items (§12): a key that switches to a service's or run's tmux window, live-vs-HEAD per environment read from the deploy targets, and Cloudflare live-version checks.

@@ -44,7 +44,7 @@ started with; new windows use the new one.
 Open the TUI from any terminal with `groundcontrol`. A tmux popup works well:
 
 ```
-bind g display-popup -E -w 90% -h 85% groundcontrol
+bind g display-popup -E -B -w 90% -h 85% groundcontrol
 ```
 
 `make uninstall` removes both.

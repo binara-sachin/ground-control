@@ -21,8 +21,8 @@ Every process therefore has a visible, interactive parent: Terminal → tmux →
 
 1. **Cross-project view.** One dashboard showing every registered project's git state (branch, uncommitted changes, ahead/behind) and the state of its services (running, stopped, crashed, health).
 2. **Runs you can follow.** A pipeline run shows what is running, against which environment, at which commit, whether the tree had uncommitted or unpushed changes, each step's output, and the outcome, for as long as its window exists. There is no history.
-3. **One place to start and stop local services.** Test stacks such as the Git Internals Dashboard backend and webapp, and the finance UI test stack, start in dependency order with health checks, and stop from the same place.
-4. **Guardrails for irreversible actions.** Production deploys, D1 migrations, and merges to `main` go through structural safety checks and explicit approval steps.
+3. **One place to start and stop local services.** Local test stacks start in dependency order with health checks, and stop from the same place.
+4. **Guardrails for irreversible actions.** Production deploys, database migrations, and merges to `main` go through structural safety checks and explicit approval steps.
 
 ## 3. Non-goals
 
@@ -81,9 +81,9 @@ Every process therefore has a visible, interactive parent: Terminal → tmux →
  you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI + engine) ──reads/writes window options──┐
                           │                                                                      ▼
                           └─ session "ground-control"
-                               ├─ finance/deploy   groundcontrol run-exec ──▶ @gc_* options, pane
+                               ├─ myapp/deploy   groundcontrol run-exec ──▶ @gc_* options, pane
                                │                     └─ zsh -c "pnpm … deploy"
-                               └─ finance/api      groundcontrol svc-exec ──▶ @gc_* options, pane
+                               └─ myapp/api      groundcontrol svc-exec ──▶ @gc_* options, pane
                                                      └─ zsh -c "pnpm … wrangler dev"
                                      git · gh · wrangler · pnpm · cargo · docker compose
                                      (existing logins)
@@ -109,7 +109,7 @@ Rust was chosen over Go for reasons other than performance, which is not a facto
 ### 5.4 Install and update
 
 - **Install:** `make install` builds the binary to `~/.local/bin/groundcontrol` and links the repository's `groundcontrol.yaml` into `~/.config/ground-control/`, so the TUI finds it from any directory. Nothing is registered to start at login.
-- **Opening the TUI:** run `groundcontrol` in any terminal. The recommended setup is a tmux popup binding in `~/.tmux.conf`, for example `bind g display-popup -E -w 90% -h 85% groundcontrol`.
+- **Opening the TUI:** run `groundcontrol` in any terminal. The recommended setup is a tmux popup binding in `~/.tmux.conf`, for example `bind g display-popup -E -B -w 90% -h 85% groundcontrol`.
 - **Update:** `git pull && make install`. Running workers keep the binary they started with; new windows use the new one.
 - **Config location:** `GC_CONFIG` if set, else `~/.config/ground-control/groundcontrol.yaml` (the link), else `./groundcontrol.yaml`. The TUI passes the resolved path to every worker window.
 - **GroundControl never redeploys itself from its own UI.**
@@ -162,7 +162,7 @@ A step may append `key=value` lines to the file named by `$GC_OUTPUT`, the same 
 - Outputs are published on the run's window and shown in the run view.
 - Later steps receive them as `OUTPUT_<KEY>`.
 
-The main use is recording the D1 Time Travel bookmark before a migration.
+A typical use is recording a restore point, such as a database bookmark, before a migration.
 
 ### 6.5 Services and groups
 
@@ -252,150 +252,11 @@ projects:
 
 Service and group IDs share a namespace within a project.
 
-### 7.2 Worked example: finance-analyzer (Worker + D1)
+### 7.2 Worked example: tmux-ui-manager
 
 ```yaml
-projects:
-  finance-analyzer:
-    path: ~/code/finance-analyzer                     # <confirm>
-    remote: github.com/binara-sachin/finance-analyzer # <confirm>
-    environments:
-      prod: { protected: true }
-
-    services:
-      importer:
-        cwd: apps/importer
-        start: "<importer start command>"
-        health: { url: "http://127.0.0.1:<port>/" }
-        restart: never
-      api-local:
-        start: pnpm --filter backend exec wrangler dev --local --port 8787
-        health: { port: 8787 }
-      webapp-local:
-        start: pnpm --filter webapp dev
-        depends_on: [api-local]
-        health: { port: <vite port> }
-    groups:
-      ui-test: [api-local, webapp-local]
-
-    pipelines:
-      # ── git ──
-      pull:
-        steps:
-          - run: git pull --ff-only
-      new-branch:
-        inputs:
-          branch: { type: string, pattern: "^[a-z0-9._/-]+$" }
-        steps:
-          - run: git switch -c "$INPUT_BRANCH"
-      push:
-        steps:
-          - run: git push -u origin HEAD
-      open-pr:
-        steps:
-          - run: gh pr create --fill
-      merge-pr:
-        protected: true
-        inputs:
-          pr: { type: string, pattern: "^[0-9]+$" }
-        steps:
-          - name: Show PR
-            run: gh pr view "$INPUT_PR" && gh pr checks "$INPUT_PR"
-          - approve: "Merge PR #$INPUT_PR into main?"
-          - run: gh pr merge "$INPUT_PR" --squash        # <confirm merge method>
-
-      # ── local UI testing with seed data ──
-      ui-test:
-        steps:
-          - name: Seed local D1
-            run: "<existing seed command>"           # must target --local
-          - service: start ui-test
-
-      # ── Cloudflare ──
-      deploy-backend:
-        environments: [prod]
-        steps:
-          - name: Test
-            run: pnpm --filter backend test
-          - approve: "Deploy backend Worker to $GC_ENV?"
-          - name: Deploy
-            run: pnpm --filter backend exec wrangler deploy
-      deploy-webapp:
-        environments: [prod]
-        steps:
-          - run: pnpm --filter webapp build
-          - approve: "Deploy webapp to $GC_ENV?"
-          - run: "<webapp deploy command>"
-
-      migrate:
-        environments: [prod]
-        steps:
-          - name: Pending migrations
-            run: pnpm --filter backend exec wrangler d1 migrations list ledger --remote
-          - name: Record restore point
-            run: |
-              bm=$(<extract bookmark from: pnpm --filter backend exec wrangler d1 time-travel info ledger>)
-              echo "d1_bookmark=$bm" >> "$GC_OUTPUT"
-          - approve: "Apply these migrations to prod D1 'ledger'? Restore point: $OUTPUT_D1_BOOKMARK"
-          - name: Apply
-            run: pnpm --filter backend exec wrangler d1 migrations apply ledger --remote
-
-      # ── rollback ──
-      restore-d1:
-        environments: [prod]
-        inputs:
-          bookmark: { type: string, pattern: "^[A-Za-z0-9-]+$" }
-        steps:
-          - run: pnpm --filter backend exec wrangler d1 time-travel info ledger
-          - approve: "Restore prod D1 to $INPUT_BOOKMARK? ALL writes after it are lost."
-          - run: pnpm --filter backend exec wrangler d1 time-travel restore ledger --bookmark "$INPUT_BOOKMARK"
-      rollback-worker:
-        environments: [prod]
-        steps:
-          - run: pnpm --filter backend exec wrangler deployments list
-          - approve: "Roll back the backend Worker to the previous deployment? (Does not undo D1 migrations.)"
-          - run: pnpm --filter backend exec wrangler rollback
-```
-
-Notes:
-- **Validation of the local test stack.** Validation rejects `--remote` in any service `start` command, and the seed step must target the local D1. The `ui-test` stack can never touch production D1, and it never reads `data/processed/`.
-- **Keep the bookmark.** GroundControl keeps no history, so the bookmark the `migrate` run records is visible only while its window exists: in the approval message, the run view's outputs and the pane. A succeeded run's window closes 5 seconds after it ends, so copy the bookmark before approving the migration. `wrangler d1 time-travel info` can also look up a restore point afterwards.
-- **Rollbacks are independent.** Rolling back the Worker does not undo a migration. Restoring D1 discards every write made after the bookmark, including real transactions that arrived in the meantime. The TUI repeats this warning on both rollback pipelines.
-
-### 7.3 Worked examples: Git Internals Dashboard and tmux-ui-manager
-
-```yaml
-  git-internals:
-    path: ~/code/cs-tools                         # <confirm>
-    remote: github.com/wso2-open-operations/cs-tools
-    # No git pipelines by design. Dashboard shows read-only git status.
-    services:
-      postgres:
-        cwd: apps/git-internals-dashboard
-        start: docker compose up postgres          # foreground; stop → containers stop
-        health: { port: 5432 }
-      backend:
-        cwd: apps/git-internals-dashboard/backend
-        start: "<go run command>"
-        env_file: .env                             # GitHub token, CORS_ALLOWED_ORIGINS, DB URL
-        depends_on: [postgres]
-        health: { url: "<backend health url>" }
-      webapp:
-        cwd: apps/git-internals-dashboard/webapp
-        start: pnpm dev
-        depends_on: [backend]
-        health: { port: 5173 }
-    groups:
-      local: [postgres, backend, webapp]
-    pipelines:
-      seed:
-        steps:
-          - cwd: apps/git-internals-dashboard/backend
-            env_file: .env
-            run: "<seed command>"
-
   tmux-ui-manager:
-    path: ~/code/tmux-ui-manager                  # <confirm: dev checkout symlinked into ~/.tmux/plugins>
+    path: ~/dev/tmux-ui-manager
     remote: github.com/binara-sachin/tmux-ui-manager
     pipelines:
       deploy:
@@ -437,7 +298,7 @@ The text-based checks (blocked commands, `--remote`) are **seatbelts, not guaran
    - There is no socket and no network listener, so nothing can reach GroundControl except your own processes.
    - Nothing runs in the background of its own: every run and service is a tmux window you can see and attach to.
    - Nothing is written to disk, so there is no history or log to leak.
-8. **Rollback** (finance-analyzer): a D1 Time Travel bookmark is taken before every migration and shown in its approval message, and there are two protected rollback pipelines (§7.2). The bookmark is not kept after the run's window closes.
+8. **Rollback.** A project can record a restore point before a risky step, show it in the approval message, and offer protected rollback pipelines. Nothing is kept after the run's window closes, so copy a restore point before approving.
 9. **Timeouts, cancellation, and one run per project** (§6.1, §6.2).
 
 ## 9. Secrets and authentication
@@ -546,8 +407,7 @@ The only files involved are your `groundcontrol.yaml` (linked into `~/.config/gr
 - Services and groups: health checks, restart policy.
 - TUI: Dashboard, Project, Run dialog, Run view with output pane, Health.
 - Secret masking; alerts to attached tmux clients.
-- finance-analyzer rollback pipelines (D1 bookmark restore and Worker rollback).
-- Projects: **finance-analyzer**, **Git Internals Dashboard** (services only), **tmux-ui-manager**.
+- Projects: **tmux-ui-manager**.
 
 ### Phase 2
 - A key that switches to the selected service's or run's tmux window.
@@ -563,13 +423,13 @@ The only files involved are your `groundcontrol.yaml` (linked into `~/.config/gr
 
 ## 13. Open questions and items to verify during implementation
 
-1. **Placeholder commands to fill in from project docs:** importer start command and port, finance webapp deploy command, local Vite port, existing seed command (and confirming it targets `--local`), Git Internals backend run command, health URL and seed command.
-2. **D1 Time Travel.** Confirm the current `wrangler d1 time-travel info` and `restore` syntax for wrangler 4.15x, how to extract the bookmark reliably (JSON output if available), and how far back restores can go on your Workers plan.
-3. **Prompt behaviour** of `wrangler rollback` and `wrangler deploy` without a terminal. Confirm each auto-confirms or fails, and never hangs.
-4. **Production environment name in Wrangler** for finance-analyzer: is it the top-level config or a named `--env`?
+1. **Placeholder commands** for any project added later: write them as commands that fail loudly until filled in.
+2. ~~D1 Time Travel~~ Dropped with the finance-analyzer project.
+3. ~~Prompt behaviour of `wrangler`~~ Dropped with the finance-analyzer project.
+4. ~~Production environment name in Wrangler~~ Dropped with the finance-analyzer project.
 5. **Merge method** for `merge-pr` (squash, merge commit, or rebase) and whether the merged branch should be deleted.
-6. **Repository paths and remotes** for all three projects. Is tmux-ui-manager's dev checkout the copy symlinked into `~/.tmux/plugins`?
-7. **Local sign-in for the Git Internals Dashboard.** Does local testing still need an Asgardeo login, or is there a development bypass?
+6. **Repository paths and remotes** for tmux-ui-manager. Is tmux-ui-manager's dev checkout the copy symlinked into `~/.tmux/plugins`?
+7. ~~Local sign-in for the Git Internals Dashboard~~ Dropped with the git-internals project.
 8. **YAML crate.** Choose a maintained Rust YAML parser that reports line and column positions for validation errors.
 9. **TUI details:** minimum terminal size, the tmux popup key binding, and final theme colours.
 10. **Security tool:** confirm that the endpoint-security alerts no longer fire with this design (see [`architecture.md`](architecture.md)).
