@@ -7,6 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
 use super::super::app::{App, Level, Overlay, Tag, TextOverlay};
+use super::super::mouse::Target;
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
@@ -232,6 +233,49 @@ pub fn key(app: &mut App, k: KeyEvent) {
     }
 }
 
+/// A click on a pane focuses it and selects the row under the pointer.
+/// Returns whether that was a real row (a row index past the end only focuses).
+pub fn click(app: &mut App, target: Target, row: usize) -> bool {
+    app.dash.focus_banner_on_new = false;
+    match target {
+        Target::DashBanner => {
+            app.dash.focus = Focus::Banner;
+            true
+        }
+        Target::DashProjects => {
+            app.dash.focus = Focus::Projects;
+            if row >= app.projects.len() {
+                return false;
+            }
+            if row != app.dash.project_sel {
+                app.dash.project_sel = row;
+                app.dash.service_sel = 0;
+            }
+            load_log(app, false);
+            true
+        }
+        Target::DashServices => {
+            app.dash.focus = Focus::Services;
+            let len = selected_project(app).map(|p| service_rows(p).len()).unwrap_or(0);
+            if row >= len {
+                return false;
+            }
+            app.dash.service_sel = row;
+            load_log(app, false);
+            true
+        }
+        Target::DashRuns => {
+            app.dash.focus = Focus::Runs;
+            if row >= app.recent.len() {
+                return false;
+            }
+            app.dash.run_sel = row;
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let mut h = vec![("↑↓", "select"), ("enter", "open"), ("tab", "next pane")];
     if app.dash.focus == Focus::Banner {
@@ -262,6 +306,7 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     let focused = app.dash.focus == Focus::Banner;
     let title = if app.waiting.len() == 1 { "approval waiting".to_string() } else { format!("{} approvals waiting", app.waiting.len()) };
     let inner = framed_alert(f, area, &title, true);
+    app.hits.add(area, Target::DashBanner, 0);
     let a = &app.waiting[0];
     let run = app.recent.iter().find(|r| r.id == a.run_id);
     let w = inner.width as usize;
@@ -303,6 +348,8 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     let focused = matches!(app.dash.focus, Focus::Projects);
     let inner = framed(f, area, vec![title_text("projects"), title_muted(format!(" {}", app.projects.len()))], focused);
     let w = inner.width;
+    // Project rows start below the column header.
+    app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, 0);
     let mut lines = vec![row(
         vec![
             cell("", theme::muted(), 1),
@@ -465,6 +512,7 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
         return;
     };
     let inner = framed(f, area, vec![title_text(p.id.clone()), title_muted(" services")], focused);
+    app.hits.add(inner, Target::DashServices, 0);
     let rows = service_rows(p);
     let sel = focused.then_some(app.dash.service_sel.min(rows.len().saturating_sub(1)));
     let mut lines = service_lines(p, sel, inner.width);
@@ -485,6 +533,7 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     }
     let visible = inner.height as usize;
     let start = app.dash.run_sel.saturating_sub(visible.saturating_sub(1));
+    app.hits.add(inner, Target::DashRuns, start);
     for (i, r) in app.recent.iter().enumerate().skip(start).take(visible) {
         let (word, style) = run_status_word(r.status);
         let mut name = format!("{}/{}", r.project, r.pipeline);
@@ -519,6 +568,7 @@ fn draw_log(app: &mut App, f: &mut Frame, area: Rect) {
         None => vec![title_text("log")],
     };
     let inner = framed(f, area, title, false);
+    app.hits.add(inner, Target::DashLog, 0);
     if app.dash.log_target.is_none() {
         f.render_widget(para(vec![Line::styled(" select a service to see its log", theme::muted())]), inner);
         return;

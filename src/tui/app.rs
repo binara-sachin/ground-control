@@ -5,9 +5,12 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::mouse::{HitMap, Target};
 use super::screens::{dashboard, dialog, project, run_view};
 use super::term_view::TermView;
 use crate::engine::{Engine, RequestError};
@@ -104,6 +107,10 @@ pub struct App {
 
     pub dash: dashboard::DashState,
 
+    /// Clickable areas of the last frame.
+    pub hits: HitMap,
+    last_click: Option<(Instant, Target, usize)>,
+
     subscribed: BTreeSet<String>,
     refetch_projects_at: Option<Instant>,
     refetch_recent_at: Option<Instant>,
@@ -128,6 +135,8 @@ impl App {
             health: None,
             config: None,
             dash: Default::default(),
+            hits: HitMap::default(),
+            last_click: None,
             subscribed: BTreeSet::new(),
             refetch_projects_at: None,
             refetch_recent_at: None,
@@ -265,6 +274,7 @@ impl App {
                     d.paste(&text);
                 }
             }
+            Msg::Input(TermEvent::Mouse(m)) => self.on_mouse(m),
             Msg::Input(_) => {}
             Msg::Tick => self.on_tick(),
             Msg::Connected(engine) => {
@@ -573,14 +583,11 @@ impl App {
                 return;
             }
             KeyCode::Char('1') => {
-                self.nav = vec![View::Dashboard];
-                self.sync_subscription();
+                self.go_root(1);
                 return;
             }
             KeyCode::Char('2') => {
-                self.nav = vec![View::Health];
-                self.request(Request::HealthGet, Tag::Health);
-                self.sync_subscription();
+                self.go_root(2);
                 return;
             }
             KeyCode::Esc if self.nav.len() > 1 => {
@@ -600,6 +607,133 @@ impl App {
             }
         }
         self.sync_subscription();
+    }
+
+    /// Switches to a root screen: 1 dashboard, 2 health.
+    fn go_root(&mut self, n: u8) {
+        match n {
+            1 => self.nav = vec![View::Dashboard],
+            2 => {
+                self.nav = vec![View::Health];
+                self.request(Request::HealthGet, Tag::Health);
+            }
+            _ => {}
+        }
+        self.sync_subscription();
+    }
+
+    // ── mouse ──
+
+    /// Presses a key on the user's behalf: clicks reuse the key handlers.
+    fn press(&mut self, code: KeyCode) {
+        self.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) {
+        if !matches!(self.conn, Conn::Connected) {
+            return;
+        }
+        let Some((target, row)) = self.hits.at(m.column, m.row, self.overlay.is_some()) else { return };
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => match self.overlay.take() {
+                Some(overlay) => {
+                    self.overlay = self.overlay_click(overlay, target);
+                    self.sync_subscription();
+                }
+                None => self.on_click(target, row),
+            },
+            MouseEventKind::ScrollUp => self.on_wheel(target, false),
+            MouseEventKind::ScrollDown => self.on_wheel(target, true),
+            MouseEventKind::ScrollLeft => self.on_hwheel(target, false),
+            MouseEventKind::ScrollRight => self.on_hwheel(target, true),
+            _ => {}
+        }
+    }
+
+    fn on_click(&mut self, target: Target, row: usize) {
+        let valid = match target {
+            Target::Tab(n) => {
+                self.go_root(n);
+                false
+            }
+            Target::DashBanner | Target::DashProjects | Target::DashServices | Target::DashRuns => dashboard::click(self, target, row),
+            Target::ProjPipelines | Target::ProjServices => project::click(self, target, row),
+            Target::RunSteps => run_view::click(self, row),
+            _ => false,
+        };
+        let now = Instant::now();
+        let double = valid
+            && target.is_list()
+            && self.last_click.is_some_and(|(t, tg, r)| tg == target && r == row && now.duration_since(t) < Duration::from_millis(400));
+        self.last_click = if double { None } else { Some((now, target, row)) };
+        // A double click opens the row; the approval banner opens on one click.
+        if double || (valid && target == Target::DashBanner) {
+            self.press(KeyCode::Enter);
+        }
+        self.sync_subscription();
+    }
+
+    /// Clicks in an overlay turn into the key that does the same.
+    fn overlay_click(&mut self, mut overlay: Overlay, target: Target) -> Option<Overlay> {
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let k = match (&mut overlay, target) {
+            (Overlay::Help, Target::HelpPanel) => key(KeyCode::Esc),
+            (Overlay::Confirm(_), Target::ConfirmYes) => key(KeyCode::Char('y')),
+            (Overlay::Confirm(_), Target::ConfirmNo) => key(KeyCode::Char('n')),
+            (Overlay::Dialog(d), t) => match dialog::click_key(d, t) {
+                Some(k) => k,
+                None => return Some(overlay),
+            },
+            _ => return Some(overlay),
+        };
+        let next = self.overlay_key(overlay, k);
+        self.sync_subscription();
+        next
+    }
+
+    /// The wheel scrolls output and logs, and moves the selection in lists.
+    fn on_wheel(&mut self, target: Target, down: bool) {
+        const LINES: usize = 3;
+        let step = if down { KeyCode::Down } else { KeyCode::Up };
+        match target {
+            Target::DashLog => {
+                if down {
+                    self.dash.log.scroll_down(LINES)
+                } else {
+                    self.dash.log.scroll_up(LINES)
+                }
+            }
+            Target::DashProjects | Target::DashServices | Target::DashRuns => {
+                dashboard::click(self, target, usize::MAX);
+                self.press(step);
+            }
+            Target::ProjPipelines | Target::ProjServices => {
+                project::click(self, target, usize::MAX);
+                self.press(step);
+            }
+            Target::RunSteps => self.press(step),
+            Target::RunOutput => run_view::scroll_output(self, |o| if down { o.scroll_down(LINES) } else { o.scroll_up(LINES) }),
+            Target::TextOverlay => {
+                if let Some(Overlay::Text(t)) = &mut self.overlay {
+                    if down { t.view.scroll_down(LINES) } else { t.view.scroll_up(LINES) }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_hwheel(&mut self, target: Target, right: bool) {
+        match target {
+            Target::DashLog if right => self.dash.log.scroll_right(8, 40),
+            Target::DashLog => self.dash.log.scroll_left(8),
+            Target::RunOutput => run_view::scroll_output(self, |o| if right { o.scroll_right(8, 60) } else { o.scroll_left(8) }),
+            Target::TextOverlay => {
+                if let Some(Overlay::Text(t)) = &mut self.overlay {
+                    if right { t.view.scroll_right(8, 40) } else { t.view.scroll_left(8) }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn overlay_key(&mut self, overlay: Overlay, k: KeyEvent) -> Option<Overlay> {

@@ -65,6 +65,7 @@ the decisions taken where the spec left room, and what is still open.
   - each step's output is cut from the run's pane capture at the worker's step headers and replaces the view, keeping the scroll position
 - [x] Approval only in the run view; the dashboard banner offers only "review". A protected approval takes two keys; a rejection takes one
 - [x] If the engine cannot start: an explanatory screen that retries automatically
+- [x] Mouse (`src/tui/mouse.rs`): the TUI captures the mouse, so the terminal's own text selection needs Shift (Option in iTerm). Every `draw` records its clickable areas in a hit map; a click or wheel event is matched against the last frame, and an open overlay hides everything under it. Click focuses a pane and selects the row, a double click is `enter`, a click on the approval banner opens the run, the wheel scrolls output and logs and moves selection in lists, and the top-bar tabs, dialog fields and buttons and confirm buttons are clickable. Clicks reuse the key handlers. The bottom hint bar is not clickable. Not yet checked inside a `tmux display-popup`
 
 ### Install (§5.4)
 

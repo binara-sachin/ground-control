@@ -11,6 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::super::app::{App, Confirm, ConfirmAction, Overlay, Tag, View};
+use super::super::mouse::{HitMap, Target};
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
@@ -260,6 +261,24 @@ pub fn key(app: &mut App, k: KeyEvent) {
     }
 }
 
+/// A click on a step selects it; returns whether the row was a step.
+pub fn click(app: &mut App, row: usize) -> bool {
+    let steps = view(app).detail.as_ref().map(|d| d.steps.len()).unwrap_or(0);
+    if row >= steps {
+        return false;
+    }
+    let v = view_mut(app);
+    v.sel = row;
+    v.auto_select = false;
+    load_selected(app);
+    true
+}
+
+/// Scrolls the selected step's output (the mouse wheel).
+pub fn scroll_output(app: &mut App, f: impl FnOnce(&mut TermView)) {
+    scroll(app, f);
+}
+
 fn scroll(app: &mut App, f: impl FnOnce(&mut TermView)) {
     let v = view_mut(app);
     let sel = v.sel;
@@ -305,9 +324,10 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         Constraint::Min(0),
     ])
     .areas(left);
-    draw_steps(v, &d, f, steps_area);
+    draw_steps(v, &d, f, steps_area, &app.hits);
     draw_outputs(&d, f, outputs_area);
     draw_info(&d, f, info_area);
+    app.hits.add(right, Target::RunOutput, 0);
     draw_output(v, &d, f, right);
     if let Some(a) = approval {
         draw_approval(&a, &d, f, appr);
@@ -380,8 +400,9 @@ fn step_detail(s: &StepInfo) -> (String, Style) {
     }
 }
 
-fn draw_steps(v: &RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
+fn draw_steps(v: &RunView, d: &RunDetail, f: &mut Frame, area: Rect, hits: &HitMap) {
     let inner = framed(f, area, vec![title_text("steps")], true);
+    hits.add(Rect { height: (d.steps.len() as u16).min(inner.height), ..inner }, Target::RunSteps, 0);
     let w = inner.width;
     let mut lines = Vec::new();
     for s in &d.steps {

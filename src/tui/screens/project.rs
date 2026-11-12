@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
 use super::super::app::{App, Level, Overlay, Tag, View};
+use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
 use super::dashboard::{self, service_rows};
@@ -131,6 +132,32 @@ pub fn key(app: &mut App, k: KeyEvent) {
     }
 }
 
+/// A click focuses a pane and selects the row under the pointer; returns
+/// whether that was a real row.
+pub fn click(app: &mut App, target: Target, row: usize) -> bool {
+    let Some(p) = app.project(&view(app).id).cloned() else { return false };
+    let v = view_mut(app);
+    match target {
+        Target::ProjPipelines => {
+            v.focus = Focus::Pipelines;
+            let real = row < p.pipelines.len();
+            if real {
+                v.sel = row;
+            }
+            real
+        }
+        Target::ProjServices => {
+            v.focus = Focus::Services;
+            let real = row < service_rows(&p).len();
+            if real {
+                v.svc_sel = row;
+            }
+            real
+        }
+        _ => false,
+    }
+}
+
 fn open_dialog(app: &mut App, p: &ProjectInfo, pl: &PipelineInfo, dry: bool) {
     let env = view(app).env_for(pl);
     let mut d = RunDialog::new(p, pl, env);
@@ -168,7 +195,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     let [header, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
     draw_header(p, f, header);
     let [left, right] = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(body);
-    draw_pipelines(p, v, f, left);
+    draw_pipelines(p, v, f, left, &app.hits);
     let pl = p.pipelines.get(v.sel.min(p.pipelines.len().saturating_sub(1)));
     let detail_h =
         pl.map(|pl| pl.steps.len() as u16 * 2 + 6 + u16::from(pl.warning.is_some()) + u16::from(!pl.inputs.is_empty())).unwrap_or(4);
@@ -178,6 +205,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     draw_detail(p, v, pl, f, detail);
     let focused = v.focus == Focus::Services;
     let inner = framed(f, services, vec![title_text("services")], focused);
+    app.hits.add(inner, Target::ProjServices, 0);
     let rows = service_rows(p);
     let sel = focused.then_some(v.svc_sel.min(rows.len().saturating_sub(1)));
     f.render_widget(para(dashboard::service_lines(p, sel, inner.width)), inner);
@@ -215,9 +243,10 @@ fn draw_header(p: &ProjectInfo, f: &mut Frame, area: Rect) {
     f.render_widget(para(vec![clip_line(s, area.width as usize)]), area);
 }
 
-fn draw_pipelines(p: &ProjectInfo, v: &ProjectView, f: &mut Frame, area: Rect) {
+fn draw_pipelines(p: &ProjectInfo, v: &ProjectView, f: &mut Frame, area: Rect, hits: &HitMap) {
     let focused = v.focus == Focus::Pipelines;
     let inner = framed(f, area, vec![title_text("pipelines"), title_muted(format!(" {}", p.pipelines.len()))], focused);
+    hits.add(inner, Target::ProjPipelines, 0);
     let w = inner.width;
     let mut lines = Vec::new();
     if p.pipelines.is_empty() {

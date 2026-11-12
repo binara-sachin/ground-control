@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use regex::Regex;
 
 use super::super::app::{App, Overlay, Tag};
+use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
 use super::project::env_protected;
@@ -260,6 +261,33 @@ pub fn key(app: &mut App, mut d: Box<RunDialog>, k: KeyEvent) -> Option<Overlay>
     Some(Overlay::Dialog(d))
 }
 
+/// What a click in the dialog does, as the key that does the same. Clicking
+/// an input focuses it; a bool or choice also flips to its next value.
+pub fn click_key(d: &mut RunDialog, target: Target) -> Option<KeyEvent> {
+    let key = |c, m| Some(KeyEvent::new(c, m));
+    if d.busy && target != Target::DialogCancel {
+        return None;
+    }
+    match target {
+        Target::DialogStart => key(KeyCode::Enter, KeyModifiers::NONE),
+        Target::DialogDry => key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        Target::DialogCancel => key(KeyCode::Esc, KeyModifiers::NONE),
+        Target::DialogEnv if d.envs.len() > 1 => {
+            d.focus = 0;
+            key(KeyCode::Right, KeyModifiers::NONE)
+        }
+        Target::DialogField(i) => {
+            let kind = d.fields.get(i)?.input.kind;
+            d.focus = i + 1;
+            match kind {
+                InputKind::String => None,
+                InputKind::Bool | InputKind::Choice => key(KeyCode::Right, KeyModifiers::NONE),
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn hints(d: &RunDialog) -> Vec<(&'static str, &'static str)> {
     let mut h = vec![("tab", "next field")];
     if d.envs.len() > 1 {
@@ -269,11 +297,13 @@ pub fn hints(d: &RunDialog) -> Vec<(&'static str, &'static str)> {
     h
 }
 
-pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect) {
+pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
     let w = 104.min(area.width.saturating_sub(4)).max(40);
     let inner_w = w.saturating_sub(4) as usize;
     let protected = d.protected();
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Line numbers of the input rows, for the mouse. The env row is line 1.
+    let mut field_lines: Vec<(usize, usize)> = Vec::new();
     let label = |s: &str| Span::styled(fit(s, 9), theme::muted());
     lines.push(Line::from(vec![label("project"), Span::styled(d.project.clone(), theme::text())]));
     let mut env_line = vec![label("env")];
@@ -305,6 +335,7 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect) {
         lines.push(Line::styled("inputs", theme::bold()));
         let name_w = d.fields.iter().map(|f| width(&f.input.name)).max().unwrap_or(4).clamp(6, 16);
         for (i, fld) in d.fields.iter().enumerate() {
+            field_lines.push((i, lines.len()));
             let focused = d.focus == i + 1;
             let mut spans = vec![Span::styled(fit(&fld.input.name, name_w + 2), if focused { theme::key() } else { theme::muted() })];
             let shown = match fld.input.kind {
@@ -370,14 +401,28 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect) {
     } else {
         theme::muted().bg(theme::BAR_BG)
     };
-    lines.push(Line::from(vec![
-        Span::styled(if d.busy { " working… " } else { " enter  start run " }, start_style),
-        Span::raw("    "),
-        Span::styled("ctrl+d", theme::key()),
-        Span::styled(" dry run    ", theme::text()),
-        Span::styled("esc", theme::key()),
-        Span::styled(" cancel", theme::text()),
-    ]));
+    // The button row: each of start, dry run and cancel is clickable.
+    let buttons = [
+        (Target::DialogStart, vec![Span::styled(if d.busy { " working… " } else { " enter  start run " }, start_style)]),
+        (Target::DialogStart, vec![Span::raw("    ")]),
+        (Target::DialogDry, vec![Span::styled("ctrl+d", theme::key()), Span::styled(" dry run", theme::text())]),
+        (Target::DialogDry, vec![Span::styled("    ", theme::text())]),
+        (Target::DialogCancel, vec![Span::styled("esc", theme::key()), Span::styled(" cancel", theme::text())]),
+    ];
+    let button_line = lines.len();
+    let mut button_spans = Vec::new();
+    let mut button_rects: Vec<(Target, u16, u16)> = Vec::new();
+    let mut x = 0u16;
+    for (i, (target, spans)) in buttons.into_iter().enumerate() {
+        let w: u16 = spans.iter().map(|s| width(&s.content) as u16).sum();
+        // The gaps between buttons (odd entries) are not clickable.
+        if i % 2 == 0 {
+            button_rects.push((target, x, w));
+        }
+        x += w;
+        button_spans.extend(spans);
+    }
+    lines.push(Line::from(button_spans));
 
     let h = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let r = centered(area, w, h);
@@ -387,6 +432,20 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect) {
     let inner = Rect { x: inner.x + 1, y: inner.y + 1, width: inner.width.saturating_sub(2), height: inner.height.saturating_sub(1) };
     let lines: Vec<Line<'static>> = lines.into_iter().map(|l| clip_line(l.spans, inner.width as usize)).collect();
     f.render_widget(para(lines), inner);
+
+    // Lines are not wrapped, so line n is row n of the inner area.
+    let row_at = |n: usize| Rect { y: inner.y.saturating_add(n as u16), height: 1, ..inner };
+    let visible = |r: Rect| r.intersection(inner);
+    if d.envs.len() > 1 {
+        hits.add(visible(row_at(1)), Target::DialogEnv, 0);
+    }
+    for (i, n) in field_lines {
+        hits.add(visible(row_at(n)), Target::DialogField(i), 0);
+    }
+    for (target, x, w) in button_rects {
+        let r = Rect { x: inner.x.saturating_add(x), width: w, ..row_at(button_line) };
+        hits.add(visible(r), target, 0);
+    }
 }
 
 /// Greedy word wrap by display width.
