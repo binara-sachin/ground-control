@@ -16,7 +16,7 @@ use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
 use super::dialog::wrap;
-use crate::protocol::*;
+use crate::model::*;
 
 pub struct RunView {
     pub id: i64,

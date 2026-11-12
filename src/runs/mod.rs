@@ -18,7 +18,7 @@ use regex::Regex;
 use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
 use crate::envlayers::{self, Layer, RunScope};
-use crate::protocol::*;
+use crate::model::*;
 use crate::tmux::{NewWindow, target};
 use crate::window::{self, RunParams, RunWindow, Windows};
 
@@ -382,7 +382,7 @@ pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirm
         Decision::Approve => ApprovalStatus::Approved,
         Decision::Reject => ApprovalStatus::Rejected,
     };
-    let request = RunWindow::decision_request(window::Decision { status, step });
+    let request = RunWindow::decision_request(window::Answer { status, step });
     ctx.tmux.request(id, &request).await.map_err(|e| err(ErrorCode::Internal, e))?;
     Ok(())
 }

@@ -6,7 +6,31 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use crate::protocol::{GitStatus, now};
+use crate::model::{Timestamp, now};
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GitStatus {
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub staged: u32,
+    pub modified: u32,
+    pub untracked: u32,
+    pub conflicted: u32,
+    /// `Some(true)` when `origin` matches the declared remote, `None` when no remote is declared.
+    pub origin_matches: Option<bool>,
+    pub origin_url: Option<String>,
+    pub checked_at: Timestamp,
+    pub error: Option<String>,
+}
+
+impl GitStatus {
+    pub fn is_clean(&self) -> bool {
+        self.staged + self.modified + self.untracked + self.conflicted == 0
+    }
+}
 
 /// Normalises SSH and HTTPS remote forms to `host/owner/repo` (lowercase host,
 /// no `.git` suffix), so `git@github.com:a/b.git` and `https://github.com/a/b` match.

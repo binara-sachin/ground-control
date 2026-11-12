@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, Health, Project, Service, ServiceAction};
 use crate::ctx::Ctx;
-use crate::protocol::{ServiceState, ServiceStatus};
+use crate::model::{ServiceState, ServiceStatus};
 use crate::tmux::NewWindow;
 use crate::window::{self, ServiceWindow, Windows};
 

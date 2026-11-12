@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::protocol::RunDetail;
+use crate::model::RunDetail;
 use crate::tmux::trim_capture;
 
 static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());

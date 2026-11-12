@@ -9,7 +9,8 @@ use ratatui::text::{Line, Span};
 use super::super::app::App;
 use super::super::theme;
 use super::super::widgets::*;
-use crate::protocol::*;
+use crate::config::Severity;
+use crate::model::*;
 
 pub fn hints() -> Vec<(&'static str, &'static str)> {
     vec![("r", "refresh"), ("1", "dashboard"), ("?", "help")]

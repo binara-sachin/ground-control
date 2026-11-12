@@ -10,7 +10,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::theme;
-use crate::protocol::*;
+use crate::git::GitStatus;
+use crate::model::*;
 
 /// Display width in terminal cells.
 pub fn width(s: &str) -> usize {

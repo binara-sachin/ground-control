@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::Env;
-use groundcontrol::protocol::*;
+use groundcontrol::model::*;
 use groundcontrol::runs;
 use groundcontrol::runs::pane::{latest_started, split_steps};
 use groundcontrol::tmux::NewWindow;

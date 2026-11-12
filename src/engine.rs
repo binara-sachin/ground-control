@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use crate::config::{Config, Pipeline, Project, StepKind};
+use crate::config::{Config, Pipeline, Project, ServiceAction, StepKind};
 use crate::ctx::Ctx;
 use crate::envlayers::{self, RunScope};
-use crate::protocol::*;
+use crate::git::GitStatus;
+use crate::model::*;
 use crate::runs::pane::{latest_started, split_steps};
 use crate::tmux::trim_capture;
 use crate::window::{self, Windows};

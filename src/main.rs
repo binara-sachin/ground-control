@@ -26,7 +26,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(code as u8);
         }
         ["--version" | "-V"] => {
-            println!("groundcontrol {}", groundcontrol::protocol::VERSION);
+            println!("groundcontrol {}", groundcontrol::model::VERSION);
             Ok(())
         }
         _ => {

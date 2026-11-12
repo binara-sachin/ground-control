@@ -1,10 +1,10 @@
-//! The types the TUI and its in-process engine exchange: what the engine is
-//! asked to start and decide, what the TUI is watching, the events the engine
-//! emits, and the data they carry (§10.6).
+//! The data the engine hands to the TUI and the events it sends, plus the
+//! status values the window schema encodes (§10.6).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use crate::config::{Diagnostic, InputKind, RestartPolicy, ServiceAction, Severity};
+use crate::config::{Diagnostic, InputKind};
+use crate::git::GitStatus;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -86,30 +86,6 @@ pub enum Event {
 }
 
 // ── data ──────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct GitStatus {
-    pub branch: Option<String>,
-    pub commit: Option<String>,
-    pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
-    pub staged: u32,
-    pub modified: u32,
-    pub untracked: u32,
-    pub conflicted: u32,
-    /// `Some(true)` when `origin` matches the declared remote, `None` when no remote is declared.
-    pub origin_matches: Option<bool>,
-    pub origin_url: Option<String>,
-    pub checked_at: Timestamp,
-    pub error: Option<String>,
-}
-
-impl GitStatus {
-    pub fn is_clean(&self) -> bool {
-        self.staged + self.modified + self.untracked + self.conflicted == 0
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ProjectInfo {

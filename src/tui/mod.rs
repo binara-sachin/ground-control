@@ -411,7 +411,7 @@ mod mouse_tests {
     use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
     use super::*;
-    use crate::protocol::ProjectInfo;
+    use crate::model::ProjectInfo;
 
     fn project(id: &str) -> ProjectInfo {
         ProjectInfo {

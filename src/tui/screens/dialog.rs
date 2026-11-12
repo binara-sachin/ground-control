@@ -17,7 +17,8 @@ use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
 use super::project::env_protected;
-use crate::protocol::*;
+use crate::config::InputKind;
+use crate::model::*;
 
 pub struct Field {
     pub input: InputInfo,

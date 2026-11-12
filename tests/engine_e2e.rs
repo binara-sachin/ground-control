@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use groundcontrol::config::ServiceAction;
 use groundcontrol::ctx::Ctx;
 use groundcontrol::engine::Engine;
-use groundcontrol::protocol::*;
+use groundcontrol::model::*;
 use groundcontrol::tmux::Tmux;
 use tokio::sync::mpsc::UnboundedReceiver;
 

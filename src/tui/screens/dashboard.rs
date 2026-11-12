@@ -11,7 +11,8 @@ use super::super::mouse::Target;
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
-use crate::protocol::*;
+use crate::config::ServiceAction;
+use crate::model::*;
 
 pub const LOG_LINES: usize = 50;
 
@@ -104,7 +105,7 @@ pub fn load_log(app: &mut App, force: bool) {
             Reply::ServiceOutput { project, service, result }
         });
     }
-    app.sync_subscription();
+    app.sync_watch();
 }
 
 pub fn open_full_log(app: &mut App, project: &str, service: &str) {
@@ -118,7 +119,7 @@ pub fn open_full_log(app: &mut App, project: &str, service: &str) {
     })));
     let (project, service) = (project.to_string(), service.to_string());
     app.call(move |e| async move { Reply::FullOutput(e.service_output(&project, &service).await) });
-    app.sync_subscription();
+    app.sync_watch();
 }
 
 /// Start/stop toggle or restart for a service or group row.

@@ -15,7 +15,7 @@ use super::mouse::{HitMap, Target};
 use super::screens::{dashboard, dialog, project, run_view};
 use super::term_view::TermView;
 use crate::engine::Engine;
-use crate::protocol::*;
+use crate::model::*;
 
 pub enum Msg {
     Input(TermEvent),
@@ -112,7 +112,7 @@ pub struct App {
     pub hits: HitMap,
     last_click: Option<(Instant, Target, usize)>,
 
-    subscribed: Watch,
+    watching: Watch,
     refetch_projects_at: Option<Instant>,
     refetch_recent_at: Option<Instant>,
     last_health: Option<Instant>,
@@ -138,7 +138,7 @@ impl App {
             dash: Default::default(),
             hits: HitMap::default(),
             last_click: None,
-            subscribed: Watch::default(),
+            watching: Watch::default(),
             refetch_projects_at: None,
             refetch_recent_at: None,
             last_health: None,
@@ -179,13 +179,13 @@ impl App {
 
     fn push(&mut self, v: View) {
         self.nav.push(v);
-        self.sync_subscription();
+        self.sync_watch();
     }
 
     pub fn pop(&mut self) {
         if self.nav.len() > 1 {
             self.nav.pop();
-            self.sync_subscription();
+            self.sync_watch();
         }
     }
 
@@ -229,8 +229,8 @@ impl App {
     fn on_connected(&mut self) {
         self.conn = Conn::Connected;
         if let Some(engine) = &self.engine {
-            self.subscribed = self.wanted_watch();
-            engine.watch(self.subscribed.clone());
+            self.watching = self.wanted_watch();
+            engine.watch(self.watching.clone());
         }
         self.fetch_projects();
         self.fetch_runs();
@@ -287,11 +287,11 @@ impl App {
     }
 
     /// Tells the engine what to follow when the screen changed it.
-    pub fn sync_subscription(&mut self) {
+    pub fn sync_watch(&mut self) {
         let Some(engine) = &self.engine else { return };
         let wanted = self.wanted_watch();
-        if wanted != self.subscribed {
-            self.subscribed = wanted.clone();
+        if wanted != self.watching {
+            self.watching = wanted.clone();
             engine.watch(wanted);
         }
     }
@@ -598,7 +598,7 @@ impl App {
         }
         if let Some(overlay) = self.overlay.take() {
             self.overlay = self.overlay_key(overlay, k);
-            self.sync_subscription();
+            self.sync_watch();
             return;
         }
         match k.code {
@@ -634,7 +634,7 @@ impl App {
                 }
             }
         }
-        self.sync_subscription();
+        self.sync_watch();
     }
 
     /// Switches to a root screen: 1 dashboard, 2 health.
@@ -647,7 +647,7 @@ impl App {
             }
             _ => {}
         }
-        self.sync_subscription();
+        self.sync_watch();
     }
 
     // ── mouse ──
@@ -666,7 +666,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => match self.overlay.take() {
                 Some(overlay) => {
                     self.overlay = self.overlay_click(overlay, target);
-                    self.sync_subscription();
+                    self.sync_watch();
                 }
                 None => self.on_click(target, row),
             },
@@ -698,7 +698,7 @@ impl App {
         if double || (valid && target == Target::DashBanner) {
             self.press(KeyCode::Enter);
         }
-        self.sync_subscription();
+        self.sync_watch();
     }
 
     /// Clicks in an overlay turn into the key that does the same.
@@ -715,7 +715,7 @@ impl App {
             _ => return Some(overlay),
         };
         let next = self.overlay_key(overlay, k);
-        self.sync_subscription();
+        self.sync_watch();
         next
     }
 

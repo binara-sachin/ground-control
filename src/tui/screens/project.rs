@@ -14,7 +14,7 @@ use super::super::theme;
 use super::super::widgets::*;
 use super::dashboard::{self, service_rows};
 use super::dialog::RunDialog;
-use crate::protocol::*;
+use crate::model::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
