@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::RestartPolicy;
 
-pub const CRASH_WINDOW: Duration = Duration::from_secs(5 * 60);
-pub const CRASH_LIMIT: usize = 5;
+const CRASH_WINDOW: Duration = Duration::from_secs(5 * 60);
+const CRASH_LIMIT: usize = 5;
 const MAX_BACKOFF: u64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub enum Next {
     Restart { delay: Duration, message: String },
 }
 
-pub fn describe_exit(code: Option<i32>) -> String {
+fn describe_exit(code: Option<i32>) -> String {
     match code {
         Some(c) => format!("exit code {c}"),
         None => "a signal".into(),

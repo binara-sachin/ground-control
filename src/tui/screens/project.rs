@@ -36,7 +36,7 @@ impl ProjectView {
         ProjectView { id: id.to_string(), focus: Focus::Pipelines, sel: 0, svc_sel: 0, env_choice: HashMap::new() }
     }
 
-    pub fn env_for(&self, p: &PipelineInfo) -> Option<String> {
+    fn env_for(&self, p: &PipelineInfo) -> Option<String> {
         if p.environments.is_empty() {
             return None;
         }

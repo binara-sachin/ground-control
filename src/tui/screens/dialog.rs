@@ -146,11 +146,11 @@ impl RunDialog {
         }
     }
 
-    pub fn env(&self) -> Option<String> {
+    fn env(&self) -> Option<String> {
         self.envs.get(self.env_idx).cloned()
     }
 
-    pub fn protected(&self) -> bool {
+    fn protected(&self) -> bool {
         self.pipeline.protected || self.env_protected.get(self.env_idx).copied().unwrap_or(false)
     }
 

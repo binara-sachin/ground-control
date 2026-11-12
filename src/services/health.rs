@@ -26,7 +26,7 @@ pub async fn port_in_use(port: u16) -> bool {
 }
 
 /// Minimal HTTP/1.1 GET that expects status 200. Local, plain HTTP only.
-pub async fn http_ok(url: &str) -> bool {
+async fn http_ok(url: &str) -> bool {
     let Some((host, port, path)) = crate::config::parse_http_url(url) else { return false };
     let attempt = async {
         let mut stream = TcpStream::connect((host.as_str(), port)).await.ok()?;

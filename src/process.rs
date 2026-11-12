@@ -12,7 +12,7 @@ use nix::unistd::Pid;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
-pub const SHELL: &str = "/bin/zsh";
+const SHELL: &str = "/bin/zsh";
 pub const KILL_GRACE: Duration = Duration::from_secs(10);
 
 pub struct Spawned {

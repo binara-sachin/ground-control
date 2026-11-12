@@ -53,7 +53,7 @@ const KEYS: [&str; 26] = [
 ];
 
 /// Options as `(key, value)` pairs, ready for `tmux`.
-pub type Options = Vec<(&'static str, String)>;
+type Options = Vec<(&'static str, String)>;
 
 /// The windows of the `ground-control` session that GroundControl opened,
 /// each kind oldest first.
@@ -64,7 +64,7 @@ pub struct Windows {
 }
 
 impl Windows {
-    pub fn from_tmux(windows: &[Window]) -> Self {
+    fn from_tmux(windows: &[Window]) -> Self {
         let mut w = Windows {
             runs: windows.iter().filter_map(RunWindow::read).collect(),
             services: windows.iter().filter_map(ServiceWindow::read).collect(),

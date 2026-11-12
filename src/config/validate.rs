@@ -25,11 +25,11 @@ static BLOCKED: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
 static REMOTE_FLAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(^|\s)--remote(\s|=|$)").unwrap());
 
 /// Returns the blocked command found in `cmd`, if any.
-pub fn blocked_command(cmd: &str) -> Option<&'static str> {
+fn blocked_command(cmd: &str) -> Option<&'static str> {
     BLOCKED.iter().find(|(re, _)| re.is_match(cmd)).map(|(_, name)| *name)
 }
 
-pub fn has_remote_flag(cmd: &str) -> bool {
+fn has_remote_flag(cmd: &str) -> bool {
     REMOTE_FLAG.is_match(cmd)
 }
 
@@ -180,7 +180,7 @@ fn validate_pipeline(p: &Project, pl: &Pipeline, service_ids: &HashSet<&str>, di
 }
 
 /// Returns one dependency cycle as a list of service ids, if any exists.
-pub fn find_cycle(services: &[Service]) -> Option<Vec<String>> {
+fn find_cycle(services: &[Service]) -> Option<Vec<String>> {
     let deps: HashMap<&str, &[String]> = services.iter().map(|s| (s.id.as_str(), s.depends_on.as_slice())).collect();
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {

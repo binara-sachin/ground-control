@@ -412,7 +412,7 @@ fn is_running(s: &ServiceStatus) -> bool {
 }
 
 /// "2/3 up", "1 crashed", "none".
-pub fn service_summary(p: &ProjectInfo) -> (String, ratatui::style::Style) {
+fn service_summary(p: &ProjectInfo) -> (String, ratatui::style::Style) {
     if p.services.is_empty() {
         return ("none".into(), theme::muted());
     }
@@ -432,7 +432,7 @@ pub fn service_summary(p: &ProjectInfo) -> (String, ratatui::style::Style) {
     (format!("{up}/{total} up"), style)
 }
 
-pub fn group_word(p: &ProjectInfo, g: &GroupInfo) -> (String, ratatui::style::Style) {
+fn group_word(p: &ProjectInfo, g: &GroupInfo) -> (String, ratatui::style::Style) {
     let up = g.members.iter().filter(|m| p.services.iter().any(|s| &s.id == *m && is_running(s))).count();
     let crashed = g.members.iter().any(|m| p.services.iter().any(|s| s.id == *m && s.state == ServiceState::Crashed));
     let n = g.members.len();

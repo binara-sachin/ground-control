@@ -121,7 +121,7 @@ pub fn clip_line(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
 }
 
 /// A bordered pane with its title set into the top border.
-pub fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
+fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
     let border = if focused { theme::accent() } else { theme::dim() };
     let mut t = vec![Span::raw(" ")];
     for s in title {
@@ -152,7 +152,7 @@ pub fn framed_alert(f: &mut Frame, area: Rect, title: &str, striped: bool) -> Re
 }
 
 /// A double-bordered, striped pane for approvals and protected dialogs.
-pub fn alert_pane(title: &str, striped: bool) -> Block<'static> {
+fn alert_pane(title: &str, striped: bool) -> Block<'static> {
     let mut t = vec![Span::raw(" ")];
     if striped {
         t.push(Span::styled(format!("{} ", theme::STRIPES), theme::accent()));

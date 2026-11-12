@@ -25,12 +25,12 @@ pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
 
 pub type ReqError = (ErrorCode, String);
 
-pub fn err(code: ErrorCode, msg: impl Into<String>) -> ReqError {
+fn err(code: ErrorCode, msg: impl Into<String>) -> ReqError {
     (code, msg.into())
 }
 
 /// Validates inputs against the pipeline's declarations, applying defaults.
-pub fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     for k in given.keys() {
         if !p.inputs.iter().any(|i| &i.name == k) {
             return Err(format!("unknown input `{k}`"));
@@ -67,7 +67,7 @@ pub fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<
     Ok(out)
 }
 
-pub fn check_env(project: &Project, p: &Pipeline, env: Option<&str>) -> Result<(), String> {
+fn check_env(project: &Project, p: &Pipeline, env: Option<&str>) -> Result<(), String> {
     match (p.environments.is_empty(), env) {
         (true, None) => Ok(()),
         (true, Some(e)) => Err(format!("pipeline `{}` does not run against an environment (got `{e}`)", p.id)),
@@ -105,7 +105,7 @@ pub fn fmt_secs(s: u64) -> String {
 }
 
 /// Checks that refuse a run whoever executes it (§8.4).
-pub async fn common_blockers(project: &Project) -> Vec<String> {
+async fn common_blockers(project: &Project) -> Vec<String> {
     let mut blockers = Vec::new();
     if let Some(reason) = &project.disabled {
         blockers.push(format!("project is disabled: {reason}"));
@@ -117,7 +117,7 @@ pub async fn common_blockers(project: &Project) -> Vec<String> {
     blockers
 }
 
-pub fn dry_run_plan(
+fn dry_run_plan(
     config: &Config,
     project: &Project,
     pipeline: &Pipeline,
@@ -189,7 +189,7 @@ fn run_status(w: &RunWindow) -> (RunStatus, Option<String>) {
     (w.state, w.reason.clone())
 }
 
-pub fn summary(w: &RunWindow) -> RunSummary {
+fn summary(w: &RunWindow) -> RunSummary {
     let (status, reason) = run_status(w);
     let p = &w.params;
     RunSummary {

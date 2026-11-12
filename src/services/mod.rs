@@ -36,7 +36,7 @@ pub fn live_window<'a>(windows: &'a Windows, project: &str, service: &str) -> Op
 }
 
 /// Dependency order for a set of services: dependencies first.
-pub fn start_order(project: &Project, members: &[String]) -> Vec<String> {
+fn start_order(project: &Project, members: &[String]) -> Vec<String> {
     fn visit(p: &Project, id: &str, seen: &mut HashSet<String>, out: &mut Vec<String>) {
         if !seen.insert(id.to_string()) {
             return;

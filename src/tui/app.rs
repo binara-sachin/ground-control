@@ -172,7 +172,7 @@ impl App {
         self.nav.last_mut().expect("nav is never empty")
     }
 
-    pub fn push(&mut self, v: View) {
+    fn push(&mut self, v: View) {
         self.nav.push(v);
         self.sync_subscription();
     }
@@ -794,7 +794,7 @@ impl App {
     }
 }
 
-pub fn upsert_run(list: &mut Vec<RunSummary>, s: &RunSummary) {
+fn upsert_run(list: &mut Vec<RunSummary>, s: &RunSummary) {
     match list.iter_mut().find(|r| r.id == s.id) {
         Some(r) => *r = s.clone(),
         None => {

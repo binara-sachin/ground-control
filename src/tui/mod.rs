@@ -25,8 +25,8 @@ use screens::{dashboard, dialog, health, project, run_view};
 use widgets::*;
 
 /// Below this size the TUI shows a "terminal too small" message (§10.1).
-pub const MIN_WIDTH: u16 = 100;
-pub const MIN_HEIGHT: u16 = 28;
+const MIN_WIDTH: u16 = 100;
+const MIN_HEIGHT: u16 = 28;
 
 pub fn run() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;

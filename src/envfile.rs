@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// Parses dotenv syntax: `KEY=value`, optional `export `, `#` comments,
 /// single quotes (literal) and double quotes (with `\n`, `\"`, `\\` escapes).
-pub fn parse(src: &str) -> Result<Vec<(String, String)>, String> {
+fn parse(src: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     let mut lines = src.lines().enumerate();
     while let Some((n, raw)) = lines.next() {

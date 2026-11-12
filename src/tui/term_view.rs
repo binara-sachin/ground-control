@@ -13,7 +13,7 @@ use regex::Regex;
 
 use super::theme;
 
-pub const COLUMNS: u16 = 120;
+const COLUMNS: u16 = 120;
 const SCROLLBACK: usize = 10_000;
 const MAX_RAW: usize = 8 * 1024 * 1024;
 
@@ -224,7 +224,7 @@ static ANSI: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b(\[[0-9;?<=>]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])").unwrap());
 
 /// Removes escape sequences and resolves `\r` overwrites line by line.
-pub fn strip_ansi(s: &str) -> String {
+fn strip_ansi(s: &str) -> String {
     let clean = ANSI.replace_all(s, "");
     let mut out = String::with_capacity(clean.len());
     for (i, line) in clean.split('\n').enumerate() {

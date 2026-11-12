@@ -24,7 +24,7 @@ const GIT_POLL: Duration = Duration::from_secs(30);
 const DOCKER_EVERY: Duration = Duration::from_secs(30);
 
 /// Tools the steps are expected to find on `PATH` (§6.6).
-pub const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
+const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
 
 #[derive(Debug, Clone)]
 pub struct RequestError {
@@ -84,7 +84,7 @@ impl Engine {
         (e, rx)
     }
 
-    pub fn config(&self) -> Arc<Config> {
+    fn config(&self) -> Arc<Config> {
         self.config.read().unwrap().clone()
     }
 
@@ -120,7 +120,7 @@ impl Engine {
         self.emit(Event::Config(status));
     }
 
-    pub fn config_status(&self) -> ConfigStatus {
+    fn config_status(&self) -> ConfigStatus {
         self.config_status.lock().unwrap().clone()
     }
 
@@ -195,7 +195,7 @@ impl Engine {
         RunPage { runs: details.into_iter().map(|d| d.summary).collect(), waiting }
     }
 
-    pub fn projects(&self, windows: &Windows) -> Vec<ProjectInfo> {
+    fn projects(&self, windows: &Windows) -> Vec<ProjectInfo> {
         let config = self.config();
         let git = self.git.lock().unwrap().clone();
         let runs: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
@@ -266,7 +266,7 @@ impl Engine {
 
     /// Tools are resolved on `PATH` in-process. tmux is asked for its version;
     /// Docker only while the Health screen is open.
-    pub async fn health(&self) -> HealthInfo {
+    async fn health(&self) -> HealthInfo {
         let tools = REQUIRED_TOOLS
             .iter()
             .map(|t| {
@@ -320,7 +320,7 @@ fn approval_previews(config: &Config, project: &Project, pipeline: &Pipeline, me
 }
 
 /// A capture without the blank rows below the last output.
-pub fn trim_capture(pane: &str) -> String {
+fn trim_capture(pane: &str) -> String {
     let t = pane.trim_end_matches(['\n', ' ']);
     if t.is_empty() { String::new() } else { format!("{t}\n") }
 }
@@ -389,7 +389,7 @@ fn step_chunk(detail: &RunDetail, sections: &[String], step: usize) -> LogChunk 
 }
 
 /// Looks a command up on `PATH` without running anything.
-pub fn find_on_path(name: &str) -> Option<PathBuf> {
+fn find_on_path(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)

@@ -19,7 +19,7 @@ use tokio::process::Command;
 pub const SESSION: &str = "ground-control";
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Scrollback of the session's windows: it is the only copy of their output.
-pub const HISTORY_LIMIT: &str = "50000";
+const HISTORY_LIMIT: &str = "50000";
 
 /// Which tmux server to talk to.
 #[derive(Debug, Clone, Default)]
@@ -109,7 +109,7 @@ pub fn decode(s: &str) -> String {
 }
 
 /// `display-message` expands `#{…}` formats; `##` is a literal `#`.
-pub fn escape_format(s: &str) -> String {
+fn escape_format(s: &str) -> String {
     s.replace('#', "##")
 }
 
@@ -122,7 +122,7 @@ fn list_format(keys: &[&str]) -> String {
 }
 
 /// Parses `list-windows -F <list_format(keys)>`.
-pub fn parse_windows(out: &str, keys: &[&str]) -> Vec<Window> {
+fn parse_windows(out: &str, keys: &[&str]) -> Vec<Window> {
     out.lines()
         .filter_map(|l| {
             let mut it = l.split('|');
