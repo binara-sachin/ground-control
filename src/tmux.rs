@@ -354,6 +354,12 @@ impl Tmux {
     }
 }
 
+/// A capture without the blank rows below the last output.
+pub fn trim_capture(pane: &str) -> String {
+    let t = pane.trim_end_matches(['\n', ' ']);
+    if t.is_empty() { String::new() } else { format!("{t}\n") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

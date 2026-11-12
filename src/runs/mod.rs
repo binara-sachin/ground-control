@@ -6,6 +6,7 @@
 //! answers an approval there. Nothing is written to disk. Also: inputs,
 //! environments, step env, outputs and dry runs (§6.1–§6.4, §8).
 
+pub mod pane;
 pub mod worker;
 
 use std::collections::BTreeMap;

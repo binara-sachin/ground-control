@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::Env;
-use groundcontrol::engine::{latest_started, split_steps};
 use groundcontrol::protocol::*;
 use groundcontrol::runs;
+use groundcontrol::runs::pane::{latest_started, split_steps};
 use groundcontrol::tmux::NewWindow;
 use groundcontrol::window::{RunParams, RunWindow};
 
