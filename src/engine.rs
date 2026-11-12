@@ -472,26 +472,24 @@ async fn git_poller(e: Arc<Engine>, mut rx: mpsc::UnboundedReceiver<Option<Strin
     }
 }
 
-/// What the poller last reported, to emit only changes. Values are JSON so
-/// any protocol type can be compared.
+/// What the poller last reported, to emit only changes.
 #[derive(Default)]
 struct Seen {
     primed: bool,
-    runs: HashMap<i64, String>,
-    steps: HashMap<(i64, usize), String>,
-    approvals: HashMap<(i64, usize), String>,
+    runs: HashMap<i64, RunSummary>,
+    steps: HashMap<(i64, usize), StepInfo>,
+    approvals: HashMap<(i64, usize), ApprovalInfo>,
     outputs: HashMap<(i64, String), String>,
-    services: HashMap<(String, String), String>,
-    logs: HashMap<(i64, usize), String>,
+    services: HashMap<(String, String), ServiceStatus>,
+    logs: HashMap<(i64, usize), (String, bool)>,
     service_logs: HashMap<(String, String), String>,
 }
 
-fn changed<K: std::hash::Hash + Eq>(map: &mut HashMap<K, String>, key: K, value: &impl serde::Serialize) -> bool {
-    let json = serde_json::to_string(value).unwrap_or_default();
+fn changed<K: std::hash::Hash + Eq, V: PartialEq + Clone>(map: &mut HashMap<K, V>, key: K, value: &V) -> bool {
     match map.get(&key) {
-        Some(old) if *old == json => false,
+        Some(old) if old == value => false,
         _ => {
-            map.insert(key, json);
+            map.insert(key, value.clone());
             true
         }
     }
@@ -575,7 +573,7 @@ async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Se
         let sections = split_steps(&pane, latest_started(&detail));
         for step in 0..detail.steps.len().max(sections.len()) {
             let chunk = step_chunk(&detail, &sections, step);
-            if changed(&mut seen.logs, (run, step), &(&chunk.data, chunk.complete)) {
+            if changed(&mut seen.logs, (run, step), &(chunk.data.clone(), chunk.complete)) {
                 e.emit(Event::Log(chunk));
             }
         }
