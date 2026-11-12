@@ -388,7 +388,6 @@ pub struct RunDetail {
     pub steps: Vec<StepInfo>,
     pub approvals: Vec<ApprovalInfo>,
     pub outputs: Vec<OutputInfo>,
-    pub unpushed_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

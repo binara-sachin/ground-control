@@ -273,14 +273,7 @@ pub fn detail(config: &Config, w: &RunWindow) -> RunDetail {
             }]
         })
         .unwrap_or_default();
-    RunDetail {
-        inputs: w.params.inputs.clone(),
-        steps,
-        approvals,
-        outputs: w.outputs.clone(),
-        unpushed_count: w.params.unpushed,
-        summary: s,
-    }
+    RunDetail { inputs: w.params.inputs.clone(), steps, approvals, outputs: w.outputs.clone(), summary: s }
 }
 
 /// The project's run in progress: a live run window whose run is active.
