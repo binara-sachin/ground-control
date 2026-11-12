@@ -1,8 +1,9 @@
 //! TUI state and message handling. The TUI holds no state of its own beyond
-//! the screen: everything comes from the engine's responses and events, which
+//! the screen: everything comes from the engine's replies and events, which
 //! it reads from what the tmux-hosted workers record.
 
-use std::collections::BTreeSet;
+use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
@@ -13,33 +14,33 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::mouse::{HitMap, Target};
 use super::screens::{dashboard, dialog, project, run_view};
 use super::term_view::TermView;
-use crate::engine::{Engine, RequestError};
+use crate::engine::Engine;
 use crate::protocol::*;
 
 pub enum Msg {
     Input(TermEvent),
     Tick,
-    Connected(std::sync::Arc<Engine>),
+    Connected(Arc<Engine>),
     ConnectFailed(String),
     Event(Event),
-    Reply(Tag, Result<Response, RequestError>),
+    Reply(Reply),
     Toast(String, Level),
 }
 
-#[derive(Debug, Clone)]
-pub enum Tag {
-    Projects,
-    Recent,
-    Health,
-    Run(i64),
-    Log { run: i64, step: usize },
-    ServiceLog { project: String, service: String },
-    FullLog,
-    Start,
-    DryRun,
-    Decide,
-    Cancel,
-    Service,
+/// The result of one engine call, back on the TUI's loop.
+pub enum Reply {
+    Projects(Result<Vec<ProjectInfo>, String>),
+    Runs(Result<RunList, String>),
+    Health(HealthInfo),
+    Run(i64, Result<RunDetail, String>),
+    StepOutput { run: i64, step: usize, result: Result<LogChunk, String> },
+    ServiceOutput { project: String, service: String, result: Result<String, String> },
+    FullOutput(Result<String, String>),
+    Started(Result<StartOutcome, String>),
+    DryRun(Result<StartOutcome, String>),
+    Decided(Result<(), String>),
+    Cancelled(Result<(), String>),
+    ServiceControl(Result<String, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +92,7 @@ pub enum ConfirmAction {
 
 pub struct App {
     pub conn: Conn,
-    pub engine: Option<std::sync::Arc<Engine>>,
+    pub engine: Option<Arc<Engine>>,
     pub tx: UnboundedSender<Msg>,
     pub quit: bool,
     pub nav: Vec<View>,
@@ -111,7 +112,7 @@ pub struct App {
     pub hits: HitMap,
     last_click: Option<(Instant, Target, usize)>,
 
-    subscribed: BTreeSet<String>,
+    subscribed: Watch,
     refetch_projects_at: Option<Instant>,
     refetch_recent_at: Option<Instant>,
     last_health: Option<Instant>,
@@ -137,7 +138,7 @@ impl App {
             dash: Default::default(),
             hits: HitMap::default(),
             last_click: None,
-            subscribed: BTreeSet::new(),
+            subscribed: Watch::default(),
             refetch_projects_at: None,
             refetch_recent_at: None,
             last_health: None,
@@ -145,14 +146,18 @@ impl App {
         }
     }
 
-    // ── requests ──
+    // ── engine calls ──
 
-    pub fn request(&self, req: Request, tag: Tag) {
+    /// Runs one engine call in the background and sends its reply back as a message.
+    pub fn call<F, Fut>(&self, f: F)
+    where
+        F: FnOnce(Arc<Engine>) -> Fut + Send + 'static,
+        Fut: Future<Output = Reply> + Send + 'static,
+    {
         let Some(engine) = self.engine.clone() else { return };
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let r = engine.request(req).await;
-            let _ = tx.send(Msg::Reply(tag, r));
+            let _ = tx.send(Msg::Reply(f(engine).await));
         });
     }
 
@@ -186,7 +191,7 @@ impl App {
 
     pub fn open_run(&mut self, id: i64) {
         self.push(View::Run(Box::new(run_view::RunView::new(id))));
-        self.request(Request::RunGet { id }, Tag::Run(id));
+        self.fetch_run(id);
     }
 
     pub fn open_project(&mut self, id: &str) {
@@ -223,44 +228,71 @@ impl App {
 
     fn on_connected(&mut self) {
         self.conn = Conn::Connected;
-        self.subscribed.clear();
-        self.sync_subscription();
-        self.request(Request::ProjectsList, Tag::Projects);
-        self.request(Request::RunsList, Tag::Recent);
-        self.request(Request::HealthGet, Tag::Health);
+        if let Some(engine) = &self.engine {
+            self.subscribed = self.wanted_watch();
+            engine.watch(self.subscribed.clone());
+        }
+        self.fetch_projects();
+        self.fetch_runs();
+        self.fetch_health();
         // Re-sync anything on screen.
         let runs: Vec<i64> = self.nav.iter().filter_map(|v| if let View::Run(r) = v { Some(r.id) } else { None }).collect();
         for id in runs {
-            self.request(Request::RunGet { id }, Tag::Run(id));
+            self.fetch_run(id);
         }
         dashboard::load_log(self, true);
     }
 
-    /// Subscribes to the topics the current screen needs (§10.6).
-    pub fn sync_subscription(&mut self) {
-        if self.engine.is_none() {
-            return;
-        }
-        let mut topics: BTreeSet<String> = ["runs", "services", "git", "config"].iter().map(|s| s.to_string()).collect();
-        if matches!(self.top(), View::Health) {
-            topics.insert("health".into());
-        }
+    pub fn fetch_projects(&self) {
+        self.call(|e| async move { Reply::Projects(e.projects().await) });
+    }
+
+    pub fn fetch_runs(&self) {
+        self.call(|e| async move { Reply::Runs(e.runs().await) });
+    }
+
+    pub fn fetch_health(&self) {
+        self.call(|e| async move { Reply::Health(e.health().await) });
+    }
+
+    pub fn fetch_run(&self, id: i64) {
+        self.call(move |e| async move { Reply::Run(id, e.run(id).await) });
+    }
+
+    pub fn fetch_step_output(&self, run: i64, step: usize) {
+        self.call(move |e| async move { Reply::StepOutput { run, step, result: e.step_output(run, step).await } });
+    }
+
+    pub fn decide(&self, run: i64, step: usize, decision: Decision, confirmed: bool) {
+        self.call(move |e| async move { Reply::Decided(e.decide(run, step, decision, confirmed).await) });
+    }
+
+    /// What the current screen needs the engine to follow.
+    fn wanted_watch(&self) -> Watch {
+        let mut w = Watch { health: matches!(self.top(), View::Health), ..Default::default() };
         for v in &self.nav {
             if let View::Run(r) = v {
-                topics.insert(format!("log:{}", r.id));
+                w.runs.insert(r.id);
             }
         }
-        if let Some((p, s)) = &self.dash.log_target {
-            topics.insert(format!("service-log:{p}/{s}"));
+        if let Some(target) = &self.dash.log_target {
+            w.services.insert(target.clone());
         }
         if let Some(Overlay::Text(t)) = &self.overlay
-            && let Some((p, s)) = &t.follow_service
+            && let Some(target) = &t.follow_service
         {
-            topics.insert(format!("service-log:{p}/{s}"));
+            w.services.insert(target.clone());
         }
-        if topics != self.subscribed {
-            self.subscribed = topics.clone();
-            self.request(Request::Subscribe { topics: topics.into_iter().collect() }, Tag::Service);
+        w
+    }
+
+    /// Tells the engine what to follow when the screen changed it.
+    pub fn sync_subscription(&mut self) {
+        let Some(engine) = &self.engine else { return };
+        let wanted = self.wanted_watch();
+        if wanted != self.subscribed {
+            self.subscribed = wanted.clone();
+            engine.watch(wanted);
         }
     }
 
@@ -287,7 +319,7 @@ impl App {
                 self.next_connect = Instant::now() + Duration::from_secs(2);
             }
             Msg::Event(e) => self.on_event(e),
-            Msg::Reply(tag, r) => self.on_reply(tag, r),
+            Msg::Reply(r) => self.on_reply(r),
             Msg::Toast(m, l) => self.toast(m, l),
         }
     }
@@ -299,11 +331,11 @@ impl App {
         }
         if self.refetch_projects_at.is_some_and(|t| now >= t) {
             self.refetch_projects_at = None;
-            self.request(Request::ProjectsList, Tag::Projects);
+            self.fetch_projects();
         }
         if self.refetch_recent_at.is_some_and(|t| now >= t) {
             self.refetch_recent_at = None;
-            self.request(Request::RunsList, Tag::Recent);
+            self.fetch_runs();
         }
         // Checked once at start for the attention markers, then only while the
         // Health screen is open: nothing probes the system on a timer.
@@ -313,7 +345,7 @@ impl App {
         };
         if self.engine.is_some() && due {
             self.last_health = Some(now);
-            self.request(Request::HealthGet, Tag::Health);
+            self.fetch_health();
         }
         if self.toast.as_ref().is_some_and(|(_, _, t)| t.elapsed() > Duration::from_secs(5)) {
             self.toast = None;
@@ -398,7 +430,7 @@ impl App {
                     self.toast("config reloaded", Level::Info);
                 }
                 self.config = Some(c);
-                self.request(Request::HealthGet, Tag::Health);
+                self.fetch_health();
             }
             Event::Log(chunk) => {
                 for v in &mut self.nav {
@@ -413,25 +445,25 @@ impl App {
         }
     }
 
-    fn on_reply(&mut self, tag: Tag, r: Result<Response, RequestError>) {
-        match (tag, r) {
-            (Tag::Projects, Ok(Response::Projects(p))) => {
+    fn on_reply(&mut self, reply: Reply) {
+        match reply {
+            Reply::Projects(Ok(p)) => {
                 self.projects = p;
                 self.projects_loaded = true;
                 dashboard::load_log(self, false);
             }
-            (Tag::Recent, Ok(Response::Runs(page))) => {
-                self.recent = page.runs.into_iter().take(50).collect();
-                self.waiting = page.waiting;
+            Reply::Runs(Ok(list)) => {
+                self.recent = list.runs.into_iter().take(50).collect();
+                self.waiting = list.waiting;
                 if !self.waiting.is_empty() && self.dash.focus_banner_on_new {
                     self.dash.focus = dashboard::Focus::Banner;
                 }
             }
-            (Tag::Health, Ok(Response::Health(h))) => {
+            Reply::Health(h) => {
                 self.config = Some(h.config.clone());
                 self.health = Some(h);
             }
-            (Tag::Run(id), Ok(Response::Run(d))) => {
+            Reply::Run(id, Ok(d)) => {
                 let mut reads = Vec::new();
                 for v in &mut self.nav {
                     if let View::Run(r) = v
@@ -441,10 +473,10 @@ impl App {
                     }
                 }
                 for (run, step) in reads {
-                    self.request(Request::LogRead { run, step }, Tag::Log { run, step });
+                    self.fetch_step_output(run, step);
                 }
             }
-            (Tag::Log { run, .. }, Ok(Response::Log(chunk))) => {
+            Reply::StepOutput { run, result: Ok(chunk), .. } => {
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == run
@@ -453,30 +485,38 @@ impl App {
                     }
                 }
             }
-            (Tag::ServiceLog { project, service }, Ok(Response::Text { text })) => {
+            Reply::StepOutput { run, step, result: Err(e) } => {
+                for v in &mut self.nav {
+                    if let View::Run(r) = v
+                        && r.id == run
+                    {
+                        r.on_log_error(step, &e);
+                    }
+                }
+            }
+            Reply::ServiceOutput { project, service, result: Ok(text) } => {
                 self.on_service_log(&project, &service, &text);
                 self.dash.log.loading = false;
             }
-            (Tag::FullLog, Ok(Response::Text { text })) => {
+            Reply::FullOutput(Ok(text)) => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {
                     t.view.replace(if text.is_empty() { "(no output yet)\n" } else { &text });
                     t.view.loading = false;
                 }
             }
-            (Tag::Start, Ok(Response::RunStarted { id })) => {
+            Reply::FullOutput(Err(e)) => {
+                if let Some(Overlay::Text(t)) = &mut self.overlay {
+                    t.view.reset();
+                    t.view.feed(&format!("\x1b[31m{e}\x1b[0m\n"));
+                    t.view.loading = false;
+                }
+            }
+            Reply::Started(Ok(StartOutcome::Started(id))) => {
                 self.overlay = None;
                 self.toast(format!("run #{id} started"), Level::Success);
                 self.open_run(id);
             }
-            (Tag::Start, Err(e)) => {
-                if let Some(Overlay::Dialog(d)) = &mut self.overlay {
-                    d.busy = false;
-                    d.error = Some(e.message);
-                } else {
-                    self.toast(e.message, Level::Error);
-                }
-            }
-            (Tag::DryRun, Ok(Response::DryRun(plan))) => {
+            Reply::DryRun(Ok(StartOutcome::DryRun(plan))) => {
                 if let Some(Overlay::Dialog(d)) = &mut self.overlay {
                     d.busy = false;
                 }
@@ -497,37 +537,25 @@ impl App {
                     follow_service: None,
                 })));
             }
-            (Tag::DryRun, Err(e)) => {
+            Reply::Started(Err(e)) | Reply::DryRun(Err(e)) => {
                 if let Some(Overlay::Dialog(d)) = &mut self.overlay {
                     d.busy = false;
-                    d.error = Some(e.message);
+                    d.error = Some(e);
                 } else {
-                    self.toast(e.message, Level::Error);
+                    self.toast(e, Level::Error);
                 }
             }
-            (Tag::Decide, Ok(_)) => self.toast("decision sent", Level::Success),
-            (Tag::Cancel, Ok(_)) => self.toast("cancel requested", Level::Info),
-            (Tag::Service, Ok(Response::Text { text, .. })) => self.toast(text, Level::Success),
-            (Tag::Service, Ok(_)) => {}
-            (Tag::FullLog, Err(e)) => {
-                if let Some(Overlay::Text(t)) = &mut self.overlay {
-                    t.view.reset();
-                    t.view.feed(&format!("\x1b[31m{}\x1b[0m\n", e.message));
-                    t.view.loading = false;
-                }
-            }
-            (Tag::Log { run, step }, Err(e)) => {
-                for v in &mut self.nav {
-                    if let View::Run(r) = v
-                        && r.id == run
-                    {
-                        r.on_log_error(step, &e.message);
-                    }
-                }
-            }
-            (Tag::Run(_), Err(e)) => self.toast(e.message, Level::Error),
-            (_, Err(e)) => self.toast(e.message, Level::Error),
-            (_, Ok(_)) => {}
+            Reply::Started(Ok(StartOutcome::DryRun(_))) | Reply::DryRun(Ok(StartOutcome::Started(_))) => {}
+            Reply::Decided(Ok(())) => self.toast("decision sent", Level::Success),
+            Reply::Cancelled(Ok(())) => self.toast("cancel requested", Level::Info),
+            Reply::ServiceControl(Ok(text)) => self.toast(text, Level::Success),
+            Reply::Projects(Err(e))
+            | Reply::Runs(Err(e))
+            | Reply::Run(_, Err(e))
+            | Reply::ServiceOutput { result: Err(e), .. }
+            | Reply::Decided(Err(e))
+            | Reply::Cancelled(Err(e))
+            | Reply::ServiceControl(Err(e)) => self.toast(e, Level::Error),
         }
     }
 
@@ -602,7 +630,7 @@ impl App {
             View::Run(_) => run_view::key(self, k),
             View::Health => {
                 if k.code == KeyCode::Char('r') {
-                    self.request(Request::HealthGet, Tag::Health);
+                    self.fetch_health();
                 }
             }
         }
@@ -615,7 +643,7 @@ impl App {
             1 => self.nav = vec![View::Dashboard],
             2 => {
                 self.nav = vec![View::Health];
-                self.request(Request::HealthGet, Tag::Health);
+                self.fetch_health();
             }
             _ => {}
         }
@@ -766,10 +794,8 @@ impl App {
             Overlay::Confirm(c) => match k.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     match c.action {
-                        ConfirmAction::CancelRun(id) => self.request(Request::RunCancel { id }, Tag::Cancel),
-                        ConfirmAction::Approve { run, step } => {
-                            self.request(Request::RunDecide { id: run, step, decision: Decision::Approve, confirmed: true }, Tag::Decide)
-                        }
+                        ConfirmAction::CancelRun(id) => self.call(move |e| async move { Reply::Cancelled(e.cancel_run(id).await) }),
+                        ConfirmAction::Approve { run, step } => self.decide(run, step, Decision::Approve, true),
                     }
                     None
                 }

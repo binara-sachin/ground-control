@@ -79,7 +79,7 @@ fn params(pipeline: &str, env: Option<&str>, inputs: &[(&str, &str)], confirmed:
 
 async fn start(env: &Env, p: RunStartParams) -> Result<i64, (ErrorCode, String)> {
     match runs::start(&env.ctx, &env.config, p).await? {
-        Response::RunStarted { id } => Ok(id),
+        StartOutcome::Started(id) => Ok(id),
         other => panic!("{other:?}"),
     }
 }
@@ -144,7 +144,7 @@ async fn pipelines_end_to_end() {
     // Dry run executes nothing and lists env var names only.
     let mut dry = params("hello", None, &[("name", "sam")], false);
     dry.dry_run = true;
-    let Response::DryRun(plan) = runs::start(&env.ctx, &env.config, dry).await.unwrap() else { panic!() };
+    let StartOutcome::DryRun(plan) = runs::start(&env.ctx, &env.config, dry).await.unwrap() else { panic!() };
     assert_eq!(plan.steps.len(), 2);
     assert!(plan.steps[0].env_names.iter().any(|n| n.starts_with("API_TOKEN")));
     assert!(plan.steps[0].env_names.iter().any(|n| n == "INPUT_NAME"));

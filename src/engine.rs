@@ -1,5 +1,5 @@
 //! The TUI's in-process engine (docs/architecture.md, "The TUI"). It answers
-//! the TUI's `Request`s and turns what the tmux-hosted workers publish (their
+//! the TUI's calls and turns what the tmux-hosted workers publish (their
 //! windows' `@gc_*` options and pane output) into `Event`s by polling tmux.
 //! It owns no runs and no services, and stores nothing: quitting the TUI
 //! stops only the engine.
@@ -17,7 +17,7 @@ use crate::envlayers::{self, RunScope};
 use crate::protocol::*;
 use crate::runs::pane::{latest_started, split_steps};
 use crate::tmux::trim_capture;
-use crate::window::{self, RunWindow, Windows};
+use crate::window::{self, Windows};
 
 const POLL: Duration = Duration::from_secs(1);
 const GIT_POLL: Duration = Duration::from_secs(30);
@@ -27,22 +27,6 @@ const DOCKER_EVERY: Duration = Duration::from_secs(30);
 /// Tools the steps are expected to find on `PATH` (§6.6).
 const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
 
-#[derive(Debug, Clone)]
-pub struct RequestError {
-    pub code: ErrorCode,
-    pub message: String,
-}
-
-impl std::fmt::Display for RequestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-fn rerr(code: ErrorCode, message: impl Into<String>) -> RequestError {
-    RequestError { code, message: message.into() }
-}
-
 pub struct Engine {
     pub ctx: Ctx,
     started_at: Timestamp,
@@ -50,7 +34,7 @@ pub struct Engine {
     config_status: Mutex<ConfigStatus>,
     git: Mutex<HashMap<String, GitStatus>>,
     git_refresh: mpsc::UnboundedSender<Option<String>>,
-    topics: Mutex<HashSet<String>>,
+    watch: Mutex<Watch>,
     events: mpsc::UnboundedSender<Event>,
     docker: Mutex<Option<(Instant, Reachability)>>,
 }
@@ -74,7 +58,7 @@ impl Engine {
             config: RwLock::new(Arc::new(Config::default())),
             git: Mutex::new(HashMap::new()),
             git_refresh: git_tx,
-            topics: Mutex::new(HashSet::new()),
+            watch: Mutex::new(Watch::default()),
             events,
             docker: Mutex::new(None),
         });
@@ -91,10 +75,6 @@ impl Engine {
 
     fn emit(&self, e: Event) {
         let _ = self.events.send(e);
-    }
-
-    fn subscribed(&self, topic: &str) -> bool {
-        self.topics.lock().unwrap().contains(topic)
     }
 
     /// Loads the config file; keeps the previous good config when it is invalid.
@@ -125,78 +105,78 @@ impl Engine {
         self.config_status.lock().unwrap().clone()
     }
 
-    /// Answers one request from the TUI.
-    pub async fn request(&self, req: Request) -> Result<Response, RequestError> {
-        let tmux_err = |e: String| rerr(ErrorCode::Internal, e);
-        let run_err = |(c, m): crate::runs::ReqError| rerr(c, m);
-        match req {
-            Request::ProjectsList => {
-                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
-                Ok(Response::Projects(self.projects(&windows)))
-            }
-            Request::RunStart(p) => {
-                let project = p.project.clone();
-                let r = crate::runs::start(&self.ctx, &self.config(), p).await.map_err(run_err);
-                if r.is_ok() {
-                    self.emit(Event::Projects);
-                    let _ = self.git_refresh.send(Some(project));
-                }
-                r
-            }
-            Request::RunCancel { id } => crate::runs::cancel(&self.ctx, id).await.map_err(run_err),
-            Request::RunDecide { id, step, decision, confirmed } => {
-                crate::runs::decide(&self.ctx, id, step, decision, confirmed).await.map_err(run_err)
-            }
-            Request::RunsList => {
-                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
-                Ok(Response::Runs(self.run_page(&windows)))
-            }
-            Request::RunGet { id } => match self.run_window(id).await? {
-                Some(w) => Ok(Response::Run(crate::runs::detail(&self.config(), &w))),
-                None => Err(rerr(ErrorCode::NotFound, format!("run #{id} has no window any more"))),
-            },
-            Request::LogRead { run, step } => {
-                let Some(w) = self.run_window(run).await? else {
-                    return Err(rerr(ErrorCode::NotFound, format!("run #{run} has no window any more")));
-                };
-                let pane = self.ctx.tmux.capture(run).await.map_err(tmux_err)?;
-                let detail = crate::runs::detail(&self.config(), &w);
-                Ok(Response::Log(step_chunk(&detail, &split_steps(&pane, latest_started(&detail)), step)))
-            }
-            Request::ServiceControl { project, id, action } => {
-                let r = crate::services::control(&self.ctx, &self.config(), &project, &id, action).await;
-                r.map(|msg| Response::Text { text: msg }).map_err(|e| rerr(ErrorCode::Refused, e))
-            }
-            Request::ServiceLog { project, id } => {
-                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
-                let text = match crate::services::service_windows(&windows, &project, &id).last() {
-                    Some(w) => trim_capture(&self.ctx.tmux.capture(w.id).await.map_err(tmux_err)?),
-                    None => String::new(),
-                };
-                Ok(Response::Text { text })
-            }
-            Request::HealthGet => Ok(Response::Health(self.health().await)),
-            Request::Subscribe { topics } => {
-                *self.topics.lock().unwrap() = topics.into_iter().collect();
-                Ok(Response::Ok)
-            }
+    /// Replaces what the pollers follow; see `Watch`.
+    pub fn watch(&self, watch: Watch) {
+        *self.watch.lock().unwrap() = watch;
+    }
+
+    pub async fn projects(&self) -> Result<Vec<ProjectInfo>, String> {
+        let windows = window::list(&self.ctx.tmux).await?;
+        Ok(self.project_infos(&windows))
+    }
+
+    /// Opens a run's window, or only plans it when `params.dry_run` is set.
+    pub async fn start_run(&self, params: RunStartParams) -> Result<StartOutcome, String> {
+        let project = params.project.clone();
+        let r = crate::runs::start(&self.ctx, &self.config(), params).await.map_err(|(_, m)| m);
+        if r.is_ok() {
+            self.emit(Event::Projects);
+            let _ = self.git_refresh.send(Some(project));
+        }
+        r
+    }
+
+    pub async fn cancel_run(&self, id: i64) -> Result<(), String> {
+        crate::runs::cancel(&self.ctx, id).await.map_err(|(_, m)| m)
+    }
+
+    pub async fn decide(&self, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<(), String> {
+        crate::runs::decide(&self.ctx, id, step, decision, confirmed).await.map_err(|(_, m)| m)
+    }
+
+    pub async fn runs(&self) -> Result<RunList, String> {
+        let windows = window::list(&self.ctx.tmux).await?;
+        Ok(self.run_list(&windows))
+    }
+
+    pub async fn run(&self, id: i64) -> Result<RunDetail, String> {
+        match window::run(&self.ctx.tmux, id).await? {
+            Some(w) => Ok(crate::runs::detail(&self.config(), &w)),
+            None => Err(format!("run #{id} has no window any more")),
         }
     }
 
-    async fn run_window(&self, id: i64) -> Result<Option<RunWindow>, RequestError> {
-        window::run(&self.ctx.tmux, id).await.map_err(|e| rerr(ErrorCode::Internal, e))
+    pub async fn step_output(&self, run: i64, step: usize) -> Result<LogChunk, String> {
+        let Some(w) = window::run(&self.ctx.tmux, run).await? else {
+            return Err(format!("run #{run} has no window any more"));
+        };
+        let pane = self.ctx.tmux.capture(run).await?;
+        let detail = crate::runs::detail(&self.config(), &w);
+        Ok(step_chunk(&detail, &split_steps(&pane, latest_started(&detail)), step))
+    }
+
+    pub async fn control_service(&self, project: &str, id: &str, action: ServiceAction) -> Result<String, String> {
+        crate::services::control(&self.ctx, &self.config(), project, id, action).await
+    }
+
+    pub async fn service_output(&self, project: &str, id: &str) -> Result<String, String> {
+        let windows = window::list(&self.ctx.tmux).await?;
+        Ok(match crate::services::service_windows(&windows, project, id).last() {
+            Some(w) => trim_capture(&self.ctx.tmux.capture(w.id).await?),
+            None => String::new(),
+        })
     }
 
     /// Runs that still have a window, newest first, and their waiting approvals.
-    fn run_page(&self, windows: &Windows) -> RunPage {
+    fn run_list(&self, windows: &Windows) -> RunList {
         let config = self.config();
         let mut details: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
         details.reverse();
         let waiting = details.iter().flat_map(|d| d.approvals.iter()).filter(|a| a.status == ApprovalStatus::Pending).cloned().collect();
-        RunPage { runs: details.into_iter().map(|d| d.summary).collect(), waiting }
+        RunList { runs: details.into_iter().map(|d| d.summary).collect(), waiting }
     }
 
-    fn projects(&self, windows: &Windows) -> Vec<ProjectInfo> {
+    fn project_infos(&self, windows: &Windows) -> Vec<ProjectInfo> {
         let config = self.config();
         let git = self.git.lock().unwrap().clone();
         let runs: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
@@ -267,7 +247,7 @@ impl Engine {
 
     /// Tools are resolved on `PATH` in-process. tmux is asked for its version;
     /// Docker only while the Health screen is open.
-    async fn health(&self) -> HealthInfo {
+    pub async fn health(&self) -> HealthInfo {
         let tools = REQUIRED_TOOLS
             .iter()
             .map(|t| {
@@ -279,7 +259,7 @@ impl Engine {
             Ok(v) => Reachability { ok: true, detail: v },
             Err(e) => Reachability { ok: false, detail: e },
         });
-        let docker = if self.subscribed("health") {
+        let docker = if self.watch.lock().unwrap().health {
             let cached = self.docker.lock().unwrap().clone().filter(|(at, _)| at.elapsed() < DOCKER_EVERY).map(|(_, r)| r);
             match cached {
                 Some(r) => Some(r),
@@ -499,8 +479,7 @@ fn poll_services(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen
 
 /// Re-captures the panes of the runs and services on screen and sends what changed.
 async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
-    let topics: Vec<String> = e.topics.lock().unwrap().iter().cloned().collect();
-    let runs: HashSet<i64> = topics.iter().filter_map(|t| t.strip_prefix("log:")?.parse().ok()).collect();
+    let Watch { runs, services, .. } = e.watch.lock().unwrap().clone();
     seen.logs.retain(|(run, _), _| runs.contains(run));
     for run in runs {
         let Some(w) = windows.run(run) else { continue };
@@ -515,11 +494,6 @@ async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Se
         }
     }
 
-    let services: Vec<(String, String)> = topics
-        .iter()
-        .filter_map(|t| t.strip_prefix("service-log:")?.split_once('/'))
-        .map(|(p, s)| (p.to_string(), s.to_string()))
-        .collect();
     seen.service_logs.retain(|k, _| services.contains(k));
     for (pid, sid) in services {
         let Some(w) = crate::services::service_windows(windows, &pid, &sid).last().map(|w| w.id) else { continue };

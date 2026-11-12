@@ -12,7 +12,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use regex::Regex;
 
-use super::super::app::{App, Overlay, Tag};
+use super::super::app::{App, Overlay, Reply};
 use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
@@ -158,15 +158,15 @@ impl RunDialog {
         self.fields.iter().all(|f| f.check().is_ok())
     }
 
-    pub fn request(&self, dry_run: bool) -> Request {
-        Request::RunStart(RunStartParams {
+    pub fn start_params(&self, dry_run: bool) -> RunStartParams {
+        RunStartParams {
             project: self.project.clone(),
             pipeline: self.pipeline.id.clone(),
             env: self.env(),
             inputs: self.fields.iter().map(|f| (f.input.name.clone(), f.value.clone())).collect::<BTreeMap<_, _>>(),
             dry_run,
             confirmed: self.protected() && !dry_run,
-        })
+        }
     }
 
     fn first_focus(&self) -> usize {
@@ -201,7 +201,8 @@ pub fn key(app: &mut App, mut d: Box<RunDialog>, k: KeyEvent) -> Option<Overlay>
             if d.inputs_valid() {
                 d.busy = true;
                 d.error = None;
-                app.request(d.request(true), Tag::DryRun);
+                let params = d.start_params(true);
+                app.call(move |e| async move { Reply::DryRun(e.start_run(params).await) });
             } else {
                 d.error = Some("fix the inputs first".into());
             }
@@ -210,7 +211,8 @@ pub fn key(app: &mut App, mut d: Box<RunDialog>, k: KeyEvent) -> Option<Overlay>
             if d.inputs_valid() {
                 d.busy = true;
                 d.error = None;
-                app.request(d.request(false), Tag::Start);
+                let params = d.start_params(false);
+                app.call(move |e| async move { Reply::Started(e.start_run(params).await) });
             } else {
                 d.error = Some("fix the inputs first".into());
             }

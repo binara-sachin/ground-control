@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Level, Overlay, Tag, View};
+use super::super::app::{App, Level, Overlay, Reply, View};
 use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
@@ -163,9 +163,9 @@ fn open_dialog(app: &mut App, p: &ProjectInfo, pl: &PipelineInfo, dry: bool) {
     let mut d = RunDialog::new(p, pl, env);
     if dry && d.inputs_valid() {
         d.busy = true;
-        let req = d.request(true);
+        let params = d.start_params(true);
         app.overlay = Some(Overlay::Dialog(Box::new(d)));
-        app.request(req, Tag::DryRun);
+        app.call(move |e| async move { Reply::DryRun(e.start_run(params).await) });
         return;
     }
     if dry {

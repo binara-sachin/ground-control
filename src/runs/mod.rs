@@ -24,9 +24,9 @@ use crate::window::{self, RunParams, RunWindow, Windows};
 
 pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
 
-pub type ReqError = (ErrorCode, String);
+pub type RunError = (ErrorCode, String);
 
-fn err(code: ErrorCode, msg: impl Into<String>) -> ReqError {
+fn err(code: ErrorCode, msg: impl Into<String>) -> RunError {
     (code, msg.into())
 }
 
@@ -290,7 +290,7 @@ pub fn busy_run(windows: &Windows, project: &str) -> Option<i64> {
 
 /// Validates a run and opens its worker's window. One run per project: a
 /// second start is refused, never queued.
-pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result<Response, ReqError> {
+pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result<StartOutcome, RunError> {
     let project =
         config.project(&params.project).ok_or_else(|| err(ErrorCode::NotFound, format!("unknown project `{}`", params.project)))?;
     let pipeline = project
@@ -307,7 +307,7 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
         blockers.push(format!("{} already has run #{id} in progress", project.id));
     }
     if params.dry_run {
-        return Ok(Response::DryRun(dry_run_plan(config, project, pipeline, env, inputs, protected, blockers)));
+        return Ok(StartOutcome::DryRun(dry_run_plan(config, project, pipeline, env, inputs, protected, blockers)));
     }
     if protected && !params.confirmed {
         return Err(err(ErrorCode::Refused, "protected run needs the confirmation dialog"));
@@ -344,10 +344,10 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
         .new_window(&NewWindow { name: &name, cwd: &project.path, argv: &argv, env: &ctx.window_env(), options: &options })
         .await
         .map_err(|e| err(ErrorCode::Internal, format!("cannot open the run's tmux window: {e}")))?;
-    Ok(Response::RunStarted { id })
+    Ok(StartOutcome::Started(id))
 }
 
-async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, ReqError> {
+async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, RunError> {
     match window::run(&ctx.tmux, id).await.map_err(|e| err(ErrorCode::Internal, e))? {
         Some(w) if !w.dead && run_status(&w).0.is_active() => Ok(w),
         _ => Err(err(ErrorCode::NotFound, format!("run #{id} is not active"))),
@@ -355,15 +355,15 @@ async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, ReqError> {
 }
 
 /// Asks a run's worker to cancel it.
-pub async fn cancel(ctx: &Ctx, id: i64) -> Result<Response, ReqError> {
+pub async fn cancel(ctx: &Ctx, id: i64) -> Result<(), RunError> {
     active_window(ctx, id).await?;
     ctx.tmux.request(id, &RunWindow::cancel_request()).await.map_err(|e| err(ErrorCode::Internal, e))?;
-    Ok(Response::Ok)
+    Ok(())
 }
 
 /// Records an approval decision on the run's window and wakes the waiting
 /// worker. The first answer wins.
-pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<Response, ReqError> {
+pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<(), RunError> {
     let w = active_window(ctx, id).await?;
     let approval = w
         .approval
@@ -384,7 +384,7 @@ pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirm
     };
     let request = RunWindow::decision_request(window::Decision { status, step });
     ctx.tmux.request(id, &request).await.map_err(|e| err(ErrorCode::Internal, e))?;
-    Ok(Response::Ok)
+    Ok(())
 }
 
 #[cfg(test)]

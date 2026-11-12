@@ -1,50 +1,14 @@
-//! The TUI's requests to its in-process engine, the engine's responses and
-//! events, and the data types they carry (§10.6).
+//! The types the TUI and its in-process engine exchange: what the engine is
+//! asked to start and decide, what the TUI is watching, the events the engine
+//! emits, and the data they carry (§10.6).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use crate::config::{Diagnostic, InputKind, RestartPolicy, ServiceAction, Severity};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Timestamp = i64; // unix seconds
-
-#[derive(Debug, Clone)]
-pub enum Request {
-    ProjectsList,
-    RunStart(RunStartParams),
-    RunCancel {
-        id: i64,
-    },
-    RunDecide {
-        id: i64,
-        step: usize,
-        decision: Decision,
-        confirmed: bool,
-    },
-    /// Every run that still has a window, newest first.
-    RunsList,
-    RunGet {
-        id: i64,
-    },
-    LogRead {
-        run: i64,
-        step: usize,
-    },
-    ServiceControl {
-        project: String,
-        id: String,
-        action: ServiceAction,
-    },
-    ServiceLog {
-        project: String,
-        id: String,
-    },
-    HealthGet,
-    Subscribe {
-        topics: Vec<String>,
-    },
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct RunStartParams {
@@ -73,17 +37,22 @@ pub enum ErrorCode {
     Internal,
 }
 
+/// What the TUI is showing, which tells the engine what to poll: the Health
+/// screen's Docker probe, the runs whose step output is followed, and the
+/// (project, service) pairs whose output is followed. Each `Engine::watch`
+/// replaces the previous one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Watch {
+    pub health: bool,
+    pub runs: BTreeSet<i64>,
+    pub services: BTreeSet<(String, String)>,
+}
+
+/// What `Engine::start_run` did: opened a run's window, or only planned it.
 #[derive(Debug, Clone)]
-pub enum Response {
-    Ok,
-    Projects(Vec<ProjectInfo>),
-    RunStarted { id: i64 },
+pub enum StartOutcome {
+    Started(i64),
     DryRun(DryRunPlan),
-    Runs(RunPage),
-    Run(RunDetail),
-    Log(LogChunk),
-    Text { text: String },
-    Health(HealthInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +73,7 @@ pub enum Event {
         project: String,
         git: GitStatus,
     },
-    /// The project list changed shape (config reload); refetch `projects.list`.
+    /// The project list changed shape (config reload); call `Engine::projects` again.
     Projects,
     Config(ConfigStatus),
     Log(LogChunk),
@@ -454,7 +423,7 @@ pub struct OutputInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct RunPage {
+pub struct RunList {
     /// Runs that still have a window, newest first. There is no history:
     /// a succeeded run's window closes itself after 5 seconds.
     pub runs: Vec<RunSummary>,

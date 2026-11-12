@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Level, Overlay, Tag, TextOverlay};
+use super::super::app::{App, Level, Overlay, Reply, TextOverlay};
 use super::super::mouse::Target;
 use super::super::term_view::TermView;
 use super::super::theme;
@@ -99,7 +99,10 @@ pub fn load_log(app: &mut App, force: bool) {
     app.dash.log.reset();
     if let Some((project, service)) = target {
         app.dash.log.loading = true;
-        app.request(Request::ServiceLog { project: project.clone(), id: service.clone() }, Tag::ServiceLog { project, service });
+        app.call(move |e| async move {
+            let result = e.service_output(&project, &service).await;
+            Reply::ServiceOutput { project, service, result }
+        });
     }
     app.sync_subscription();
 }
@@ -113,7 +116,8 @@ pub fn open_full_log(app: &mut App, project: &str, service: &str) {
         view,
         follow_service: Some((project.to_string(), service.to_string())),
     })));
-    app.request(Request::ServiceLog { project: project.into(), id: service.into() }, Tag::FullLog);
+    let (project, service) = (project.to_string(), service.to_string());
+    app.call(move |e| async move { Reply::FullOutput(e.service_output(&project, &service).await) });
     app.sync_subscription();
 }
 
@@ -141,7 +145,8 @@ pub fn control(app: &mut App, project: &ProjectInfo, row: &SvcRow, restart: bool
         ServiceAction::Restart => "restarting",
     };
     app.toast(format!("{verb} {id}…"), Level::Info);
-    app.request(Request::ServiceControl { project: project.id.clone(), id, action }, Tag::Service);
+    let project = project.id.clone();
+    app.call(move |e| async move { Reply::ServiceControl(e.control_service(&project, &id, action).await) });
 }
 
 pub fn key(app: &mut App, k: KeyEvent) {

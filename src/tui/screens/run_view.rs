@@ -10,7 +10,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Confirm, ConfirmAction, Overlay, Tag, View};
+use super::super::app::{App, Confirm, ConfirmAction, Overlay, View};
 use super::super::mouse::{HitMap, Target};
 use super::super::term_view::TermView;
 use super::super::theme;
@@ -241,18 +241,12 @@ pub fn key(app: &mut App, k: KeyEvent) {
                     action: ConfirmAction::Approve { run: a.run_id, step: a.step_index },
                 }));
             } else {
-                app.request(
-                    Request::RunDecide { id: a.run_id, step: a.step_index, decision: Decision::Approve, confirmed: false },
-                    Tag::Decide,
-                );
+                app.decide(a.run_id, a.step_index, Decision::Approve, false);
             }
         }
         KeyCode::Char('x') => {
             if let Some(a) = view(app).pending_approval().cloned() {
-                app.request(
-                    Request::RunDecide { id: a.run_id, step: a.step_index, decision: Decision::Reject, confirmed: false },
-                    Tag::Decide,
-                );
+                app.decide(a.run_id, a.step_index, Decision::Reject, false);
             } else {
                 app.toast("nothing is waiting for approval", super::super::app::Level::Info);
             }
@@ -289,7 +283,7 @@ fn scroll(app: &mut App, f: impl FnOnce(&mut TermView)) {
 fn load_selected(app: &mut App) {
     let reads = view_mut(app).wanted_reads();
     for (run, step) in reads {
-        app.request(Request::LogRead { run, step }, Tag::Log { run, step });
+        app.fetch_step_output(run, step);
     }
 }
 
