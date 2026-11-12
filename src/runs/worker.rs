@@ -25,9 +25,9 @@ use crate::envlayers::{self, RunScope};
 use crate::mask::Masker;
 use crate::process;
 use crate::protocol::*;
-use crate::services::worker::{Signals, Waker, close_own_pane, pane, say, tell};
 use crate::tmux::Tmux;
 use crate::window::{self, ApprovalState, RunUpdate, RunWindow, StepState};
+use crate::worker::{Signals, Waker, close_own_pane, pane, say, tell};
 
 /// How long a succeeded run's window stays open before it closes itself.
 const LINGER: Duration = Duration::from_secs(5);
