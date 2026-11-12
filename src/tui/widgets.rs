@@ -101,29 +101,53 @@ pub fn row(cells: Vec<Cell>, total: u16, gap: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Concatenates spans, truncating the line to `w` cells.
+/// A list row led by the selection marker column (`▶ ` on the selected row,
+/// blank otherwise). The marker shows whether or not the pane has focus; the
+/// highlight only when it does.
+pub fn selectable_row(mut cells: Vec<Cell>, total: u16, selected: bool, focused: bool) -> Line<'static> {
+    cells.insert(0, cell(if selected { "▶" } else { " " }, theme::key(), 1));
+    let line = row(cells, total, 1);
+    if selected && focused { line.style(theme::selected()) } else { line }
+}
+
+/// Concatenates spans, truncating the line to `w` cells. Whenever content is
+/// dropped the result ends with `…`.
 pub fn clip_line(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
+    if spans.iter().map(|s| width(&s.content)).sum::<usize>() <= w {
+        return Line::from(spans);
+    }
+    if w == 0 {
+        return Line::default();
+    }
+    let budget = w - 1;
     let mut out = Vec::new();
     let mut used = 0;
     for s in spans {
         let sw = width(&s.content);
-        if used + sw <= w {
+        if used + sw <= budget {
             used += sw;
             out.push(s);
-        } else {
-            let rest = w.saturating_sub(used);
-            if rest > 0 {
-                out.push(Span::styled(truncate(&s.content, rest), s.style));
-            }
-            break;
+            continue;
         }
+        let mut kept = String::new();
+        for c in s.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + cw > budget {
+                break;
+            }
+            kept.push(c);
+            used += cw;
+        }
+        kept.push('…');
+        out.push(Span::styled(kept, s.style));
+        break;
     }
     Line::from(out)
 }
 
 /// A bordered pane with its title set into the top border.
 fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
-    let border = if focused { theme::accent() } else { theme::dim() };
+    let (border, border_type) = if focused { (theme::accent(), BorderType::Thick) } else { (theme::dim(), BorderType::Plain) };
     let mut t = vec![Span::raw(" ")];
     for s in title {
         let style =
@@ -131,7 +155,7 @@ fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
         t.push(Span::styled(s.content, style));
     }
     t.push(Span::raw(" "));
-    Block::default().borders(Borders::ALL).border_type(BorderType::Plain).border_style(border).title(Line::from(t))
+    Block::default().borders(Borders::ALL).border_type(border_type).border_style(border).title(Line::from(t))
 }
 
 /// Draws a pane with its title clipped to the pane width; returns the inner area.
@@ -190,13 +214,17 @@ pub fn para(lines: Vec<Line<'static>>) -> Paragraph<'static> {
     Paragraph::new(lines).style(theme::base())
 }
 
-/// Key hints for the bottom bar: (key, label) pairs.
+/// Key hints for the bottom bar: (key, label) pairs, two spaces apart.
 pub fn key_hints(hints: &[(&str, &str)]) -> Vec<Span<'static>> {
-    let mut out = Vec::new();
-    for (k, l) in hints {
-        out.push(Span::styled(format!(" {k} "), theme::key()));
-        out.push(Span::styled(format!("{l}  "), theme::muted()));
+    let mut out = vec![Span::raw(" ")];
+    for (i, (k, l)) in hints.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::raw("  "));
+        }
+        out.push(Span::styled(k.to_string(), theme::key()));
+        out.push(Span::styled(format!(" {l}"), theme::muted()));
     }
+    out.push(Span::raw(" "));
     out
 }
 
@@ -381,6 +409,19 @@ mod tests {
         assert_eq!(fit("abcdef", 4), "abc…");
         assert_eq!(truncate("x", 0), "");
         assert_eq!(truncate_left("/very/long/path/to/repo", 10), "…h/to/repo");
+    }
+
+    #[test]
+    fn clip_line_marks_every_cut() {
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let spans = || vec![Span::raw("abc"), Span::raw("def"), Span::raw("ghi")];
+        assert_eq!(text(&clip_line(spans(), 9)), "abcdefghi");
+        assert_eq!(text(&clip_line(spans(), 5)), "abcd…");
+        assert_eq!(text(&clip_line(spans(), 7)), "abcdef…");
+        assert_eq!(text(&clip_line(spans(), 6)), "abcde…");
+        assert_eq!(text(&clip_line(vec![Span::raw("ab"), Span::raw("⛅⛅")], 4)), "ab…");
+        assert_eq!(text(&clip_line(vec![Span::raw("ab"), Span::raw("⛅⛅")], 5)), "ab⛅…");
+        assert_eq!(text(&clip_line(spans(), 0)), "");
     }
 
     #[test]

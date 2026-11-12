@@ -44,7 +44,7 @@ pub fn open_full_log(app: &mut App, project: &str, service: &str) {
     let mut view = TermView::new();
     view.loading = true;
     app.overlay = Some(Overlay::Text(Box::new(TextOverlay {
-        title: format!("{project}/{service} log"),
+        title: format!("{project}/{service} output"),
         subtitle: String::new(),
         view,
         follow_service: Some((project.to_string(), service.to_string())),
@@ -123,25 +123,24 @@ fn group_word(p: &ProjectInfo, g: &GroupInfo) -> (String, ratatui::style::Style)
 }
 
 /// Lines for a services pane.
-pub fn service_lines(p: &ProjectInfo, sel: Option<usize>, w: u16) -> Vec<Line<'static>> {
+pub fn service_lines(p: &ProjectInfo, sel: usize, focused: bool, w: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (i, r) in service_rows(p).iter().enumerate() {
-        let is_sel = sel == Some(i);
-        let marker = if is_sel { "▶" } else { " " };
-        let mut l = match r {
+        let is_sel = sel == i;
+        let l = match r {
             SvcRow::Group(g) => {
                 let gi = p.groups.iter().find(|x| &x.id == g).unwrap();
                 let (word, style) = group_word(p, gi);
-                row(
+                selectable_row(
                     vec![
-                        cell(marker, theme::key(), 1),
                         cell("grp", theme::muted(), 3),
                         cell(g.clone(), theme::text(), 14),
                         cell(word, style, 16),
                         cell(gi.members.join(" → "), theme::muted(), 0),
                     ],
                     w,
-                    1,
+                    is_sel,
+                    focused,
                 )
             }
             SvcRow::Service(id) => {
@@ -155,9 +154,8 @@ pub fn service_lines(p: &ProjectInfo, sel: Option<usize>, w: u16) -> Vec<Line<'s
                     _ => String::new(),
                 };
                 let detail_style = if s.state == ServiceState::Crashed { theme::danger() } else { theme::muted() };
-                row(
+                selectable_row(
                     vec![
-                        cell(marker, theme::key(), 1),
                         cell(sym, style, 3),
                         cell(id.clone(), theme::text(), 14),
                         cell(word, style, 16),
@@ -165,13 +163,11 @@ pub fn service_lines(p: &ProjectInfo, sel: Option<usize>, w: u16) -> Vec<Line<'s
                         cell(detail, detail_style, 0),
                     ],
                     w,
-                    1,
+                    is_sel,
+                    focused,
                 )
             }
         };
-        if is_sel {
-            l = l.style(theme::selected());
-        }
         lines.push(l);
     }
     if lines.is_empty() {

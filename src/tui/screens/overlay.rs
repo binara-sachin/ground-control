@@ -172,7 +172,7 @@ fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap) {
                 ("enter", "on the approval banner: review the run"),
                 ("s", "start/stop the selected service or group"),
                 ("r", "restart"),
-                ("l", "full service log"),
+                ("l", "full service output"),
                 ("↑ ↓", "ahead/behind last fetch; GroundControl never fetches"),
             ],
         ),
@@ -182,7 +182,7 @@ fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap) {
                 ("enter", "run the selected pipeline"),
                 ("d", "dry run"),
                 ("e", "choose environment"),
-                ("s / r / l", "start/stop, restart, log (services pane)"),
+                ("s / r / l", "start/stop, restart, full output (services pane)"),
             ],
         ),
         (

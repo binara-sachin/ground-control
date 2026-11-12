@@ -289,7 +289,7 @@ fn load_selected(app: &mut App) {
 }
 
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    let mut h = vec![("↑↓", "step"), ("enter", "show output"), ("y", "copy command"), ("Y", "copy output"), ("f", "follow")];
+    let mut h = Vec::new();
     let v = view(app);
     if v.pending_approval().is_some() {
         h.extend([("a", "approve"), ("x", "reject")]);
@@ -297,6 +297,7 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     if v.detail.as_ref().is_some_and(|d| d.summary.status.is_active()) {
         h.push(("c", "cancel run"));
     }
+    h.extend([("↑↓", "step"), ("enter", "output"), ("f", "follow"), ("y/Y", "copy")]);
     h
 }
 
@@ -404,20 +405,12 @@ fn draw_steps(v: &RunView, d: &RunDetail, f: &mut Frame, area: Rect, hits: &HitM
         } else {
             theme::text()
         };
-        let mut l = row(
-            vec![
-                cell(if sel { "▶" } else { " " }, theme::key(), 1),
-                cell(sym, sym_style, 1),
-                cell(s.name.clone(), name_style, 0),
-                cell(detail, detail_style, 18),
-            ],
+        lines.push(selectable_row(
+            vec![cell(sym, sym_style, 1), cell(s.name.clone(), name_style, 0), cell(detail, detail_style, 18)],
             w,
-            1,
-        );
-        if sel {
-            l = l.style(theme::selected());
-        }
-        lines.push(l);
+            sel,
+            true,
+        ));
     }
     lines.push(Line::raw(""));
     if let Some(s) = d.steps.get(v.sel) {

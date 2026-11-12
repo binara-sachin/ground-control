@@ -178,3 +178,54 @@ fn mouse_is_ignored_until_connected() {
     click(&mut app, at);
     assert_eq!(app.dash.project_sel, 0);
 }
+
+fn app_at(width: u16, height: u16) -> (App, Terminal<TestBackend>) {
+    let (mut app, _) = app();
+    let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+    term.draw(|f| draw(&mut app, f)).unwrap();
+    (app, term)
+}
+
+fn symbol(term: &Terminal<TestBackend>, x: u16, y: u16) -> String {
+    term.backend().buffer()[(x, y)].symbol().to_string()
+}
+
+fn screen_row(term: &Terminal<TestBackend>, y: u16) -> String {
+    let w = term.backend().buffer().area.width;
+    (0..w).map(|x| symbol(term, x, y)).collect()
+}
+
+#[test]
+fn the_focused_pane_has_a_heavy_border() {
+    let (app, term) = app_at(100, 28);
+    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
+    assert_eq!(symbol(&term, 0, 1), "┏");
+    let (x, y) = cell_of(&app, Target::DashServices, 0, false);
+    assert_eq!(symbol(&term, x - 1, y - 1), "┌");
+}
+
+#[test]
+fn an_unfocused_selection_keeps_its_marker_without_the_highlight() {
+    let (mut app, mut term) = app_at(100, 28);
+    app.dash.focus = dashboard::Focus::Runs;
+    redraw(&mut app, &mut term);
+    let (x, y) = cell_of(&app, Target::DashProjects, 0, false);
+    assert!(screen_row(&term, y).contains('▶'));
+    assert_ne!(term.backend().buffer()[(x + 10, y)].bg, theme::SELECTION);
+    app.dash.focus = dashboard::Focus::Projects;
+    redraw(&mut app, &mut term);
+    assert_eq!(term.backend().buffer()[(x + 10, y)].bg, theme::SELECTION);
+}
+
+#[test]
+fn the_bottom_bar_keeps_its_right_keys_with_a_toast() {
+    for (w, h) in [(100, 28), (140, 40)] {
+        let (mut app, mut term) = app_at(w, h);
+        assert!(screen_row(&term, h - 1).trim_end().ends_with("? help  q quit"));
+        app.toast("a toast that is long enough to need clipping ".repeat(4), Level::Info);
+        redraw(&mut app, &mut term);
+        let bar = screen_row(&term, h - 1);
+        assert!(bar.trim_end().ends_with("? help  q quit"), "{bar}");
+        assert!(bar.contains("a toast") && bar.trim_end().ends_with("… ? help  q quit"), "{bar}");
+    }
+}

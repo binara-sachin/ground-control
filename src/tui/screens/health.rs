@@ -13,7 +13,7 @@ use crate::config::Severity;
 use crate::model::*;
 
 pub fn hints() -> Vec<(&'static str, &'static str)> {
-    vec![("r", "refresh"), ("1", "dashboard"), ("?", "help")]
+    vec![("r", "refresh"), ("1", "dashboard")]
 }
 
 pub fn draw(app: &App, f: &mut Frame, area: Rect) {
@@ -96,7 +96,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     } else {
         ("INVALID — no config loaded", theme::danger())
     };
-    let inner = framed(f, config_area, vec![title_text("config"), Span::styled(format!("  {word}"), style)], !c.ok);
+    let inner = framed(f, config_area, vec![title_text("config"), Span::styled(format!("  {word}"), style)], false);
     let w = inner.width as usize;
     let mut lines = vec![
         clip_line(vec![Span::styled(fit("file", 12), theme::muted()), Span::styled(c.path.clone(), theme::text())], w),

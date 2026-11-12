@@ -232,27 +232,30 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
                     View::Run(_) => run_view::hints(app),
                     View::Health => health::hints(),
                 };
-                let right = match app.top() {
-                    View::Run(_) => vec![("esc", "back · run keeps going")],
-                    _ if app.nav.len() > 1 => vec![("esc", "back")],
-                    _ => vec![("q", "quit · services keep running")],
-                };
-                (hints, right)
+                let back_or_quit = if app.nav.len() > 1 { ("esc", "back") } else { ("q", "quit") };
+                (hints, vec![("?", "help"), back_or_quit])
             }
         }
     };
-    let mut right_spans = key_hints(&right);
-    if let Some((msg, level, _)) = &app.toast {
+    let total = area.width as usize;
+    let right_spans = key_hints(&right);
+    let rw = right_spans.iter().map(|s| width(&s.content)).sum::<usize>().min(total);
+    let toast = app.toast.as_ref().map(|(msg, level, _)| {
         let style = match level {
             Level::Info => theme::text(),
             Level::Success => theme::success(),
             Level::Error => theme::danger(),
         };
-        right_spans = vec![Span::styled(format!("{msg}  "), style.add_modifier(Modifier::BOLD))];
+        let line =
+            clip_line(vec![Span::styled(format!("  {msg}  "), style.add_modifier(Modifier::BOLD))], (total * 2 / 3).saturating_sub(rw));
+        let tw = line.spans.iter().map(|s| width(&s.content)).sum::<usize>();
+        (line, tw)
+    });
+    let tw = toast.as_ref().map_or(0, |(_, tw)| *tw);
+    let [l, t, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(tw as u16), Constraint::Length(rw as u16)]).areas(area);
+    f.render_widget(ratatui::widgets::Paragraph::new(clip_line(key_hints(&hints), l.width as usize)), l);
+    if let Some((line, _)) = toast {
+        f.render_widget(ratatui::widgets::Paragraph::new(line), t);
     }
-    let rw: usize = right_spans.iter().map(|s| width(&s.content)).sum::<usize>().min(area.width as usize * 2 / 3);
-    let left = clip_line(key_hints(&hints), (area.width as usize).saturating_sub(rw + 1));
-    let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw as u16)]).areas(area);
-    f.render_widget(ratatui::widgets::Paragraph::new(left), l);
     f.render_widget(ratatui::widgets::Paragraph::new(clip_line(right_spans, rw)), r);
 }

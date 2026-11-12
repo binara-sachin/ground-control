@@ -212,12 +212,8 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
 }
 
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    let mut h = vec![("↑↓", "select"), ("enter", "open"), ("tab", "next pane")];
-    if app.dash.focus == Focus::Banner {
-        h[1] = ("enter", "review");
-    }
-    h.extend([("s", "start/stop"), ("r", "restart"), ("l", "full log"), ("?", "help")]);
-    h
+    let enter = if app.dash.focus == Focus::Banner { ("enter", "review") } else { ("enter", "open") };
+    vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
 }
 
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
@@ -307,9 +303,8 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
         };
         let (svc_text, svc_style) = service_summary(p);
         let name_style = if sel { theme::bold() } else { theme::text() };
-        let mut l = row(
+        lines.push(selectable_row(
             vec![
-                cell(if sel { "▶" } else { " " }, theme::key(), 1),
                 cell(if p.busy_run.is_some() { format!("{} ●", p.id) } else { p.id.clone() }, name_style, 18),
                 cell(branch.0, branch.1, 0),
                 cell(tree.0, tree.1, 9),
@@ -317,14 +312,9 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
                 cell(svc_text, svc_style, 18),
             ],
             w,
-            1,
-        );
-        if sel && focused {
-            l = l.style(theme::selected());
-        } else if sel {
-            l = l.style(ratatui::style::Style::new().bg(theme::BAR_BG));
-        }
-        lines.push(l);
+            sel,
+            focused,
+        ));
     }
     f.render_widget(para(lines), inner);
 }
@@ -338,13 +328,8 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed(f, area, vec![title_text(p.id.clone()), title_muted(" services")], focused);
     app.hits.add(inner, Target::DashServices, 0);
     let rows = service_rows(p);
-    let sel = focused.then_some(app.dash.service_sel.min(rows.len().saturating_sub(1)));
-    let mut lines = service_lines(p, sel, inner.width);
-    if !focused && !rows.is_empty() {
-        let i = app.dash.service_sel.min(rows.len() - 1);
-        lines[i] = lines[i].clone().style(ratatui::style::Style::new().bg(theme::BAR_BG));
-    }
-    f.render_widget(para(lines), inner);
+    let sel = app.dash.service_sel.min(rows.len().saturating_sub(1));
+    f.render_widget(para(service_lines(p, sel, focused, inner.width)), inner);
 }
 
 fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
@@ -365,7 +350,8 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
             name.push_str(" dirty");
         }
         let env_style = if r.protected { theme::warning() } else { theme::text() };
-        let mut l = row(
+        let selected = i == app.dash.run_sel;
+        lines.push(selectable_row(
             vec![
                 cell(word, style, 5),
                 cell(r.id.to_string(), theme::muted(), 5),
@@ -376,25 +362,22 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
                 cell(fmt_when(r.started_at), theme::muted(), 12),
             ],
             w,
-            1,
-        );
-        if focused && i == app.dash.run_sel {
-            l = l.style(theme::selected());
-        }
-        lines.push(l);
+            selected,
+            focused,
+        ));
     }
     f.render_widget(para(lines), inner);
 }
 
 fn draw_log(app: &mut App, f: &mut Frame, area: Rect) {
     let title = match &app.dash.log_target {
-        Some((_, s)) => vec![title_text(format!("{s} log")), title_muted(format!("  last {LOG_LINES} lines"))],
-        None => vec![title_text("log")],
+        Some((_, s)) => vec![title_text(format!("{s} output")), title_muted(format!("  last {LOG_LINES} lines"))],
+        None => vec![title_text("output")],
     };
     let inner = framed(f, area, title, false);
     app.hits.add(inner, Target::DashLog, 0);
     if app.dash.log_target.is_none() {
-        f.render_widget(para(vec![Line::styled(" select a service to see its log", theme::muted())]), inner);
+        f.render_widget(para(vec![Line::styled(" select a service to see its output", theme::muted())]), inner);
         return;
     }
     if app.dash.log.is_empty() {
