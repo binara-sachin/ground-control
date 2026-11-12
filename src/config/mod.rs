@@ -66,7 +66,6 @@ pub struct Project {
 #[derive(Debug, Clone)]
 pub struct Environment {
     pub name: String,
-    pub pos: Pos,
     pub protected: bool,
     pub vars: Vec<(String, String)>,
 }

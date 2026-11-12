@@ -57,7 +57,7 @@ impl RunView {
     fn wanted_reads(&mut self) -> Vec<(i64, usize)> {
         let Some(d) = &self.detail else { return Vec::new() };
         let Some(step) = d.steps.get(self.sel) else { return Vec::new() };
-        if !step.has_log && step.status != StepStatus::Running {
+        if step.started_at.is_none() && step.status != StepStatus::Running {
             return Vec::new();
         }
         let v = self.outputs.entry(self.sel).or_default();

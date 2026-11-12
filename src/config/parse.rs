@@ -204,7 +204,7 @@ fn project(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Project> {
 fn environment(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Environment> {
     let entries = cx.map(node, &format!("environment `{}`", key.text))?;
     cx.check_keys(entries, &["protected", "vars"], &format!("environment `{}`", key.text));
-    let mut e = Environment { name: key.text.clone(), pos: key.pos, protected: false, vars: Vec::new() };
+    let mut e = Environment { name: key.text.clone(), protected: false, vars: Vec::new() };
     for (k, v) in entries {
         match k.text.as_str() {
             "protected" => e.protected = cx.bool(v, "protected").unwrap_or(false),

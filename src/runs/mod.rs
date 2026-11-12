@@ -251,7 +251,6 @@ pub fn detail(config: &Config, w: &RunWindow) -> RunDetail {
                 exit_code: st.exit_code,
                 started_at: st.started_at,
                 finished_at: st.finished_at,
-                has_log: st.started_at.is_some(),
             }
         })
         .collect();
@@ -269,8 +268,6 @@ pub fn detail(config: &Config, w: &RunWindow) -> RunDetail {
                 protected: s.protected,
                 message: a.message,
                 status,
-                requested_at: a.requested_at,
-                decided_at: a.decided_at,
                 expires_at: a.expires_at,
             }]
         })

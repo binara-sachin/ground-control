@@ -417,7 +417,6 @@ mod mouse_tests {
         ProjectInfo {
             id: id.into(),
             path: format!("/tmp/{id}"),
-            remote: None,
             disabled: None,
             busy_run: None,
             git: None,

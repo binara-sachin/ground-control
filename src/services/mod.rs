@@ -72,7 +72,6 @@ pub fn status(project: &Project, svc: &Service, windows: &Windows) -> ServiceSta
         last_exit_code: None,
         message: None,
         depends_on: svc.depends_on.clone(),
-        restart: svc.restart,
         has_health_check: svc.health.is_some(),
     };
     let all = service_windows(windows, &project.id, &svc.id);

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::config::{Diagnostic, Health, InputKind, RestartPolicy, ServiceAction, Severity};
+pub use crate::config::{Diagnostic, InputKind, RestartPolicy, ServiceAction, Severity};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -143,7 +143,6 @@ impl GitStatus {
 pub struct ProjectInfo {
     pub id: String,
     pub path: String,
-    pub remote: Option<String>,
     pub disabled: Option<String>,
     pub busy_run: Option<i64>,
     pub git: Option<GitStatus>,
@@ -157,7 +156,6 @@ pub struct ProjectInfo {
 pub struct EnvInfo {
     pub name: String,
     pub protected: bool,
-    pub var_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,7 +279,6 @@ pub struct ServiceStatus {
     /// "port 5432 is in use (not started by GroundControl)".
     pub message: Option<String>,
     pub depends_on: Vec<String>,
-    pub restart: RestartPolicy,
     pub has_health_check: bool,
 }
 
@@ -395,7 +392,6 @@ pub struct StepInfo {
     pub exit_code: Option<i32>,
     pub started_at: Option<Timestamp>,
     pub finished_at: Option<Timestamp>,
-    pub has_log: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -439,8 +435,6 @@ pub struct ApprovalInfo {
     pub protected: bool,
     pub message: String,
     pub status: ApprovalStatus,
-    pub requested_at: Timestamp,
-    pub decided_at: Option<Timestamp>,
     pub expires_at: Timestamp,
 }
 

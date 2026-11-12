@@ -205,19 +205,10 @@ impl Engine {
             .map(|p| ProjectInfo {
                 id: p.id.clone(),
                 path: p.path_display.clone(),
-                remote: p.remote.clone(),
                 disabled: p.disabled.clone(),
                 busy_run: crate::runs::busy_run(windows, &p.id),
                 git: git.get(&p.id).cloned(),
-                environments: p
-                    .environments
-                    .iter()
-                    .map(|e| EnvInfo {
-                        name: e.name.clone(),
-                        protected: e.protected,
-                        var_names: e.vars.iter().map(|(k, _)| k.clone()).collect(),
-                    })
-                    .collect(),
+                environments: p.environments.iter().map(|e| EnvInfo { name: e.name.clone(), protected: e.protected }).collect(),
                 services: p.services.iter().map(|s| crate::services::status(p, s, windows)).collect(),
                 groups: p.groups.iter().map(|g| GroupInfo { id: g.id.clone(), members: g.members.clone() }).collect(),
                 pipelines: p
