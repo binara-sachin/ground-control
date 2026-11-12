@@ -12,7 +12,8 @@ use ratatui::crossterm::event::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::mouse::{HitMap, Target};
-use super::screens::{dashboard, dialog, project, run_view};
+use super::screens::overlay::{self, Overlay, TextOverlay};
+use super::screens::{dashboard, project, run_view};
 use super::term_view::TermView;
 use crate::engine::Engine;
 use crate::model::*;
@@ -62,32 +63,6 @@ pub enum View {
     Project(project::ProjectView),
     Run(Box<run_view::RunView>),
     Health,
-}
-
-pub enum Overlay {
-    Help,
-    Dialog(Box<dialog::RunDialog>),
-    Text(Box<TextOverlay>),
-    Confirm(Confirm),
-}
-
-pub struct TextOverlay {
-    pub title: String,
-    pub subtitle: String,
-    pub view: TermView,
-    /// For logs fed live: the service whose events extend this view.
-    pub follow_service: Option<(String, String)>,
-}
-
-pub struct Confirm {
-    pub title: String,
-    pub lines: Vec<ratatui::text::Line<'static>>,
-    pub action: ConfirmAction,
-}
-
-pub enum ConfirmAction {
-    CancelRun(i64),
-    Approve { run: i64, step: usize },
 }
 
 pub struct App {
@@ -521,7 +496,7 @@ impl App {
                     d.busy = false;
                 }
                 let mut view = TermView::new();
-                view.feed(&dialog::format_plan(&plan));
+                view.feed(&overlay::format_plan(&plan));
                 view.follow = false;
                 view.scroll_up(usize::MAX / 2);
                 let title = format!(
@@ -597,7 +572,7 @@ impl App {
             return;
         }
         if let Some(overlay) = self.overlay.take() {
-            self.overlay = self.overlay_key(overlay, k);
+            self.overlay = overlay::key(self, overlay, k);
             self.sync_watch();
             return;
         }
@@ -665,7 +640,7 @@ impl App {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => match self.overlay.take() {
                 Some(overlay) => {
-                    self.overlay = self.overlay_click(overlay, target);
+                    self.overlay = overlay::click(self, overlay, target);
                     self.sync_watch();
                 }
                 None => self.on_click(target, row),
@@ -699,24 +674,6 @@ impl App {
             self.press(KeyCode::Enter);
         }
         self.sync_watch();
-    }
-
-    /// Clicks in an overlay turn into the key that does the same.
-    fn overlay_click(&mut self, mut overlay: Overlay, target: Target) -> Option<Overlay> {
-        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
-        let k = match (&mut overlay, target) {
-            (Overlay::Help, Target::HelpPanel) => key(KeyCode::Esc),
-            (Overlay::Confirm(_), Target::ConfirmYes) => key(KeyCode::Char('y')),
-            (Overlay::Confirm(_), Target::ConfirmNo) => key(KeyCode::Char('n')),
-            (Overlay::Dialog(d), t) => match dialog::click_key(d, t) {
-                Some(k) => k,
-                None => return Some(overlay),
-            },
-            _ => return Some(overlay),
-        };
-        let next = self.overlay_key(overlay, k);
-        self.sync_watch();
-        next
     }
 
     /// The wheel scrolls output and logs, and moves the selection in lists.
@@ -761,47 +718,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-    }
-
-    fn overlay_key(&mut self, overlay: Overlay, k: KeyEvent) -> Option<Overlay> {
-        match overlay {
-            Overlay::Help => match k.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Enter => None,
-                _ => Some(Overlay::Help),
-            },
-            Overlay::Dialog(d) => dialog::key(self, d, k),
-            Overlay::Text(mut t) => {
-                let page = 20;
-                match k.code {
-                    KeyCode::Esc | KeyCode::Char('q') => return None,
-                    KeyCode::Up | KeyCode::Char('k') => t.view.scroll_up(1),
-                    KeyCode::Down | KeyCode::Char('j') => t.view.scroll_down(1),
-                    KeyCode::PageUp | KeyCode::Char('b') => t.view.scroll_up(page),
-                    KeyCode::PageDown | KeyCode::Char(' ') => t.view.scroll_down(page),
-                    KeyCode::Char('g') | KeyCode::Home => t.view.scroll_up(usize::MAX / 2),
-                    KeyCode::Char('G') | KeyCode::End | KeyCode::Char('f') => t.view.scroll_to_end(),
-                    KeyCode::Left | KeyCode::Char('h') => t.view.scroll_left(8),
-                    KeyCode::Right | KeyCode::Char('l') => t.view.scroll_right(8, 40),
-                    KeyCode::Char('Y') => {
-                        let text = t.view.plain_text();
-                        super::copy_to_clipboard(self.tx.clone(), text, "copied");
-                    }
-                    _ => {}
-                }
-                Some(Overlay::Text(t))
-            }
-            Overlay::Confirm(c) => match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    match c.action {
-                        ConfirmAction::CancelRun(id) => self.call(move |e| async move { Reply::Cancelled(e.cancel_run(id).await) }),
-                        ConfirmAction::Approve { run, step } => self.decide(run, step, Decision::Approve, true),
-                    }
-                    None
-                }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => None,
-                _ => Some(Overlay::Confirm(c)),
-            },
         }
     }
 

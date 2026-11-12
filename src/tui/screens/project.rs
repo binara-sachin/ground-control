@@ -8,12 +8,13 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Level, Overlay, Reply, View};
+use super::super::app::{App, Level, Reply, View};
 use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
-use super::dashboard::{self, service_rows};
 use super::dialog::RunDialog;
+use super::overlay::Overlay;
+use super::services::{self, service_rows};
 use crate::model::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,11 +122,11 @@ pub fn key(app: &mut App, k: KeyEvent) {
             };
             match k.code {
                 KeyCode::Char('l') | KeyCode::Enter => {
-                    if let Some(svc) = dashboard::row_service(&p, &row) {
-                        dashboard::open_full_log(app, &p.id, &svc);
+                    if let Some(svc) = services::row_service(&p, &row) {
+                        services::open_full_log(app, &p.id, &svc);
                     }
                 }
-                c => dashboard::control(app, &p, &row, c == KeyCode::Char('r')),
+                c => services::control(app, &p, &row, c == KeyCode::Char('r')),
             }
         }
         _ => {}
@@ -208,7 +209,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     app.hits.add(inner, Target::ProjServices, 0);
     let rows = service_rows(p);
     let sel = focused.then_some(v.svc_sel.min(rows.len().saturating_sub(1)));
-    f.render_widget(para(dashboard::service_lines(p, sel, inner.width)), inner);
+    f.render_widget(para(services::service_lines(p, sel, inner.width)), inner);
 }
 
 fn draw_header(p: &ProjectInfo, f: &mut Frame, area: Rect) {

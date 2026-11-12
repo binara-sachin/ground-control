@@ -175,25 +175,7 @@ impl TermView {
 fn map_color(c: vt100::Color, default: Color) -> Color {
     match c {
         vt100::Color::Default => default,
-        vt100::Color::Idx(i) => match i {
-            0 => Color::Rgb(0x3b, 0x41, 0x50),
-            1 => theme::DANGER,
-            2 => theme::SUCCESS,
-            3 => theme::WARNING,
-            4 => theme::INFO,
-            5 => Color::Rgb(0xc7, 0x92, 0xea),
-            6 => Color::Rgb(0x89, 0xdd, 0xff),
-            7 => theme::TEXT,
-            8 => theme::MUTED,
-            9 => Color::Rgb(0xff, 0x8b, 0x92),
-            10 => Color::Rgb(0xc3, 0xe8, 0x8d),
-            11 => Color::Rgb(0xff, 0xcb, 0x6b),
-            12 => Color::Rgb(0x9c, 0xc4, 0xff),
-            13 => Color::Rgb(0xdd, 0xa8, 0xff),
-            14 => Color::Rgb(0xa3, 0xf7, 0xff),
-            15 => Color::White,
-            n => Color::Indexed(n),
-        },
+        vt100::Color::Idx(i) => theme::ansi(i).unwrap_or(Color::Indexed(i)),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }

@@ -12,10 +12,11 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use regex::Regex;
 
-use super::super::app::{App, Overlay, Reply};
+use super::super::app::{App, Reply};
 use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
+use super::overlay::Overlay;
 use super::project::env_protected;
 use crate::config::InputKind;
 use crate::model::*;
@@ -449,78 +450,4 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
         let r = Rect { x: inner.x.saturating_add(x), width: w, ..row_at(button_line) };
         hits.add(visible(r), target, 0);
     }
-}
-
-/// Greedy word wrap by display width.
-pub fn wrap(text: &str, w: usize) -> Vec<String> {
-    let w = w.max(10);
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for word in text.split_whitespace() {
-        if !cur.is_empty() && width(&cur) + 1 + width(word) > w {
-            out.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(word);
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-/// Renders a dry-run plan as coloured text for the viewer (§8.6).
-pub fn format_plan(plan: &DryRunPlan) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("\x1b[1m{}/{}\x1b[0m", plan.project, plan.pipeline));
-    if let Some(e) = &plan.env {
-        s.push_str(&format!(" on \x1b[33m{e}\x1b[0m"));
-    }
-    if plan.protected {
-        s.push_str(" \x1b[33m(protected)\x1b[0m");
-    }
-    s.push_str("\n\x1b[90mDry run: nothing was executed. Inputs reach commands only as environment variables.\x1b[0m\n\n");
-    if !plan.inputs.is_empty() {
-        s.push_str("\x1b[1minputs\x1b[0m\n");
-        for (k, v) in &plan.inputs {
-            s.push_str(&format!("  INPUT_{} = {v}\n", k.to_ascii_uppercase()));
-        }
-        s.push('\n');
-    }
-    if !plan.blockers.is_empty() {
-        s.push_str("\x1b[31;1ma real run would be refused:\x1b[0m\n");
-        for b in &plan.blockers {
-            s.push_str(&format!("\x1b[31m  × {b}\x1b[0m\n"));
-        }
-        s.push('\n');
-    }
-    for st in &plan.steps {
-        let kind = match st.kind {
-            StepKindName::Approve => "\x1b[33mapprove\x1b[0m",
-            StepKindName::Service => "\x1b[34mservice\x1b[0m",
-            StepKindName::Run => "\x1b[32mrun\x1b[0m",
-        };
-        s.push_str(&format!("\x1b[1m{}. {}\x1b[0m  [{kind}]\n", st.index + 1, st.label));
-        match st.kind {
-            StepKindName::Run => {
-                for (i, l) in st.command.lines().enumerate() {
-                    s.push_str(&format!("   {} \x1b[34m{l}\x1b[0m\n", if i == 0 { "$" } else { " " }));
-                }
-                s.push_str(&format!("   \x1b[90mcwd\x1b[0m      {}\n", st.cwd));
-                if let Some(t) = st.timeout_secs {
-                    s.push_str(&format!("   \x1b[90mtimeout\x1b[0m  {}\n", fmt_duration(t as i64)));
-                }
-                s.push_str(&format!("   \x1b[90menv\x1b[0m      {}\n", st.env_names.join(" ")));
-            }
-            StepKindName::Approve => {
-                s.push_str(&format!("   \x1b[33m{}\x1b[0m\n", st.command));
-                s.push_str("   \x1b[90mexpires after 30m without an answer\x1b[0m\n");
-            }
-            StepKindName::Service => s.push_str(&format!("   {}\n", st.command)),
-        }
-        s.push('\n');
-    }
-    s
 }

@@ -348,6 +348,26 @@ pub fn step_duration(s: &StepInfo) -> Option<i64> {
     Some(s.finished_at.unwrap_or_else(now) - s.started_at?)
 }
 
+/// Greedy word wrap by display width.
+pub fn wrap(text: &str, w: usize) -> Vec<String> {
+    let w = w.max(10);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if !cur.is_empty() && width(&cur) + 1 + width(word) > w {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

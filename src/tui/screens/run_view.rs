@@ -10,12 +10,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Confirm, ConfirmAction, Overlay, View};
+use super::super::app::{App, View};
+use super::super::clipboard::copy_to_clipboard;
 use super::super::mouse::{HitMap, Target};
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
-use super::dialog::wrap;
+use super::overlay::{Confirm, ConfirmAction, Overlay};
 use crate::model::*;
 
 pub struct RunView {
@@ -189,13 +190,13 @@ pub fn key(app: &mut App, k: KeyEvent) {
         KeyCode::Char('y') => {
             let cmd = view(app).detail.as_ref().and_then(|d| d.steps.get(view(app).sel)).map(|s| s.command.clone());
             if let Some(cmd) = cmd {
-                super::super::copy_to_clipboard(app.tx.clone(), cmd, "command copied");
+                copy_to_clipboard(app.tx.clone(), cmd, "command copied");
             }
         }
         KeyCode::Char('Y') => {
             let v = view(app);
             let text = v.outputs.get(&v.sel).map(|o| o.plain_text()).unwrap_or_default();
-            super::super::copy_to_clipboard(app.tx.clone(), text, "output copied (colour codes stripped)");
+            copy_to_clipboard(app.tx.clone(), text, "output copied (colour codes stripped)");
         }
         KeyCode::Char('c') => {
             let v = view(app);

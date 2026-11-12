@@ -2,11 +2,15 @@
 //! tmux windows, so quitting it never stops a run or a service.
 
 mod app;
+mod clipboard;
 mod mouse;
 mod screens;
 mod term_view;
 mod theme;
 mod widgets;
+
+#[cfg(test)]
+mod tests;
 
 use std::time::Duration;
 
@@ -19,8 +23,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
-use app::{App, Conn, Level, Msg, Overlay, View};
+use app::{App, Conn, Level, Msg, View};
 use mouse::Target;
+use screens::overlay::{Overlay, draw_overlay};
 use screens::{dashboard, dialog, health, project, run_view};
 use widgets::*;
 
@@ -85,34 +90,6 @@ async fn main_loop() -> anyhow::Result<()> {
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     result
-}
-
-/// Copies text with `pbcopy` (the TUI runs on the Mac); falls back to common
-/// Linux clipboard tools.
-pub(crate) fn copy_to_clipboard(tx: mpsc::UnboundedSender<Msg>, text: String, ok_msg: &'static str) {
-    tokio::spawn(async move {
-        use tokio::io::AsyncWriteExt;
-        let candidates: [(&str, &[&str]); 3] = [("pbcopy", &[]), ("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
-        for (cmd, args) in candidates {
-            let Ok(mut child) = tokio::process::Command::new(cmd)
-                .args(args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            else {
-                continue;
-            };
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes()).await;
-            }
-            if child.wait().await.is_ok_and(|s| s.success()) {
-                let _ = tx.send(Msg::Toast(ok_msg.into(), Level::Success));
-                return;
-            }
-        }
-        let _ = tx.send(Msg::Toast("no clipboard tool found (pbcopy)".into(), Level::Error));
-    });
 }
 
 fn draw(app: &mut App, f: &mut Frame) {
@@ -281,300 +258,4 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw as u16)]).areas(area);
     f.render_widget(ratatui::widgets::Paragraph::new(left), l);
     f.render_widget(ratatui::widgets::Paragraph::new(clip_line(right_spans, rw)), r);
-}
-
-fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
-    match &mut app.overlay {
-        None => {}
-        Some(Overlay::Dialog(d)) => dialog::draw(d, f, area, &app.hits),
-        Some(Overlay::Text(t)) => {
-            clear(f, area);
-            let mut title = vec![title_text(t.title.clone())];
-            if !t.subtitle.is_empty() {
-                title.push(title_muted(format!("  {}", t.subtitle)));
-            }
-            if t.view.scrolled() > 0 {
-                title.push(title_muted(format!("  ↑{}", t.view.scrolled())));
-            }
-            let inner = framed(f, area, title, true);
-            app.hits.add(inner, Target::TextOverlay, 0);
-            if t.view.is_empty() {
-                let msg = if t.view.loading { "loading…" } else { "(empty)" };
-                f.render_widget(para(vec![Line::styled(msg, theme::muted())]), inner);
-            } else {
-                t.view.render(inner, f.buffer_mut());
-            }
-        }
-        Some(Overlay::Confirm(c)) => {
-            let w = 90.min(area.width.saturating_sub(4));
-            let h = c.lines.len() as u16 + 6;
-            let r = centered(area, w, h);
-            clear(f, r);
-            let inner = framed_alert(f, r, &c.title, true);
-            // The button row is the last line: " y confirm" then "n / esc cancel".
-            let row = Rect { y: inner.y + c.lines.len() as u16 + 2, height: 1, ..inner };
-            app.hits.add(Rect { width: 10, ..row }.intersection(inner), Target::ConfirmYes, 0);
-            app.hits.add(Rect { x: inner.x + 10, width: 18, ..row }.intersection(inner), Target::ConfirmNo, 0);
-            let iw = inner.width.saturating_sub(2) as usize;
-            let mut lines = vec![Line::raw("")];
-            lines.extend(c.lines.iter().map(|l| clip_line([vec![Span::raw(" ")], l.spans.clone()].concat(), iw)));
-            lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::styled(" y ", theme::key()),
-                Span::styled("confirm", theme::text()),
-                Span::styled("    n / esc ", theme::key()),
-                Span::styled("cancel", theme::text()),
-            ]));
-            f.render_widget(para(lines), inner);
-        }
-        Some(Overlay::Help) => draw_help(f, area, &app.hits),
-    }
-}
-
-fn draw_help(f: &mut Frame, area: Rect, hits: &mouse::HitMap) {
-    let sections: [(&str, &[(&str, &str)]); 5] = [
-        (
-            "global",
-            &[
-                ("1 2", "dashboard, health"),
-                ("tab / shift+tab", "next / previous pane"),
-                ("↑↓ / j k", "move selection"),
-                ("enter", "open the selection"),
-                ("click / wheel", "focus and select / scroll or move"),
-                ("double-click", "open the selection"),
-                ("esc", "back"),
-                ("?", "this help"),
-                ("q", "quit the TUI (runs and services keep going)"),
-            ],
-        ),
-        (
-            "dashboard",
-            &[
-                ("enter", "on the approval banner: review the run"),
-                ("s", "start/stop the selected service or group"),
-                ("r", "restart"),
-                ("l", "full service log"),
-            ],
-        ),
-        (
-            "project",
-            &[
-                ("enter", "run the selected pipeline"),
-                ("d", "dry run"),
-                ("e", "choose environment"),
-                ("s / r / l", "start/stop, restart, log (services pane)"),
-            ],
-        ),
-        (
-            "run dialog",
-            &[
-                ("tab", "next field"),
-                ("←→ / space", "change environment, choice or bool"),
-                ("enter", "start run"),
-                ("ctrl+d", "dry run"),
-                ("esc", "cancel"),
-            ],
-        ),
-        (
-            "run view",
-            &[
-                ("↑↓ / enter", "pick a step, show its output"),
-                ("f", "follow output"),
-                ("pgup/pgdn ←→", "scroll output"),
-                ("y / Y", "copy command / output"),
-                ("a / x", "approve (confirm if protected) / reject"),
-                ("c", "cancel run"),
-            ],
-        ),
-    ];
-    let mut lines = Vec::new();
-    for (name, keys) in sections {
-        lines.push(Line::styled(name.to_string(), theme::accent().add_modifier(Modifier::BOLD)));
-        for (k, d) in keys {
-            lines
-                .push(Line::from(vec![Span::styled(fit(&format!("  {k}"), 20), theme::key()), Span::styled(d.to_string(), theme::text())]));
-        }
-        lines.push(Line::raw(""));
-    }
-    let h = (lines.len() as u16 + 2).min(area.height);
-    let r = centered(area, 76, h);
-    clear(f, r);
-    hits.add(r, Target::HelpPanel, 0);
-    let inner = framed(f, r, vec![title_text("help")], true);
-    f.render_widget(para(lines), inner);
-}
-
-#[cfg(test)]
-mod mouse_tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-
-    use super::*;
-    use crate::model::ProjectInfo;
-
-    fn project(id: &str) -> ProjectInfo {
-        ProjectInfo {
-            id: id.into(),
-            path: format!("/tmp/{id}"),
-            disabled: None,
-            busy_run: None,
-            git: None,
-            environments: vec![],
-            services: vec![],
-            groups: vec![],
-            pipelines: vec![],
-        }
-    }
-
-    /// A connected app with three projects, drawn once at 120×40.
-    fn app() -> (App, Terminal<TestBackend>) {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let mut app = App::new(tx);
-        app.conn = Conn::Connected;
-        app.projects = ["alpha", "beta", "gamma"].map(project).into();
-        app.projects_loaded = true;
-        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        term.draw(|f| draw(&mut app, f)).unwrap();
-        (app, term)
-    }
-
-    /// The screen cell of a hit target's row, found by scanning the hit map.
-    fn cell_of(app: &App, target: Target, row: usize, overlay: bool) -> (u16, u16) {
-        for y in 0..40 {
-            for x in 0..120 {
-                if app.hits.at(x, y, overlay) == Some((target, row)) {
-                    return (x, y);
-                }
-            }
-        }
-        panic!("no cell for {target:?} row {row}");
-    }
-
-    fn mouse(app: &mut App, kind: MouseEventKind, (column, row): (u16, u16)) {
-        app.update(Msg::Input(Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE })));
-    }
-
-    fn click(app: &mut App, at: (u16, u16)) {
-        mouse(app, MouseEventKind::Down(MouseButton::Left), at);
-    }
-
-    fn click_on(app: &mut App, target: Target, row: usize, overlay: bool) {
-        let at = cell_of(app, target, row, overlay);
-        click(app, at);
-    }
-
-    fn redraw(app: &mut App, term: &mut Terminal<TestBackend>) {
-        term.draw(|f| draw(app, f)).unwrap();
-    }
-
-    #[test]
-    fn click_selects_a_project_and_focuses_its_pane() {
-        let (mut app, _t) = app();
-        app.dash.focus = dashboard::Focus::Runs;
-        click_on(&mut app, Target::DashProjects, 2, false);
-        assert_eq!(app.dash.project_sel, 2);
-        assert_eq!(app.dash.focus, dashboard::Focus::Projects);
-        assert_eq!(app.nav.len(), 1, "one click does not open the project");
-    }
-
-    #[test]
-    fn double_click_opens_the_project() {
-        let (mut app, _t) = app();
-        let at = cell_of(&app, Target::DashProjects, 1, false);
-        click(&mut app, at);
-        click(&mut app, at);
-        assert_eq!(app.nav.len(), 2);
-        assert!(matches!(app.top(), View::Project(p) if p.id == "beta"));
-    }
-
-    #[test]
-    fn two_clicks_on_different_rows_are_not_a_double_click() {
-        let (mut app, _t) = app();
-        click_on(&mut app, Target::DashProjects, 0, false);
-        click_on(&mut app, Target::DashProjects, 1, false);
-        assert_eq!(app.nav.len(), 1);
-        assert_eq!(app.dash.project_sel, 1);
-    }
-
-    #[test]
-    fn a_click_below_the_last_row_only_focuses() {
-        let (mut app, _t) = app();
-        app.dash.focus = dashboard::Focus::Runs;
-        let at = cell_of(&app, Target::DashProjects, 3, false);
-        click(&mut app, at);
-        click(&mut app, at);
-        assert_eq!(app.dash.focus, dashboard::Focus::Projects);
-        assert_eq!(app.dash.project_sel, 0);
-        assert_eq!(app.nav.len(), 1, "no project there to open");
-    }
-
-    #[test]
-    fn the_wheel_moves_the_selection() {
-        let (mut app, _t) = app();
-        let at = cell_of(&app, Target::DashProjects, 0, false);
-        mouse(&mut app, MouseEventKind::ScrollDown, at);
-        mouse(&mut app, MouseEventKind::ScrollDown, at);
-        assert_eq!(app.dash.project_sel, 2);
-        mouse(&mut app, MouseEventKind::ScrollUp, at);
-        assert_eq!(app.dash.project_sel, 1);
-    }
-
-    #[test]
-    fn top_bar_tabs_switch_screens() {
-        let (mut app, mut t) = app();
-        click_on(&mut app, Target::Tab(2), 0, false);
-        assert!(matches!(app.top(), View::Health));
-        redraw(&mut app, &mut t);
-        click_on(&mut app, Target::Tab(1), 0, false);
-        assert!(matches!(app.top(), View::Dashboard));
-    }
-
-    #[test]
-    fn an_open_overlay_takes_the_clicks() {
-        let (mut app, mut t) = app();
-        app.overlay = Some(Overlay::Help);
-        redraw(&mut app, &mut t);
-        // The projects underneath cannot be clicked.
-        click_on(&mut app, Target::Tab(2), 0, false);
-        assert!(matches!(app.top(), View::Dashboard), "tabs are behind the overlay");
-        assert!(app.overlay.is_some());
-        // A click on the help panel closes it.
-        click_on(&mut app, Target::HelpPanel, 0, true);
-        assert!(app.overlay.is_none());
-    }
-
-    #[test]
-    fn confirm_buttons_answer_the_dialog() {
-        let (mut app, mut t) = app();
-        let confirm =
-            || app::Confirm { title: "cancel run #1".into(), lines: vec![Line::raw("sure?")], action: app::ConfirmAction::CancelRun(1) };
-        app.overlay = Some(Overlay::Confirm(confirm()));
-        redraw(&mut app, &mut t);
-        click_on(&mut app, Target::ConfirmNo, 0, true);
-        assert!(app.overlay.is_none(), "n closes the confirm");
-    }
-
-    #[test]
-    fn the_text_overlay_scrolls_with_the_wheel() {
-        let (mut app, mut t) = app();
-        let mut view = term_view::TermView::new();
-        view.feed(&"line\r\n".repeat(200));
-        app.overlay =
-            Some(Overlay::Text(Box::new(app::TextOverlay { title: "log".into(), subtitle: String::new(), view, follow_service: None })));
-        redraw(&mut app, &mut t);
-        let at = cell_of(&app, Target::TextOverlay, 0, true);
-        mouse(&mut app, MouseEventKind::ScrollUp, at);
-        let Some(Overlay::Text(o)) = &app.overlay else { panic!() };
-        assert_eq!(o.view.scrolled(), 3);
-    }
-
-    #[test]
-    fn mouse_is_ignored_until_connected() {
-        let (mut app, _t) = app();
-        let at = cell_of(&app, Target::DashProjects, 2, false);
-        app.conn = Conn::Connecting;
-        click(&mut app, at);
-        assert_eq!(app.dash.project_sel, 0);
-    }
 }
