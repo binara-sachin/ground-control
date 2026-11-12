@@ -106,10 +106,7 @@ fn draw(app: &mut App, f: &mut Frame) {
         f.render_widget(para(msg).alignment(ratatui::layout::Alignment::Center), r);
         return;
     }
-    let [top, gap, body, bottom] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    let _ = gap;
-    let body = Rect { x: body.x + 1, width: body.width.saturating_sub(2), ..body };
+    let [top, body, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     draw_top(app, f, top);
     match &app.conn {
         Conn::Connected => draw_view(app, f, body),

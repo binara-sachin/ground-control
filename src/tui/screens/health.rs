@@ -32,8 +32,6 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     let mut lines = vec![
         kv("version", h.version.clone(), theme::text()),
         kv("opened", format!("{} ago (at {})", fmt_duration(now() - h.started_at), fmt_when_long(h.started_at)), theme::text()),
-        kv("config", h.config.path.clone(), theme::text()),
-        kv("runs", "each run and service is a window in tmux session ground-control".into(), theme::muted()),
         Line::raw(""),
     ];
     for (name, r) in [("tmux", &h.tmux), ("docker", &h.docker)] {

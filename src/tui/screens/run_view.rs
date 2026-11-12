@@ -311,21 +311,14 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let [header, body, appr] = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(approval_h)]).areas(area);
     draw_header(&d, f, header);
     let [left, right] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
-    let out_rows = (d.outputs.len() + d.inputs.len()).max(1) as u16 + 2 + u16::from(!d.inputs.is_empty() && !d.outputs.is_empty());
     let steps_h = (d.steps.len() as u16 + 5).min(left.height.saturating_sub(3));
-    let [steps_area, outputs_area, info_area] = Layout::vertical([
-        Constraint::Length(steps_h),
-        Constraint::Length(out_rows.min(left.height.saturating_sub(steps_h))),
-        Constraint::Min(0),
-    ])
-    .areas(left);
+    let [steps_area, outputs_area] = Layout::vertical([Constraint::Length(steps_h), Constraint::Min(0)]).areas(left);
     draw_steps(v, &d, f, steps_area, &app.hits);
     draw_outputs(&d, f, outputs_area);
-    draw_info(&d, f, info_area);
     app.hits.add(right, Target::RunOutput, 0);
     draw_output(v, &d, f, right);
     if let Some(a) = approval {
-        draw_approval(&a, &d, f, appr);
+        draw_approval(&a, f, appr);
     }
 }
 
@@ -475,32 +468,6 @@ fn draw_outputs(d: &RunDetail, f: &mut Frame, area: Rect) {
     f.render_widget(para(lines), inner);
 }
 
-fn draw_info(d: &RunDetail, f: &mut Frame, area: Rect) {
-    if area.height < 3 || !(d.summary.dirty || d.summary.unpushed) {
-        return;
-    }
-    let inner = framed(f, area, vec![title_text("tree at start")], false);
-    let w = inner.width as usize;
-    let mut lines = Vec::new();
-    if d.summary.dirty {
-        lines.push(clip_line(
-            vec![Span::styled("dirty  ", theme::warning()), Span::styled("the tree had uncommitted changes", theme::text())],
-            w,
-        ));
-    }
-    if d.summary.unpushed {
-        let n = d.unpushed_count.unwrap_or(0);
-        lines.push(clip_line(
-            vec![
-                Span::styled("unpushed  ", theme::warning()),
-                Span::styled(format!("HEAD was {n} commit{} ahead of origin", if n == 1 { "" } else { "s" }), theme::text()),
-            ],
-            w,
-        ));
-    }
-    f.render_widget(para(lines), inner);
-}
-
 fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
     let Some(step) = d.steps.get(v.sel).cloned() else {
         framed(f, area, vec![title_text("output")], false);
@@ -522,15 +489,8 @@ fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
         title.push(title_muted(format!("  →{}", out.hscroll)));
     }
     let inner = framed(f, area, title, false);
-    let [cmd_area, term_area] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(inner);
-    let cmd = match step.kind {
-        StepKindName::Run => format!("$ {}", step.command.lines().next().unwrap_or("")),
-        StepKindName::Approve => format!("approval: {}", step.command),
-        StepKindName::Service => format!("service {}", step.command),
-    };
-    f.render_widget(para(vec![clip_line(vec![Span::styled(cmd, theme::muted())], cmd_area.width as usize)]), cmd_area);
     if let Some(e) = v.log_errors.get(&step.index) {
-        f.render_widget(para(vec![Line::styled(e.clone(), theme::danger())]), term_area);
+        f.render_widget(para(vec![Line::styled(e.clone(), theme::danger())]), inner);
         return;
     }
     if out.is_empty() {
@@ -542,13 +502,13 @@ fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
             _ if out.loading => "loading…",
             _ => "no output",
         };
-        f.render_widget(para(vec![Line::styled(msg, theme::muted())]), term_area);
+        f.render_widget(para(vec![Line::styled(msg, theme::muted())]), inner);
         return;
     }
-    out.render(term_area, f.buffer_mut());
+    out.render(inner, f.buffer_mut());
 }
 
-fn draw_approval(a: &ApprovalInfo, d: &RunDetail, f: &mut Frame, area: Rect) {
+fn draw_approval(a: &ApprovalInfo, f: &mut Frame, area: Rect) {
     let inner = framed_alert(f, area, &format!("step {}  approval", a.step_index + 1), true);
     let w = inner.width as usize;
     let left = a.expires_at - now();
@@ -556,18 +516,13 @@ fn draw_approval(a: &ApprovalInfo, d: &RunDetail, f: &mut Frame, area: Rect) {
     for chunk in wrap(&a.message, w.saturating_sub(2)).into_iter().take(2) {
         lines.push(Line::styled(format!(" {chunk}"), theme::bold()));
     }
-    let who = if a.protected { "protected: approve asks for a confirm keypress" } else { "approve with one key" };
-    let mut l = vec![
+    let l = vec![
         Span::styled(format!(" No answer by {} cancels the run ({} left).  ", fmt_clock(a.expires_at), fmt_age(left)), theme::muted()),
         Span::styled("a", theme::key()),
         Span::styled(" approve  ", theme::text()),
         Span::styled("x", theme::key()),
-        Span::styled(" reject  ", theme::text()),
-        Span::styled(format!("· {who}"), theme::muted()),
+        Span::styled(" reject", theme::text()),
     ];
-    if d.summary.env.is_some() {
-        l.push(Span::styled(format!(" · {}/{}", d.summary.project, d.summary.env.clone().unwrap_or_default()), theme::muted()));
-    }
     while lines.len() < 2 {
         lines.push(Line::raw(""));
     }

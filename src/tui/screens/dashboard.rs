@@ -227,7 +227,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         draw_banner(app, f, banner);
     }
     let svc_rows = selected_project(app).map(|p| service_rows(p).len()).unwrap_or(0) as u16;
-    let top_h = (app.projects.len() as u16 + 5).max(svc_rows + 2).max(7).min(body.height / 2 + 2);
+    let top_h = (app.projects.len() as u16 + 3).max(svc_rows + 2).max(7).min(body.height / 2 + 2);
     let [top, bottom] = Layout::vertical([Constraint::Length(top_h), Constraint::Min(0)]).areas(body);
     let [tl, tr] = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).areas(top);
     let [bl, br] = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).areas(bottom);
@@ -243,7 +243,6 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed_alert(f, area, &title, true);
     app.hits.add(area, Target::DashBanner, 0);
     let a = &app.waiting[0];
-    let run = app.recent.iter().find(|r| r.id == a.run_id);
     let w = inner.width as usize;
     let left_mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
     let mut l1 = vec![
@@ -254,13 +253,6 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     if let Some(env) = &a.env {
         l1.push(Span::styled("   env ", theme::muted()));
         l1.push(Span::styled(env.clone(), theme::warning()));
-    }
-    if let Some(r) = run {
-        l1.push(Span::styled("   commit ", theme::muted()));
-        l1.push(Span::styled(r.commit.clone().unwrap_or_else(|| "-".into()), theme::text()));
-        let (t, s) = run_tree_word(r);
-        let t = if t == "clean" { "clean, pushed".to_string() } else { t };
-        l1.push(Span::styled(format!("   {t}"), if r.dirty || r.unpushed { s } else { theme::text() }));
     }
     let left_secs = a.expires_at - now();
     let right = vec![
@@ -334,11 +326,6 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
         }
         lines.push(l);
     }
-    lines.push(Line::raw(""));
-    lines.push(clip_line(
-        vec![Span::styled("↑ ↓ are relative to the last fetch. GroundControl never fetches on its own.", theme::muted())],
-        w as usize,
-    ));
     f.render_widget(para(lines), inner);
 }
 
@@ -362,7 +349,7 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
 
 fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     let focused = app.dash.focus == Focus::Runs;
-    let inner = framed(f, area, vec![title_text("runs"), title_muted("  with a window")], focused);
+    let inner = framed(f, area, vec![title_text("runs")], focused);
     let w = inner.width;
     let mut lines = Vec::new();
     if app.recent.is_empty() {

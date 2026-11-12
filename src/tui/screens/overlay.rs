@@ -173,6 +173,7 @@ fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap) {
                 ("s", "start/stop the selected service or group"),
                 ("r", "restart"),
                 ("l", "full service log"),
+                ("↑ ↓", "ahead/behind last fetch; GroundControl never fetches"),
             ],
         ),
         (

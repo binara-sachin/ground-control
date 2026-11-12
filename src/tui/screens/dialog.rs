@@ -48,6 +48,51 @@ impl Field {
     }
 }
 
+/// A line in the dialog's warning block. A note is wrapped to the dialog's
+/// width when drawn; a plain line is clipped.
+enum Warning {
+    Plain(Line<'static>),
+    Note { what: String, state: &'static str },
+}
+
+impl Warning {
+    fn lines(&self, w: usize) -> Vec<Line<'static>> {
+        let (what, state) = match self {
+            Warning::Plain(l) => return vec![l.clone()],
+            Warning::Note { what, state } => (what, state),
+        };
+        let segments = [
+            (what.clone(), theme::warning()),
+            (" You can still run it; the run view shows it as ".to_string(), theme::text()),
+            (state.to_string(), theme::warning()),
+            (".".to_string(), theme::text()),
+        ];
+        let styles: Vec<ratatui::style::Style> = segments.iter().flat_map(|(t, s)| t.chars().map(move |_| *s)).collect();
+        let text: String = segments.iter().map(|(t, _)| t.as_str()).collect();
+        let mut pos = 0;
+        wrap(&text, w.saturating_sub(2))
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                let n = chunk.chars().count();
+                let mut spans = vec![if i == 0 { Span::styled("! ", theme::warning()) } else { Span::raw("  ") }];
+                let mut run = String::new();
+                let mut run_style = styles[pos];
+                for (c, st) in chunk.chars().zip(&styles[pos..pos + n]) {
+                    if *st != run_style {
+                        spans.push(Span::styled(std::mem::take(&mut run), run_style));
+                        run_style = *st;
+                    }
+                    run.push(c);
+                }
+                spans.push(Span::styled(run, run_style));
+                pos += n + 1;
+                Line::from(spans)
+            })
+            .collect()
+    }
+}
+
 pub struct RunDialog {
     pub project: String,
     pub pipeline: PipelineInfo,
@@ -56,7 +101,7 @@ pub struct RunDialog {
     env_protected: Vec<bool>,
     branch: String,
     commit: String,
-    warnings: Vec<Line<'static>>,
+    warnings: Vec<Warning>,
     pub fields: Vec<Field>,
     /// 0 = environment selector (when there is a choice), then the fields.
     pub focus: usize,
@@ -87,16 +132,7 @@ impl RunDialog {
             Some(g) => {
                 if !g.is_clean() {
                     let (t, _) = tree_word(g);
-                    warnings.push(Line::from(vec![
-                        Span::styled("! ", theme::warning()),
-                        Span::styled(format!("The working tree has uncommitted changes ({t})."), theme::warning()),
-                        Span::styled(" You can still run it.", theme::text()),
-                    ]));
-                    warnings.push(Line::from(vec![
-                        Span::raw("  The run view shows it as "),
-                        Span::styled("dirty", theme::warning()),
-                        Span::raw("."),
-                    ]));
+                    warnings.push(Warning::Note { what: format!("The working tree has uncommitted changes ({t})."), state: "dirty" });
                 }
                 if g.upstream.is_none() || g.ahead > 0 {
                     let what = if g.upstream.is_none() {
@@ -104,32 +140,26 @@ impl RunDialog {
                     } else {
                         format!("HEAD is {} commit{} ahead of origin.", g.ahead, if g.ahead == 1 { "" } else { "s" })
                     };
-                    warnings.push(Line::from(vec![
-                        Span::styled("! ", theme::warning()),
-                        Span::styled(what, theme::warning()),
-                        Span::styled(" You can still run it.", theme::text()),
-                    ]));
-                    warnings.push(Line::from(vec![
-                        Span::raw("  The run view shows it as "),
-                        Span::styled("unpushed", theme::warning()),
-                        Span::raw("."),
-                    ]));
+                    warnings.push(Warning::Note { what, state: "unpushed" });
                 }
                 if g.origin_matches == Some(false) {
-                    warnings.push(Line::styled(
+                    warnings.push(Warning::Plain(Line::styled(
                         "× origin does not match the configured remote; GroundControl will refuse this run.",
                         theme::danger(),
-                    ));
+                    )));
                 }
                 (g.branch.clone().unwrap_or_else(|| "?".into()), g.commit.clone().unwrap_or_else(|| "?".into()))
             }
             None => ("?".into(), "?".into()),
         };
         if let Some(reason) = &p.disabled {
-            warnings.push(Line::styled(format!("× project disabled: {reason}"), theme::danger()));
+            warnings.push(Warning::Plain(Line::styled(format!("× project disabled: {reason}"), theme::danger())));
         }
         if let Some(id) = p.busy_run {
-            warnings.push(Line::styled(format!("× run #{id} is in progress on this project; a second run is rejected."), theme::danger()));
+            warnings.push(Warning::Plain(Line::styled(
+                format!("× run #{id} is in progress on this project; a second run is rejected."),
+                theme::danger(),
+            )));
         }
         let focus = if envs.len() > 1 { 0 } else { 1 };
         RunDialog {
@@ -306,10 +336,9 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
     let inner_w = w.saturating_sub(4) as usize;
     let protected = d.protected();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    // Line numbers of the input rows, for the mouse. The env row is line 1.
+    // Line numbers of the input rows, for the mouse. The env row is line 0.
     let mut field_lines: Vec<(usize, usize)> = Vec::new();
     let label = |s: &str| Span::styled(fit(s, 9), theme::muted());
-    lines.push(Line::from(vec![label("project"), Span::styled(d.project.clone(), theme::text())]));
     let mut env_line = vec![label("env")];
     match d.env() {
         Some(e) => {
@@ -332,7 +361,7 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
     lines.push(Line::from(vec![label("commit"), Span::styled(d.commit.clone(), theme::text())]));
     if !d.warnings.is_empty() {
         lines.push(Line::raw(""));
-        lines.extend(d.warnings.iter().cloned());
+        lines.extend(d.warnings.iter().flat_map(|w| w.lines(inner_w)));
     }
     if !d.fields.is_empty() {
         lines.push(Line::styled("╌".repeat(inner_w), theme::dim()));
@@ -431,7 +460,7 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
     let h = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let r = centered(area, w, h);
     clear(f, r);
-    let title = format!("run {}{}", d.pipeline.id, d.env().map(|e| format!(" on {e}")).unwrap_or_default());
+    let title = format!("run {}/{}{}", d.project, d.pipeline.id, d.env().map(|e| format!(" on {e}")).unwrap_or_default());
     let inner = framed_alert(f, r, &title, protected);
     let inner = Rect { x: inner.x + 1, y: inner.y + 1, width: inner.width.saturating_sub(2), height: inner.height.saturating_sub(1) };
     let lines: Vec<Line<'static>> = lines.into_iter().map(|l| clip_line(l.spans, inner.width as usize)).collect();
@@ -441,7 +470,7 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
     let row_at = |n: usize| Rect { y: inner.y.saturating_add(n as u16), height: 1, ..inner };
     let visible = |r: Rect| r.intersection(inner);
     if d.envs.len() > 1 {
-        hits.add(visible(row_at(1)), Target::DialogEnv, 0);
+        hits.add(visible(row_at(0)), Target::DialogEnv, 0);
     }
     for (i, n) in field_lines {
         hits.add(visible(row_at(n)), Target::DialogField(i), 0);
