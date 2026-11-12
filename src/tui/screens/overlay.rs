@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Reply};
+use super::super::app::{App, Reply, View};
 use super::super::clipboard::copy_to_clipboard;
 use super::super::mouse::{HitMap, Target};
 use super::super::term_view::TermView;
@@ -103,6 +103,7 @@ pub fn key(app: &mut App, overlay: Overlay, k: KeyEvent) -> Option<Overlay> {
 }
 
 pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
+    let screen = HelpScreen::of(app.top());
     match &mut app.overlay {
         None => {}
         Some(Overlay::Dialog(d)) => dialog::draw(d, f, area, &app.hits),
@@ -146,81 +147,115 @@ pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
             ]));
             f.render_widget(para(lines), inner);
         }
-        Some(Overlay::Help) => draw_help(f, area, &app.hits),
+        Some(Overlay::Help) => draw_help(f, area, &app.hits, screen),
     }
 }
 
-fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap) {
-    let sections: [(&str, &[(&str, &str)]); 5] = [
-        (
-            "global",
-            &[
-                ("1 2", "dashboard, health"),
+/// The screen help is opened over. Help only opens with no overlay showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpScreen {
+    Dashboard,
+    Project,
+    Run,
+    Health,
+}
+
+impl HelpScreen {
+    pub fn of(view: &View) -> HelpScreen {
+        match view {
+            View::Dashboard => HelpScreen::Dashboard,
+            View::Project(_) => HelpScreen::Project,
+            View::Run(_) => HelpScreen::Run,
+            View::Health => HelpScreen::Health,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            HelpScreen::Dashboard => "dashboard",
+            HelpScreen::Project => "project",
+            HelpScreen::Run => "run view",
+            HelpScreen::Health => "health",
+        }
+    }
+
+    /// Entries are (key, what it does); an empty key continues the line above.
+    fn keys(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            HelpScreen::Dashboard => &[
                 ("tab / shift+tab", "next / previous pane"),
-                ("↑↓ / j k", "move selection"),
-                ("enter", "open the selection"),
-                ("click / wheel", "focus and select / scroll or move"),
-                ("double-click", "open the selection"),
-                ("esc", "back"),
-                ("?", "this help"),
-                ("q", "quit the TUI (runs and services keep going)"),
-            ],
-        ),
-        (
-            "dashboard",
-            &[
-                ("enter", "on the approval banner: review the run"),
+                ("↑↓ / j k", "move the selection in the focused pane"),
+                ("enter", "open the selection (approval banner: review the run)"),
                 ("s", "start/stop the selected service or group"),
-                ("r", "restart"),
-                ("l", "full service output"),
-                ("↑ ↓", "ahead/behind last fetch; GroundControl never fetches"),
+                ("r", "restart it"),
+                ("l", "show its full output"),
+                ("", "s r l act on it whichever pane has focus"),
+                ("↑ ↓ column", "commits ahead/behind as of the last fetch (never fetched)"),
             ],
-        ),
-        (
-            "project",
-            &[
-                ("enter", "run the selected pipeline"),
-                ("d", "dry run"),
-                ("e", "choose environment"),
-                ("s / r / l", "start/stop, restart, full output (services pane)"),
+            HelpScreen::Project => &[
+                ("tab / shift+tab", "switch between pipelines and services"),
+                ("↑↓ / j k", "move the selection in the focused pane"),
+                ("e", "next environment of the selected pipeline"),
+                ("enter", "pipelines: open the run dialog"),
+                ("d", "pipelines: dry run; asks for missing inputs first"),
+                ("enter / l", "services: open the service's output"),
+                ("s", "services: start/stop the selected service or group"),
+                ("r", "services: restart it"),
             ],
-        ),
-        (
-            "run dialog",
-            &[
-                ("tab", "next field"),
-                ("←→ / space", "change environment, choice or bool"),
-                ("enter", "start run"),
-                ("ctrl+d", "dry run"),
-                ("esc", "cancel"),
+            HelpScreen::Run => &[
+                ("↑↓ / j k", "select a step and show its output"),
+                ("enter", "show the step's output, jumping to its end"),
+                ("f", "follow the output / pause it"),
+                ("pgup / pgdn", "scroll the output by page (b and space also)"),
+                ("g / G", "jump to the top / bottom of the output"),
+                ("← → / h l", "pan the output sideways"),
+                ("y / Y", "copy the step's command / its output"),
+                ("a / x", "approve (asks first if protected) / reject"),
+                ("c", "cancel the run (asks first)"),
             ],
-        ),
-        (
-            "run view",
-            &[
-                ("↑↓ / enter", "pick a step, show its output"),
-                ("f", "follow output"),
-                ("pgup/pgdn ←→", "scroll output"),
-                ("y / Y", "copy command / output"),
-                ("a / x", "approve (confirm if protected) / reject"),
-                ("c", "cancel run"),
+            HelpScreen::Health => &[
+                ("r", "re-check tools, tmux, Docker and config now"),
+                ("", "it also re-checks every 5 s while this screen is open"),
+                ("", "Docker's answer is reused for up to 30 s"),
             ],
-        ),
-    ];
+        }
+    }
+}
+
+const EVERYWHERE: &[(&str, &str)] = &[
+    ("1 2", "dashboard, health"),
+    ("esc", "go back; also closes help, viewers, confirms and dialogs"),
+    ("?", "this help"),
+    ("q", "quit; closes help, output viewers and confirms instead"),
+    ("ctrl+c", "quit from anywhere; runs and services keep going"),
+    ("click", "select a row, focus a pane; tabs switch screens"),
+    ("double-click", "open the row, like enter (the banner opens on one click)"),
+    ("wheel", "move the selection in lists; scroll output (sideways pans)"),
+];
+
+/// The help text for a screen: its own keys, then the ones that work everywhere.
+pub fn help_lines(screen: HelpScreen) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for (name, keys) in sections {
+    for (i, (name, keys)) in [(screen.name(), screen.keys()), ("everywhere", EVERYWHERE)].into_iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
         lines.push(Line::styled(name.to_string(), theme::accent().add_modifier(Modifier::BOLD)));
         for (k, d) in keys {
             lines
                 .push(Line::from(vec![Span::styled(fit(&format!("  {k}"), 20), theme::key()), Span::styled(d.to_string(), theme::text())]));
         }
-        lines.push(Line::raw(""));
     }
+    lines
+}
+
+fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap, screen: HelpScreen) {
+    let lines = help_lines(screen);
     let h = (lines.len() as u16 + 2).min(area.height);
-    let r = centered(area, 76, h);
+    let r = centered(area, 84, h);
     clear(f, r);
     hits.add(r, Target::HelpPanel, 0);
-    let inner = framed(f, r, vec![title_text("help")], true);
+    let inner = framed(f, r, vec![title_text("help"), title_muted(format!("  {}", screen.name()))], true);
     f.render_widget(para(lines), inner);
 }
 

@@ -110,11 +110,55 @@ pub fn selectable_row(mut cells: Vec<Cell>, total: u16, selected: bool, focused:
     if selected && focused { line.style(theme::selected()) } else { line }
 }
 
+/// Display width of the trailing whitespace across `spans`.
+fn trailing_blank(spans: &[Span<'static>]) -> usize {
+    let mut blank = 0;
+    for s in spans.iter().rev() {
+        let kept = s.content.trim_end();
+        blank += width(&s.content) - width(kept);
+        if !kept.is_empty() {
+            break;
+        }
+    }
+    blank
+}
+
+/// Keeps the first `w` cells of `spans`.
+fn take_cells(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for s in spans {
+        let sw = width(&s.content);
+        if used + sw <= w {
+            used += sw;
+            out.push(s);
+            continue;
+        }
+        let mut kept = String::new();
+        for c in s.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + cw > w {
+                break;
+            }
+            kept.push(c);
+            used += cw;
+        }
+        out.push(Span::styled(kept, s.style));
+        break;
+    }
+    out
+}
+
 /// Concatenates spans, truncating the line to `w` cells. Whenever content is
-/// dropped the result ends with `…`.
+/// dropped the result ends with `…`; cutting only trailing whitespace is not
+/// content and leaves no mark.
 pub fn clip_line(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
-    if spans.iter().map(|s| width(&s.content)).sum::<usize>() <= w {
+    let total: usize = spans.iter().map(|s| width(&s.content)).sum();
+    if total <= w {
         return Line::from(spans);
+    }
+    if total - trailing_blank(&spans) <= w {
+        return Line::from(take_cells(spans, w));
     }
     if w == 0 {
         return Line::default();
@@ -422,6 +466,19 @@ mod tests {
         assert_eq!(text(&clip_line(vec![Span::raw("ab"), Span::raw("⛅⛅")], 4)), "ab…");
         assert_eq!(text(&clip_line(vec![Span::raw("ab"), Span::raw("⛅⛅")], 5)), "ab⛅…");
         assert_eq!(text(&clip_line(spans(), 0)), "");
+    }
+
+    #[test]
+    fn clip_line_ignores_trailing_whitespace() {
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let padded = || vec![Span::raw("abc"), Span::raw("def  "), Span::raw("   ")];
+        assert_eq!(text(&clip_line(padded(), 6)), "abcdef");
+        assert_eq!(text(&clip_line(padded(), 7)), "abcdef ");
+        assert_eq!(text(&clip_line(padded(), 11)), "abcdef     ");
+        assert_eq!(text(&clip_line(padded(), 5)), "abcd…");
+        assert_eq!(text(&clip_line(vec![Span::raw("ab⛅"), Span::raw(" ")], 4)), "ab⛅");
+        assert_eq!(text(&clip_line(vec![Span::raw("  ")], 1)), " ");
+        assert_eq!(text(&clip_line(vec![Span::raw("   ")], 0)), "");
     }
 
     #[test]

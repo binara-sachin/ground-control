@@ -1,6 +1,7 @@
-//! Run view (§10.3, §6.3): header, steps, outputs, live output pane with
-//! follow mode, and the approval panel. Approving happens only here; a
-//! protected approval needs a confirm keypress, rejecting takes one key.
+//! Run view (§10.3, §6.3): header, steps beside the run's inputs and outputs,
+//! the live output pane with follow mode, and the approval panel. Approving
+//! happens only here; a protected approval needs a confirm keypress, rejecting
+//! takes one key.
 
 use std::collections::HashMap;
 
@@ -301,6 +302,22 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     h
 }
 
+/// The outputs · inputs pane is at least this tall, an empty one included.
+const IO_MIN_H: u16 = 3;
+
+/// Rows of content in the inputs · outputs pane.
+fn io_len(d: &RunDetail) -> usize {
+    let both = !d.inputs.is_empty() && !d.outputs.is_empty();
+    (d.inputs.len() + d.outputs.len() + usize::from(both)).max(1)
+}
+
+/// Height of the outputs · inputs pane in a left column `col_h` rows tall: its
+/// content, but never so tall that the steps pane loses rows it needs.
+fn io_height(d: &RunDetail, col_h: u16) -> u16 {
+    let steps_need = (d.steps.len() as u16 + 5).min(col_h.saturating_sub(3));
+    (io_len(d) as u16 + 2).min(col_h.saturating_sub(steps_need)).max(IO_MIN_H)
+}
+
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let View::Run(v) = app.nav.last_mut().unwrap() else { return };
     let Some(d) = v.detail.clone() else {
@@ -311,13 +328,12 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let approval_h = if approval.is_some() { 5 } else { 0 };
     let [header, body, appr] = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(approval_h)]).areas(area);
     draw_header(&d, f, header);
-    let [left, right] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
-    let steps_h = (d.steps.len() as u16 + 5).min(left.height.saturating_sub(3));
-    let [steps_area, outputs_area] = Layout::vertical([Constraint::Length(steps_h), Constraint::Min(0)]).areas(left);
+    let [left, output] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
+    let [steps_area, io_area] = Layout::vertical([Constraint::Min(0), Constraint::Length(io_height(&d, left.height))]).areas(left);
     draw_steps(v, &d, f, steps_area, &app.hits);
-    draw_outputs(&d, f, outputs_area);
-    app.hits.add(right, Target::RunOutput, 0);
-    draw_output(v, &d, f, right);
+    draw_io(&d, f, io_area);
+    app.hits.add(output, Target::RunOutput, 0);
+    draw_output(v, &d, f, output);
     if let Some(a) = approval {
         draw_approval(&a, f, appr);
     }
@@ -429,11 +445,11 @@ fn draw_steps(v: &RunView, d: &RunDetail, f: &mut Frame, area: Rect, hits: &HitM
     f.render_widget(para(lines), inner);
 }
 
-fn draw_outputs(d: &RunDetail, f: &mut Frame, area: Rect) {
+fn draw_io(d: &RunDetail, f: &mut Frame, area: Rect) {
     if area.height < 3 {
         return;
     }
-    let inner = framed(f, area, vec![title_text("outputs")], false);
+    let inner = framed(f, area, vec![title_text("outputs · inputs")], false);
     let w = inner.width as usize;
     let mut lines = Vec::new();
     for o in &d.outputs {
@@ -447,16 +463,24 @@ fn draw_outputs(d: &RunDetail, f: &mut Frame, area: Rect) {
             w,
         ));
     }
-    if !d.inputs.is_empty() {
-        if !d.outputs.is_empty() {
-            lines.push(Line::raw(""));
-        }
-        for (k, val) in &d.inputs {
-            lines.push(clip_line(vec![Span::styled(format!("input {k}  "), theme::muted()), Span::styled(val.clone(), theme::text())], w));
-        }
+    if !d.inputs.is_empty() && !d.outputs.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    for (k, val) in &d.inputs {
+        lines.push(clip_line(vec![Span::styled(format!("input {k}  "), theme::muted()), Span::styled(val.clone(), theme::text())], w));
     }
     if lines.is_empty() {
-        lines.push(Line::styled("none yet", theme::muted()));
+        lines.push(Line::styled("no inputs or outputs yet", theme::muted()));
+    }
+    let rows = inner.height as usize;
+    if lines.len() > rows {
+        if rows <= 1 {
+            lines.truncate(1);
+        } else {
+            let hidden = lines.len() - rows + 1;
+            lines.truncate(rows - 1);
+            lines.push(Line::styled(format!("… +{hidden} more"), theme::muted()));
+        }
     }
     f.render_widget(para(lines), inner);
 }

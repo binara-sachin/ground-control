@@ -180,7 +180,7 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Focus::Pipelines => {
             vec![("enter", "run"), ("d", "dry run"), ("e", "environment"), ("↑↓", "select"), ("tab", "next pane")]
         }
-        Focus::Services => vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), ("tab", "next pane")],
+        Focus::Services => vec![("s", "start/stop"), ("r", "restart"), ("enter/l", "full output"), ("↑↓", "select"), ("tab", "next pane")],
     }
 }
 
