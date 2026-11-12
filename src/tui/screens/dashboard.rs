@@ -1,5 +1,5 @@
-//! Dashboard (§10.3): approval banner, projects, services of the selected
-//! project, recent runs, and the selected service's log.
+//! Dashboard (§10.3): approval banner, projects and runs in full-width bands,
+//! then the selected project's services beside the selected service's log.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -82,9 +82,9 @@ pub fn load_log(app: &mut App, force: bool) {
 pub fn key(app: &mut App, k: KeyEvent) {
     let has_banner = !app.waiting.is_empty();
     let order: Vec<Focus> = if has_banner {
-        vec![Focus::Banner, Focus::Projects, Focus::Services, Focus::Runs]
+        vec![Focus::Banner, Focus::Projects, Focus::Runs, Focus::Services]
     } else {
-        vec![Focus::Projects, Focus::Services, Focus::Runs]
+        vec![Focus::Projects, Focus::Runs, Focus::Services]
     };
     if !has_banner && app.dash.focus == Focus::Banner {
         app.dash.focus = Focus::Projects;
@@ -216,21 +216,27 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
 }
 
+const BANNER_H: u16 = 3;
+const RUNS_MIN_H: u16 = 3;
+const RUNS_MAX_H: u16 = 7;
+const SERVICES_MIN_H: u16 = 6;
+
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
-    let banner_h = if app.waiting.is_empty() { 0 } else { 4 };
-    let [banner, body] = Layout::vertical([Constraint::Length(banner_h), Constraint::Min(0)]).areas(area);
+    let banner_h = if app.waiting.is_empty() { 0 } else { BANNER_H.min(area.height) };
+    let rest = area.height - banner_h;
+    let projects_h = (app.projects.len().max(1) as u16 + 3).min(rest.saturating_sub(RUNS_MIN_H + SERVICES_MIN_H));
+    let runs_h = (app.recent.len() as u16 + 2).clamp(RUNS_MIN_H, RUNS_MAX_H).min(rest.saturating_sub(projects_h + SERVICES_MIN_H));
+    let [banner, projects, runs, bottom] =
+        Layout::vertical([Constraint::Length(banner_h), Constraint::Length(projects_h), Constraint::Length(runs_h), Constraint::Min(0)])
+            .areas(area);
+    let [services, log] = Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(bottom);
     if banner_h > 0 {
         draw_banner(app, f, banner);
     }
-    let svc_rows = selected_project(app).map(|p| service_rows(p).len()).unwrap_or(0) as u16;
-    let top_h = (app.projects.len() as u16 + 3).max(svc_rows + 2).max(7).min(body.height / 2 + 2);
-    let [top, bottom] = Layout::vertical([Constraint::Length(top_h), Constraint::Min(0)]).areas(body);
-    let [tl, tr] = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).areas(top);
-    let [bl, br] = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).areas(bottom);
-    draw_projects(app, f, tl);
-    draw_services(app, f, tr);
-    draw_runs(app, f, bl);
-    draw_log(app, f, br);
+    draw_projects(app, f, projects);
+    draw_runs(app, f, runs);
+    draw_services(app, f, services);
+    draw_log(app, f, log);
 }
 
 fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
@@ -240,44 +246,49 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     app.hits.add(area, Target::DashBanner, 0);
     let a = &app.waiting[0];
     let w = inner.width as usize;
-    let left_mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
-    let mut l1 = vec![
-        left_mark,
+    let mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
+    let mut head = vec![
+        mark,
         Span::styled(format!("{}/{}", a.project, a.pipeline), theme::bold()),
         Span::styled(format!(" #{}", a.run_id), theme::muted()),
     ];
     if let Some(env) = &a.env {
-        l1.push(Span::styled("   env ", theme::muted()));
-        l1.push(Span::styled(env.clone(), theme::warning()));
+        head.push(Span::styled("  env ", theme::muted()));
+        head.push(Span::styled(env.clone(), theme::warning()));
     }
-    let left_secs = a.expires_at - now();
+    let more = if app.waiting.len() > 1 { format!(" (+{} more)", app.waiting.len() - 1) } else { String::new() };
     let right = vec![
-        Span::styled(format!("expires {} ({})   ", fmt_clock(a.expires_at), fmt_age(left_secs)), theme::muted()),
+        Span::styled(format!("expires {} ({})   ", fmt_clock(a.expires_at), fmt_age(a.expires_at - now())), theme::muted()),
         Span::styled("enter", theme::key()),
         Span::styled(" review", theme::text()),
     ];
     let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
-    let mut line1 = clip_line(l1, w.saturating_sub(right_w + 2)).spans;
-    let used: usize = line1.iter().map(|s| width(&s.content)).sum();
-    line1.push(Span::raw(" ".repeat(w.saturating_sub(used + right_w))));
-    line1.extend(right);
-    let more = if app.waiting.len() > 1 { format!("  (+{} more)", app.waiting.len() - 1) } else { String::new() };
-    let l2 =
-        clip_line(vec![Span::raw("  "), Span::styled(format!("\"{}\"", a.message), theme::text()), Span::styled(more, theme::muted())], w);
-    f.render_widget(para(vec![clip_line(line1, w), l2]), inner);
+    let avail = w.saturating_sub(right_w + 2);
+    let head_w: usize = head.iter().map(|s| width(&s.content)).sum::<usize>() + 2;
+    let message = Span::styled(format!("\"{}\"", a.message), theme::text());
+    head.push(Span::raw("  "));
+    head.extend(clip_line(vec![message], avail.saturating_sub(head_w + width(&more))).spans);
+    head.push(Span::styled(more, theme::muted()));
+    let mut line = clip_line(head, avail).spans;
+    let used: usize = line.iter().map(|s| width(&s.content)).sum();
+    line.push(Span::raw(" ".repeat(w.saturating_sub(used + right_w))));
+    line.extend(right);
+    f.render_widget(para(vec![Line::from(line)]), inner);
 }
 
 fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     let focused = matches!(app.dash.focus, Focus::Projects);
-    let inner = framed(f, area, vec![title_text("projects"), title_muted(format!(" {}", app.projects.len()))], focused);
+    let inner = framed(f, area, vec![title_text("projects")], focused);
     let w = inner.width;
+    let visible = (inner.height as usize).saturating_sub(1);
+    let start = app.dash.project_sel.saturating_sub(visible.saturating_sub(1));
     // Project rows start below the column header.
-    app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, 0);
+    app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, start);
     let mut lines = vec![row(
         vec![
             cell("", theme::muted(), 1),
-            cell("project", theme::muted(), 18),
-            cell("branch", theme::muted(), 0),
+            cell("project", theme::muted(), 0),
+            cell("branch", theme::muted(), 20),
             cell("tree", theme::muted(), 9),
             cell("↑ ↓", theme::muted(), 7),
             cell("services", theme::muted(), 18),
@@ -290,7 +301,7 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     } else if app.projects.is_empty() {
         lines.push(Line::styled("  no projects in groundcontrol.yaml", theme::muted()));
     }
-    for (i, p) in app.projects.iter().enumerate() {
+    for (i, p) in app.projects.iter().enumerate().skip(start).take(visible) {
         let sel = i == app.dash.project_sel;
         let (branch, tree, ab) = match (&p.disabled, &p.git) {
             (Some(_), _) => (("disabled".to_string(), theme::danger()), ("-".to_string(), theme::muted()), "".to_string()),
@@ -305,8 +316,8 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
         let name_style = if sel { theme::bold() } else { theme::text() };
         lines.push(selectable_row(
             vec![
-                cell(if p.busy_run.is_some() { format!("{} ●", p.id) } else { p.id.clone() }, name_style, 18),
-                cell(branch.0, branch.1, 0),
+                cell(if p.busy_run.is_some() { format!("{} ●", p.id) } else { p.id.clone() }, name_style, 0),
+                cell(branch.0, branch.1, 20),
                 cell(tree.0, tree.1, 9),
                 cell(ab, theme::text(), 7),
                 cell(svc_text, svc_style, 18),
@@ -326,10 +337,11 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
         return;
     };
     let inner = framed(f, area, vec![title_text(p.id.clone()), title_muted(" services")], focused);
-    app.hits.add(inner, Target::DashServices, 0);
-    let rows = service_rows(p);
-    let sel = app.dash.service_sel.min(rows.len().saturating_sub(1));
-    f.render_widget(para(service_lines(p, sel, focused, inner.width)), inner);
+    let sel = app.dash.service_sel.min(service_rows(p).len().saturating_sub(1));
+    let start = sel.saturating_sub((inner.height as usize).saturating_sub(1));
+    app.hits.add(inner, Target::DashServices, start);
+    let lines = service_lines(p, sel, focused, inner.width).into_iter().skip(start).collect();
+    f.render_widget(para(lines), inner);
 }
 
 fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
@@ -349,14 +361,19 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
         if r.dirty {
             name.push_str(" dirty");
         }
-        let env_style = if r.protected { theme::warning() } else { theme::text() };
+        let (env, env_style) = match (&r.env, r.protected) {
+            (Some(e), true) => (format!("{} {e}", theme::PROTECTED), theme::warning()),
+            (None, true) => (theme::PROTECTED.to_string(), theme::warning()),
+            (Some(e), false) => (e.clone(), theme::text()),
+            (None, false) => ("-".to_string(), theme::text()),
+        };
         let selected = i == app.dash.run_sel;
         lines.push(selectable_row(
             vec![
                 cell(word, style, 5),
                 cell(r.id.to_string(), theme::muted(), 5),
                 cell(name, theme::text(), 0),
-                cell(r.env.clone().unwrap_or_else(|| "-".into()), env_style, 7),
+                cell(env, env_style, 9),
                 cell(r.commit.clone().unwrap_or_else(|| "-".into()), theme::text(), 8),
                 cell(fmt_duration(run_duration(r)), theme::text(), 7),
                 cell(fmt_when(r.started_at), theme::muted(), 12),

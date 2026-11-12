@@ -2,10 +2,10 @@
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::*;
-use crate::model::ProjectInfo;
+use crate::model::*;
 
 fn project(id: &str) -> ProjectInfo {
     ProjectInfo {
@@ -94,13 +94,13 @@ fn two_clicks_on_different_rows_are_not_a_double_click() {
 #[test]
 fn a_click_below_the_last_row_only_focuses() {
     let (mut app, _t) = app();
-    app.dash.focus = dashboard::Focus::Runs;
-    let at = cell_of(&app, Target::DashProjects, 3, false);
+    app.dash.focus = dashboard::Focus::Projects;
+    let at = cell_of(&app, Target::DashRuns, 0, false);
     click(&mut app, at);
     click(&mut app, at);
-    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
-    assert_eq!(app.dash.project_sel, 0);
-    assert_eq!(app.nav.len(), 1, "no project there to open");
+    assert_eq!(app.dash.focus, dashboard::Focus::Runs);
+    assert_eq!(app.dash.run_sel, 0);
+    assert_eq!(app.nav.len(), 1, "no run there to open");
 }
 
 #[test]
@@ -228,4 +228,234 @@ fn the_bottom_bar_keeps_its_right_keys_with_a_toast() {
         assert!(bar.trim_end().ends_with("? help  q quit"), "{bar}");
         assert!(bar.contains("a toast") && bar.trim_end().ends_with("… ? help  q quit"), "{bar}");
     }
+}
+
+fn git_status() -> crate::git::GitStatus {
+    crate::git::GitStatus {
+        branch: Some("main".into()),
+        commit: Some("abc1234".into()),
+        upstream: None,
+        ahead: 0,
+        behind: 0,
+        staged: 0,
+        modified: 1,
+        untracked: 1,
+        conflicted: 0,
+        origin_matches: None,
+        origin_url: None,
+        checked_at: 0,
+        error: None,
+    }
+}
+
+fn service(id: &str, state: ServiceState) -> ServiceStatus {
+    ServiceStatus {
+        project: "alpha".into(),
+        id: id.into(),
+        state,
+        healthy: true,
+        pid: None,
+        port: None,
+        started_at: None,
+        restart_count: 0,
+        last_exit_code: None,
+        message: None,
+        depends_on: vec![],
+        has_health_check: false,
+    }
+}
+
+fn run(id: i64, project: &str, pipeline: &str, protected: bool) -> RunSummary {
+    RunSummary {
+        id,
+        project: project.into(),
+        pipeline: pipeline.into(),
+        env: protected.then(|| "prod".into()),
+        status: RunStatus::Running,
+        reason: None,
+        branch: None,
+        commit: Some("d7b1002".into()),
+        dirty: false,
+        unpushed: false,
+        protected,
+        started_at: now(),
+        finished_at: None,
+    }
+}
+
+fn approval(message: &str) -> ApprovalInfo {
+    ApprovalInfo {
+        run_id: 7,
+        step_index: 1,
+        project: "alpha".into(),
+        pipeline: "gated".into(),
+        env: Some("prod".into()),
+        protected: true,
+        message: message.into(),
+        status: ApprovalStatus::Pending,
+        expires_at: now() + 1800,
+    }
+}
+
+/// Three projects (the first with git and services), two runs, drawn at `w`×`h`.
+fn busy_app(w: u16, h: u16) -> (App, Terminal<TestBackend>) {
+    let (mut app, _) = app();
+    app.projects[0].git = Some(git_status());
+    app.projects[0].services = vec![service("web", ServiceState::Running), service("db", ServiceState::Crashed)];
+    app.recent = vec![run(8, "alpha", "deploy-everything", false), run(7, "beta", "gated", true)];
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| draw(&mut app, f)).unwrap();
+    (app, term)
+}
+
+fn row_at(app: &App, term: &Terminal<TestBackend>, target: Target, row: usize) -> String {
+    let (_, y) = cell_of(app, target, row, false);
+    screen_row(term, y)
+}
+
+#[test]
+fn the_projects_row_keeps_its_columns_at_the_minimum_size() {
+    let (app, term) = busy_app(100, 28);
+    let line = row_at(&app, &term, Target::DashProjects, 0);
+    assert!(line.contains("alpha") && line.contains("main") && line.contains("1M 1?"), "{line}");
+    assert!(line.contains("1/2 up  1 crashed"), "{line}");
+}
+
+#[test]
+fn a_run_row_shows_its_full_name_and_the_protected_marker() {
+    let (app, term) = busy_app(100, 28);
+    assert!(row_at(&app, &term, Target::DashRuns, 0).contains("alpha/deploy-everything"));
+    let protected = row_at(&app, &term, Target::DashRuns, 1);
+    assert!(protected.contains("beta/gated") && protected.contains("▞ prod"), "{protected}");
+    assert!(!row_at(&app, &term, Target::DashRuns, 0).contains('▞'));
+}
+
+#[test]
+fn tab_follows_the_screen_top_to_bottom() {
+    let (mut app, _t) = busy_app(100, 28);
+    let tab = |app: &mut App| app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))));
+    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
+    tab(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Runs);
+    tab(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Services);
+    tab(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
+    app.waiting = vec![approval("go?")];
+    app.dash.focus = dashboard::Focus::Services;
+    tab(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Banner);
+}
+
+#[test]
+fn the_banner_is_one_line_with_the_message_and_the_review_key() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.waiting = vec![approval("Proceed with the gated change?")];
+    redraw(&mut app, &mut term);
+    let (_, y) = cell_of(&app, Target::DashBanner, 0, false);
+    assert_eq!(y, 1, "right under the top bar");
+    assert_eq!(symbol(&term, 0, y), "╔");
+    assert_eq!(symbol(&term, 0, y + 2), "╚");
+    assert_eq!(symbol(&term, 0, y + 3), "┏", "the projects pane follows at once");
+    let line = screen_row(&term, y + 1);
+    assert!(line.contains("\"Proceed with the gated change?\"") && line.contains("enter review"), "{line}");
+    app.waiting = vec![approval(&"⛅ a very long approval message ".repeat(6)), approval("two")];
+    redraw(&mut app, &mut term);
+    let line = screen_row(&term, y + 1);
+    assert!(line.contains("alpha/gated #7") && line.contains("env prod") && line.contains("(+1 more)"), "{line}");
+    assert!(line.contains('…') && line.contains("enter review"), "{line}");
+}
+
+#[test]
+fn clicking_a_row_in_each_list_selects_it() {
+    for (w, h) in [(100, 28), (140, 40)] {
+        let (mut app, mut term) = busy_app(w, h);
+        app.waiting = vec![approval("go?")];
+        redraw(&mut app, &mut term);
+        click_on(&mut app, Target::DashProjects, 1, false);
+        assert_eq!(app.dash.project_sel, 1, "{w}x{h}");
+        click_on(&mut app, Target::DashRuns, 1, false);
+        assert_eq!((app.dash.run_sel, app.dash.focus), (1, dashboard::Focus::Runs), "{w}x{h}");
+        redraw(&mut app, &mut term);
+        click_on(&mut app, Target::DashProjects, 0, false);
+        assert_eq!(app.dash.project_sel, 0);
+        click_on(&mut app, Target::DashServices, 1, false);
+        assert_eq!((app.dash.service_sel, app.dash.focus), (1, dashboard::Focus::Services), "{w}x{h}");
+    }
+}
+
+#[test]
+fn long_lists_scroll_with_the_selection_and_clicks_follow() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.projects = (0..30).map(|i| project(&format!("p{i:02}"))).collect();
+    app.recent = (0..8).map(|i| run(i, "alpha", "deploy", false)).collect();
+    app.projects[0].services = (0..30).map(|i| service(&format!("s{i:02}"), ServiceState::Running)).collect();
+    app.dash.project_sel = 29;
+    app.dash.run_sel = 7;
+    redraw(&mut app, &mut term);
+    let last = row_at(&app, &term, Target::DashProjects, 29);
+    assert!(last.contains("p29") && last.contains('▶'), "{last}");
+    click_on(&mut app, Target::DashProjects, 27, false);
+    assert_eq!(app.dash.project_sel, 27);
+    let shown = row_at(&app, &term, Target::DashProjects, 27);
+    assert!(shown.contains("p27"), "{shown}");
+    let (_, y) = cell_of(&app, Target::DashRuns, 7, false);
+    assert!(screen_row(&term, y).contains('▶'));
+
+    app.dash.project_sel = 0;
+    app.dash.service_sel = 29;
+    redraw(&mut app, &mut term);
+    let last = row_at(&app, &term, Target::DashServices, 29);
+    assert!(last.contains("s29") && last.contains('▶'), "{last}");
+    click_on(&mut app, Target::DashServices, 27, false);
+    assert_eq!(app.dash.service_sel, 27);
+    assert!(row_at(&app, &term, Target::DashServices, 27).contains("s27"));
+}
+
+#[test]
+fn an_empty_projects_pane_says_so() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.projects.clear();
+    redraw(&mut app, &mut term);
+    let screen: String = (0..28).map(|y| screen_row(&term, y)).collect();
+    assert!(screen.contains("no projects in groundcontrol.yaml"));
+    app.projects_loaded = false;
+    redraw(&mut app, &mut term);
+    let screen: String = (0..28).map(|y| screen_row(&term, y)).collect();
+    assert!(screen.contains("loading…"));
+}
+
+#[test]
+fn shift_tab_runs_the_order_backwards() {
+    let (mut app, _t) = busy_app(100, 28);
+    let back = |app: &mut App| app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))));
+    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Services);
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Runs);
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
+    app.waiting = vec![approval("go?")];
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Banner);
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Services);
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Runs);
+    back(&mut app);
+    assert_eq!(app.dash.focus, dashboard::Focus::Projects);
+}
+
+#[test]
+fn a_click_below_the_last_service_only_focuses() {
+    let (mut app, _t) = busy_app(100, 28);
+    app.dash.focus = dashboard::Focus::Projects;
+    app.dash.service_sel = 1;
+    let at = cell_of(&app, Target::DashServices, 5, false);
+    click(&mut app, at);
+    click(&mut app, at);
+    assert_eq!(app.dash.focus, dashboard::Focus::Services);
+    assert_eq!(app.dash.service_sel, 1);
+    assert_eq!(app.nav.len(), 1);
 }
