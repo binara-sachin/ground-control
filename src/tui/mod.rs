@@ -254,7 +254,7 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
     });
     let tw = toast.as_ref().map_or(0, |(_, tw)| *tw);
     let [l, t, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(tw as u16), Constraint::Length(rw as u16)]).areas(area);
-    f.render_widget(ratatui::widgets::Paragraph::new(clip_line(key_hints(&hints), l.width as usize)), l);
+    f.render_widget(ratatui::widgets::Paragraph::new(Line::from(fit_key_hints(&hints, l.width as usize))), l);
     if let Some((line, _)) = toast {
         f.render_widget(ratatui::widgets::Paragraph::new(line), t);
     }

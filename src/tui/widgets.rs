@@ -278,6 +278,12 @@ pub fn key_hints(hints: &[(&str, &str)]) -> Vec<Span<'static>> {
     out
 }
 
+/// The most `hints` that fit in `avail` cells, dropped whole from the right.
+pub fn fit_key_hints(hints: &[(&str, &str)], avail: usize) -> Vec<Span<'static>> {
+    let text_w = |spans: &[Span<'static>]| spans.iter().map(|s| width(&s.content)).sum::<usize>();
+    (0..=hints.len()).rev().map(|n| key_hints(&hints[..n])).find(|spans| text_w(spans) <= avail).unwrap_or_default()
+}
+
 // ── status words ──
 
 pub fn run_status_word(s: RunStatus) -> (&'static str, Style) {

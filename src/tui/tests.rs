@@ -1335,3 +1335,27 @@ fn a_long_error_gets_the_rows_it_needs_and_the_buttons_stay() {
     assert!(screen.contains('…'), "{screen}");
     assert_buttons(&app, &term, 100, 28);
 }
+
+#[test]
+fn a_toast_drops_whole_hints_from_the_right_never_part_of_one() {
+    let (mut app, mut term) = app_at(100, 28);
+    app.dash.focus = dashboard::Focus::Services;
+    let hints = dashboard::hints(&app);
+    // The left part of the bar for the first `n` hints.
+    let prefix = |n: usize| format!(" {}", hints[..n].iter().map(|(k, l)| format!("{k} {l}")).collect::<Vec<_>>().join("  "));
+    let mut shown = std::collections::BTreeSet::new();
+    for len in (0..70).step_by(2) {
+        app.toast("x".repeat(len), Level::Info);
+        redraw(&mut app, &mut term);
+        let bar = screen_row(&term, 27);
+        assert!(bar.trim_end().ends_with("? help  q quit"), "{bar}");
+        let n = (0..=hints.len()).rev().find(|n| bar.starts_with(&prefix(*n))).expect("a whole number of hints");
+        shown.insert(n);
+        // Nothing of a hidden hint follows: the rest is blank or the toast.
+        let rest = bar[prefix(n).len()..].trim_start();
+        for (k, l) in &hints[n..] {
+            assert!(!rest.starts_with(&format!("{k} {}", &l[..1])), "part of `{k} {l}` is left: {bar}");
+        }
+    }
+    assert!(shown.len() > 2, "the hints were dropped one by one: {shown:?}");
+}
