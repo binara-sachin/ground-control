@@ -1092,3 +1092,39 @@ fn the_dialog_hints_follow_the_focused_field_and_fit() {
     let bar = screen_row(&term, 27);
     assert!(bar.contains("space/←→ toggle  ↑↓/tab field  enter start run") && !bar.contains("ctrl+e"), "{bar}");
 }
+
+#[test]
+fn only_quit_works_while_the_terminal_is_too_small() {
+    let (mut app, mut term) = app();
+    // Hidden behind the message: nothing may act, open or navigate.
+    let mut small = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    redraw(&mut app, &mut small);
+    assert!(app.too_small);
+    let key = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(c, KeyModifiers::NONE))));
+    for c in ['2', '?', 's', 'a', 'c', 'r', 'l'] {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    app.update(Msg::Input(Event::Paste("x".into())));
+    click(&mut app, (5, 5));
+    assert!(matches!(app.top(), View::Dashboard) && app.overlay.is_none() && !app.quit, "nothing responded");
+    // Growing back restores the screen exactly as it was, and keys work again.
+    redraw(&mut app, &mut term);
+    assert!(!app.too_small);
+    key(&mut app, KeyCode::Char('?'));
+    assert!(matches!(app.overlay, Some(Overlay::Help)));
+    key(&mut app, KeyCode::Esc);
+    // `q` quits from the small screen, as the message says.
+    redraw(&mut app, &mut small);
+    key(&mut app, KeyCode::Char('q'));
+    assert!(app.quit);
+}
+
+#[test]
+fn ctrl_c_quits_while_the_terminal_is_too_small() {
+    let (mut app, _term) = app();
+    let mut small = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    redraw(&mut app, &mut small);
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))));
+    assert!(app.quit);
+}

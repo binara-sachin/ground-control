@@ -96,7 +96,8 @@ fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     app.hits.clear();
     f.render_widget(Block::default().style(theme::base()), area);
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+    app.too_small = area.width < MIN_WIDTH || area.height < MIN_HEIGHT;
+    if app.too_small {
         let msg = vec![
             Line::styled("terminal too small", theme::warning().add_modifier(Modifier::BOLD)),
             Line::styled(format!("{}×{} — GroundControl needs at least {MIN_WIDTH}×{MIN_HEIGHT}", area.width, area.height), theme::muted()),

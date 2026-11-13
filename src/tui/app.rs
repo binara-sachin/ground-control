@@ -70,6 +70,9 @@ pub struct App {
     pub engine: Option<Arc<Engine>>,
     pub tx: UnboundedSender<Msg>,
     pub quit: bool,
+    /// The last frame found the terminal below the minimum size and drew only
+    /// the message. Then nothing but quitting responds, since nothing is visible.
+    pub too_small: bool,
     pub nav: Vec<View>,
     pub overlay: Option<Overlay>,
     pub toast: Option<(String, Level, Instant)>,
@@ -101,6 +104,7 @@ impl App {
             engine: None,
             tx,
             quit: false,
+            too_small: false,
             nav: vec![View::Dashboard],
             overlay: None,
             toast: None,
@@ -277,6 +281,9 @@ impl App {
         match msg {
             Msg::Input(TermEvent::Key(k)) if k.kind != KeyEventKind::Release => self.on_key(k),
             Msg::Input(TermEvent::Paste(text)) => {
+                if self.too_small {
+                    return;
+                }
                 if let Some(Overlay::Dialog(d)) = &mut self.overlay {
                     d.paste(&text);
                 }
@@ -563,6 +570,10 @@ impl App {
             self.quit = true;
             return;
         }
+        if self.too_small {
+            self.quit |= k.code == KeyCode::Char('q');
+            return;
+        }
         if !matches!(self.conn, Conn::Connected) {
             match k.code {
                 KeyCode::Char('q') => self.quit = true,
@@ -638,7 +649,7 @@ impl App {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
-        if !matches!(self.conn, Conn::Connected) {
+        if self.too_small || !matches!(self.conn, Conn::Connected) {
             return;
         }
         let Some((target, row)) = self.hits.at(m.column, m.row, self.overlay.is_some()) else { return };
