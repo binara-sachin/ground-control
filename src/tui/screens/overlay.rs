@@ -189,10 +189,9 @@ impl HelpScreen {
                 ("tab / shift+tab", "next / previous pane"),
                 ("↑↓ / j k", "move the selection in the focused pane"),
                 ("enter", "open the selection (approval banner: review the run)"),
-                ("s", "start/stop the selected service or group"),
-                ("r", "restart it"),
-                ("l", "show its full output"),
-                ("", "s r l act on it whichever pane has focus"),
+                ("s", "services pane: start/stop the selected service or group"),
+                ("r", "services pane: restart it"),
+                ("l", "services pane: show its full output"),
                 ("↑ ↓ column", "commits ahead/behind as of the last fetch (never fetched)"),
             ],
             HelpScreen::Project => &[

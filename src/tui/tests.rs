@@ -790,7 +790,7 @@ fn help_fits_on_every_screen_and_lists_ctrl_c() {
             let screen_text = screen_text(&term);
             assert!(screen_text.contains("ctrl+c") && screen_text.contains("everywhere"), "{screen:?}");
             let own = match screen {
-                HelpScreen::Dashboard => "whichever pane has focus",
+                HelpScreen::Dashboard => "services pane: start/stop the selected service or group",
                 HelpScreen::Project => "open the run dialog",
                 HelpScreen::Run => "approve (asks first if protected)",
                 HelpScreen::Health => "re-check tools, tmux, Docker and config now",
@@ -1127,4 +1127,25 @@ fn ctrl_c_quits_while_the_terminal_is_too_small() {
     redraw(&mut app, &mut small);
     app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))));
     assert!(app.quit);
+}
+
+#[test]
+fn dashboard_service_keys_act_only_in_the_services_pane() {
+    // `alpha` has no services, so a service key that acts says so in a toast.
+    let (mut app, _t) = app();
+    let press = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+    for focus in [dashboard::Focus::Projects, dashboard::Focus::Runs] {
+        app.dash.focus = focus;
+        for c in ['s', 'r', 'l'] {
+            press(&mut app, c);
+        }
+        assert!(app.toast.is_none() && app.overlay.is_none(), "{focus:?}: the service keys must do nothing");
+        let hints: Vec<_> = dashboard::hints(&app).iter().map(|h| h.0).collect();
+        assert!(!hints.contains(&"s") && !hints.contains(&"r") && !hints.contains(&"l"), "{hints:?}");
+    }
+    app.dash.focus = dashboard::Focus::Services;
+    press(&mut app, 's');
+    assert!(app.toast.as_ref().is_some_and(|t| t.0.contains("alpha has no services")), "{:?}", app.toast);
+    let hints: Vec<_> = dashboard::hints(&app).iter().map(|h| h.0).collect();
+    assert!(hints.contains(&"s") && hints.contains(&"r") && hints.contains(&"l"), "{hints:?}");
 }

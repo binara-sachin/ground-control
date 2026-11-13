@@ -151,7 +151,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 }
             }
         },
-        KeyCode::Char('s') | KeyCode::Char('r') => {
+        KeyCode::Char('s') | KeyCode::Char('r') if app.dash.focus == Focus::Services => {
             let Some(p) = selected_project(app).cloned() else { return };
             let rows = service_rows(&p);
             if let Some(row) = rows.get(app.dash.service_sel.min(rows.len().saturating_sub(1))) {
@@ -160,7 +160,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 app.toast(format!("{} has no services", p.id), Level::Info);
             }
         }
-        KeyCode::Char('l') => {
+        KeyCode::Char('l') if app.dash.focus == Focus::Services => {
             if let Some((p, s)) = log_service(app) {
                 open_full_log(app, &p, &s);
             }
@@ -214,7 +214,11 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
 
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let enter = if app.dash.focus == Focus::Banner { ("enter", "review") } else { ("enter", "open") };
-    vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
+    if app.dash.focus == Focus::Services {
+        vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
+    } else {
+        vec![("↑↓", "select"), enter, ("tab", "next pane")]
+    }
 }
 
 const BANNER_H: u16 = 3;
