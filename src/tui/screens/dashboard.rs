@@ -14,7 +14,7 @@ use super::super::mouse::Target;
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
-use super::services::{control, open_full_log, row_service, service_lines, service_rows, service_summary};
+use super::services::{SvcRow, control, open_full_log, row_service, service_lines, service_rows, service_summary};
 use crate::model::*;
 
 pub const LOG_LINES: usize = 50;
@@ -417,11 +417,35 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(para(lines), inner);
 }
 
+/// The output pane's title. With a group selected it says which member's
+/// output this is, and why that one: it crashed or is unhealthy.
+fn log_title(app: &App) -> Vec<ratatui::text::Span<'static>> {
+    let Some((_, s)) = &app.dash.log_target else { return vec![title_text("output")] };
+    let mut title = Vec::new();
+    let group = selected_project(app).and_then(|p| {
+        let rows = service_rows(p);
+        match rows.get(app.dash.service_sel.min(rows.len().saturating_sub(1)))? {
+            SvcRow::Group(g) => Some((g.clone(), p.services.iter().find(|x| &x.id == s).map(|x| x.state))),
+            SvcRow::Service(_) => None,
+        }
+    });
+    match group {
+        Some((g, state)) => {
+            title.push(title_text(format!("{g} › {s} output")));
+            match state {
+                Some(ServiceState::Crashed) => title.push(title_muted("  crashed")),
+                Some(ServiceState::Unhealthy) => title.push(title_muted("  unhealthy")),
+                _ => {}
+            }
+        }
+        None => title.push(title_text(format!("{s} output"))),
+    }
+    title.push(title_muted(format!("  last {LOG_LINES} lines")));
+    title
+}
+
 fn draw_log(app: &mut App, f: &mut Frame, area: Rect) {
-    let title = match &app.dash.log_target {
-        Some((_, s)) => vec![title_text(format!("{s} output")), title_muted(format!("  last {LOG_LINES} lines"))],
-        None => vec![title_text("output")],
-    };
+    let title = log_title(app);
     let inner = framed(f, area, title, false);
     app.hits.add(inner, Target::DashLog, 0);
     if app.dash.log_target.is_none() {

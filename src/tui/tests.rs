@@ -1203,3 +1203,22 @@ fn clicking_a_visible_row_never_moves_a_scrolled_list() {
         assert_eq!(first_row_of(&app, target), top - 2, "{target:?}");
     }
 }
+
+#[test]
+fn a_selected_group_names_the_member_whose_output_is_shown() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.projects[0].groups = vec![GroupInfo { id: "both".into(), members: vec!["web".into(), "db".into()] }];
+    app.dash.focus = dashboard::Focus::Services;
+    // Rows: the group first, then web and db.
+    app.dash.service_sel = 0;
+    dashboard::load_log(&mut app, true);
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains("both › db output  crashed"), "the crashed member is shown, and says why\n{screen}");
+    // A plain service keeps its own name.
+    app.dash.service_sel = 1;
+    dashboard::load_log(&mut app, true);
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains("web output") && !screen.contains("both ›"), "{screen}");
+}
