@@ -2,6 +2,8 @@
 //! bands, then the selected project's services beside the selected service's
 //! output.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -30,6 +32,12 @@ pub struct DashState {
     pub project_sel: usize,
     pub service_sel: usize,
     pub run_sel: usize,
+    /// First visible row of each list. Drawing moves it only as far as needed
+    /// to keep the selection visible, so a click on a visible row never makes
+    /// the list jump. A `Cell` because drawing only borrows the app.
+    pub project_top: Cell<usize>,
+    pub service_top: Cell<usize>,
+    pub run_top: Cell<usize>,
     pub log: TermView,
     pub log_target: Option<(String, String)>,
     pub focus_banner_on_new: bool,
@@ -42,6 +50,9 @@ impl Default for DashState {
             project_sel: 0,
             service_sel: 0,
             run_sel: 0,
+            project_top: Cell::new(0),
+            service_top: Cell::new(0),
+            run_top: Cell::new(0),
             log: TermView::new(),
             log_target: None,
             focus_banner_on_new: true,
@@ -221,6 +232,20 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+/// The first visible row of a list of `len` rows showing `visible` at a time:
+/// `top` as it was, moved only if the selection would be out of view.
+fn keep_visible(top: &Cell<usize>, sel: usize, visible: usize, len: usize) -> usize {
+    let visible = visible.max(1);
+    let mut t = top.get().min(len.saturating_sub(visible));
+    if sel < t {
+        t = sel;
+    } else if sel >= t + visible {
+        t = sel + 1 - visible;
+    }
+    top.set(t);
+    t
+}
+
 const BANNER_H: u16 = 3;
 const RUNS_MIN_H: u16 = 3;
 const RUNS_MAX_H: u16 = 7;
@@ -286,7 +311,7 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed(f, area, vec![title_text("projects")], focused);
     let w = inner.width;
     let visible = (inner.height as usize).saturating_sub(1);
-    let start = app.dash.project_sel.saturating_sub(visible.saturating_sub(1));
+    let start = keep_visible(&app.dash.project_top, app.dash.project_sel, visible, app.projects.len());
     // Project rows start below the column header.
     app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, start);
     let mut lines = vec![row(
@@ -342,8 +367,9 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
         return;
     };
     let inner = framed(f, area, vec![title_text(p.id.clone()), title_muted(" services")], focused);
-    let sel = app.dash.service_sel.min(service_rows(p).len().saturating_sub(1));
-    let start = sel.saturating_sub((inner.height as usize).saturating_sub(1));
+    let len = service_rows(p).len();
+    let sel = app.dash.service_sel.min(len.saturating_sub(1));
+    let start = keep_visible(&app.dash.service_top, sel, inner.height as usize, len);
     app.hits.add(inner, Target::DashServices, start);
     let lines = service_lines(p, sel, focused, inner.width).into_iter().skip(start).collect();
     f.render_widget(para(lines), inner);
@@ -358,7 +384,7 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
         lines.push(Line::styled(" no open runs — open a project and press enter on a pipeline", theme::muted()));
     }
     let visible = inner.height as usize;
-    let start = app.dash.run_sel.saturating_sub(visible.saturating_sub(1));
+    let start = keep_visible(&app.dash.run_top, app.dash.run_sel, visible, app.recent.len());
     app.hits.add(inner, Target::DashRuns, start);
     for (i, r) in app.recent.iter().enumerate().skip(start).take(visible) {
         let (word, style) = run_status_word(r.status);

@@ -1166,3 +1166,40 @@ fn a_crashed_service_shows_its_exit_code_within_the_status_column() {
         }
     }
 }
+
+/// The index of the first list row on screen, read from the hit map.
+fn first_row_of(app: &App, target: Target) -> usize {
+    (0..64).find(|r| (0..60).any(|y| (0..200).any(|x| app.hits.at(x, y, false) == Some((target, *r))))).expect("a row is on screen")
+}
+
+#[test]
+fn clicking_a_visible_row_never_moves_a_scrolled_list() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.projects = (0..30).map(|i| project(&format!("p{i:02}"))).collect();
+    app.projects[0].services = (0..30).map(|i| service(&format!("s{i:02}"), ServiceState::Running)).collect();
+    app.recent = (0..30).map(|i| run(i, "alpha", "deploy", false)).collect();
+    for (target, focus) in [
+        (Target::DashProjects, dashboard::Focus::Projects),
+        (Target::DashServices, dashboard::Focus::Services),
+        (Target::DashRuns, dashboard::Focus::Runs),
+    ] {
+        // Selection at the bottom of a long list: the view scrolls to show it.
+        app.dash.project_sel = if target == Target::DashProjects { 29 } else { 0 };
+        app.dash.service_sel = if target == Target::DashServices { 29 } else { 0 };
+        app.dash.run_sel = if target == Target::DashRuns { 29 } else { 0 };
+        app.dash.focus = focus;
+        redraw(&mut app, &mut term);
+        let top = first_row_of(&app, target);
+        assert!(top > 0, "{target:?} scrolled to show the selection");
+        // Clicking the first visible row selects it and leaves the view where it was.
+        click_on(&mut app, target, top, false);
+        redraw(&mut app, &mut term);
+        assert_eq!(first_row_of(&app, target), top, "{target:?} jumped after a click");
+        // Moving the selection up past the top scrolls just enough to show it.
+        for _ in 0..2 {
+            app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))));
+        }
+        redraw(&mut app, &mut term);
+        assert_eq!(first_row_of(&app, target), top - 2, "{target:?}");
+    }
+}
