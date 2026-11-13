@@ -413,7 +413,7 @@ fn changed<K: std::hash::Hash + Eq, V: PartialEq + Clone>(map: &mut HashMap<K, V
 }
 
 /// Turns what the windows publish into events, from one `list-windows` per
-/// poll plus a pane capture for each log on screen.
+/// poll plus a pane capture for each run step or service output being followed.
 async fn state_poller(e: Arc<Engine>) {
     let mut seen = Seen::default();
     loop {

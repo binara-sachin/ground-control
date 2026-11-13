@@ -1,5 +1,5 @@
 //! `groundcontrol.yaml`: typed configuration, parsing with positions (§7.1)
-//! and validation (§7.4).
+//! and validation (§7.3).
 
 mod parse;
 pub mod validate;

@@ -126,7 +126,7 @@ async fn pipelines_end_to_end() {
     assert!(msg.contains("does not match"));
     assert!(env.windows().await.is_empty(), "nothing was opened");
 
-    // Steps, env precedence, masking and outputs, all from the window.
+    // Steps, env layers, masking and outputs, all from the window.
     let id = start(&env, params("hello", None, &[("name", "sam")], false)).await.unwrap();
     let r = finished(&env, id).await;
     assert_eq!(r.summary.status, RunStatus::Succeeded, "{r:?}");

@@ -1,5 +1,6 @@
-//! Dashboard (§10.3): approval banner, projects and runs in full-width bands,
-//! then the selected project's services beside the selected service's log.
+//! Dashboard (§10.3): approval banner, projects and open runs in full-width
+//! bands, then the selected project's services beside the selected service's
+//! output.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -52,8 +53,8 @@ fn selected_project(app: &App) -> Option<&ProjectInfo> {
     app.projects.get(app.dash.project_sel.min(app.projects.len().saturating_sub(1)))
 }
 
-/// The service whose log the log pane shows: the selected service, or the
-/// first member of the selected group.
+/// The service whose output the output pane shows: the selected service, or
+/// the first member of the selected group.
 fn log_service(app: &App) -> Option<(String, String)> {
     let p = selected_project(app)?;
     let rows = service_rows(p);
@@ -61,7 +62,7 @@ fn log_service(app: &App) -> Option<(String, String)> {
     Some((p.id.clone(), row_service(p, row)?))
 }
 
-/// Loads the last lines of the selected service's log when the selection changes.
+/// Loads the last lines of the selected service's output when the selection changes.
 pub fn load_log(app: &mut App, force: bool) {
     let target = log_service(app);
     if target == app.dash.log_target && !force {

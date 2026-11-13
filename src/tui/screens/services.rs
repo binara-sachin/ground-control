@@ -1,5 +1,5 @@
 //! The services pane both the Dashboard and Project screens show: its rows,
-//! their text, and the start/stop/restart and full-log actions on a row.
+//! their text, and the start/stop/restart and full-output actions on a row.
 
 use ratatui::text::Line;
 
@@ -24,7 +24,7 @@ pub fn service_rows(p: &ProjectInfo) -> Vec<SvcRow> {
     rows
 }
 
-/// The service a row's log comes from: the service itself, or for a group a
+/// The service a row's output comes from: the service itself, or for a group a
 /// member that crashed or is unhealthy, otherwise its last member.
 pub fn row_service(p: &ProjectInfo, row: &SvcRow) -> Option<String> {
     match row {

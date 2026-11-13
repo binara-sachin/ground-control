@@ -1,5 +1,6 @@
-//! The data the engine hands to the TUI and the events it sends, plus the
-//! status values the window schema encodes (§10.6).
+//! The data the engine hands the TUI (projects, runs, services, health and the
+//! events that update them) and the inputs the TUI passes to the engine, plus
+//! the status values the window schema encodes (§11).
 
 use std::collections::{BTreeMap, BTreeSet};
 

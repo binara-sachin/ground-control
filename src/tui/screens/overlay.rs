@@ -28,7 +28,7 @@ pub struct TextOverlay {
     pub title: String,
     pub subtitle: String,
     pub view: TermView,
-    /// For logs fed live: the service whose events extend this view.
+    /// For output fed live: the service whose events extend this view.
     pub follow_service: Option<(String, String)>,
 }
 

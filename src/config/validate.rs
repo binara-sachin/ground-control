@@ -1,4 +1,4 @@
-//! Semantic validation rules (§7.4). The text checks are seatbelts, not guarantees.
+//! Semantic validation rules (§7.3). The text checks are seatbelts, not guarantees.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;

@@ -535,7 +535,7 @@ impl App {
     }
 
     /// A service window's whole output arrived: the dashboard shows its last
-    /// lines, the full-log overlay all of it.
+    /// lines, the full-output overlay all of it.
     fn on_service_log(&mut self, project: &str, service: &str, text: &str) {
         if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == project && s == service) {
             let lines: Vec<&str> = text.lines().collect();
@@ -676,7 +676,7 @@ impl App {
         self.sync_watch();
     }
 
-    /// The wheel scrolls output and logs, and moves the selection in lists.
+    /// The wheel scrolls output panes and moves the selection in lists.
     fn on_wheel(&mut self, target: Target, down: bool) {
         const LINES: usize = 3;
         let step = if down { KeyCode::Down } else { KeyCode::Up };
