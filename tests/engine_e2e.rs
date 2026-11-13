@@ -79,7 +79,7 @@ async fn engine_end_to_end() {
     while !(text.contains("two") && succeeded) {
         assert!(Instant::now() < deadline, "output so far: {text:?}, succeeded: {succeeded}");
         match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-            Ok(Some(Event::Log(c))) if c.run == id => text = c.data,
+            Ok(Some(Event::StepOutput(c))) if c.run == id => text = c.data,
             Ok(Some(Event::Run(s))) if s.id == id && s.status == RunStatus::Succeeded => succeeded = true,
             _ => {}
         }
@@ -120,8 +120,8 @@ async fn engine_end_to_end() {
     next_event(&mut rx, "service", |e| matches!(e, Event::Service(s) if s.id == "web" && s.state == ServiceState::Running)).await;
     next_event(
         &mut rx,
-        "service log",
-        |e| matches!(e, Event::ServiceLog { service, data, .. } if service == "web" && data.contains("starting")),
+        "service output",
+        |e| matches!(e, Event::ServiceOutput { service, data, .. } if service == "web" && data.contains("starting")),
     )
     .await;
     let text = engine.service_output("app", "web").await.unwrap();
@@ -140,8 +140,8 @@ async fn config_reload_keeps_last_good() {
     let Some(env) = common::setup(config) else { return };
     let (engine, mut rx) = engine(&env);
     let good = std::fs::read_to_string(&env.cfg_path).unwrap();
-    // Give the watcher a moment to start, then break the file.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Break the file at once: a change made before the watcher is armed must
+    // still be picked up.
     std::fs::write(&env.cfg_path, good.replace("          - approve: \"Go?\"\n", "          - nope: 1\n")).unwrap();
     let Event::Config(status) = next_event(&mut rx, "config", |e| matches!(e, Event::Config(c) if !c.ok)).await else { unreachable!() };
     assert!(status.active, "previous config stays active");

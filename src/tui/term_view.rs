@@ -16,10 +16,15 @@ use super::theme;
 const COLUMNS: u16 = 120;
 const SCROLLBACK: usize = 10_000;
 const MAX_RAW: usize = 8 * 1024 * 1024;
+const NEWLINE: &[u8] = b"\r\n";
 
 pub struct TermView {
     parser: vt100::Parser,
     raw: Vec<u8>,
+    /// The parser has not been given the newline ending `raw`: it would only
+    /// move the cursor to a blank row, which hides the last line of a pane
+    /// that is only a few rows tall.
+    held_newline: bool,
     rows: u16,
     /// Stick to the newest output.
     pub follow: bool,
@@ -47,6 +52,7 @@ impl TermView {
         TermView {
             parser: vt100::Parser::new(nz(24), nz(COLUMNS), SCROLLBACK),
             raw: Vec::new(),
+            held_newline: false,
             rows: 24,
             follow: true,
             scroll: 0,
@@ -64,7 +70,11 @@ impl TermView {
     /// it into `\r\n`, so that is done here.
     pub fn feed(&mut self, data: &str) {
         let bytes = data.replace('\n', "\r\n").into_bytes();
-        self.parser.process(&bytes);
+        if self.held_newline {
+            self.parser.process(NEWLINE);
+        }
+        self.held_newline = bytes.ends_with(NEWLINE);
+        self.parser.process(if self.held_newline { &bytes[..bytes.len() - NEWLINE.len()] } else { &bytes });
         self.raw.extend_from_slice(&bytes);
         if self.raw.len() > MAX_RAW {
             let cut = self.raw.len() - MAX_RAW / 2;
@@ -93,7 +103,8 @@ impl TermView {
         }
         self.rows = rows;
         self.parser = vt100::Parser::new(nz(rows), nz(COLUMNS), SCROLLBACK);
-        self.parser.process(&self.raw);
+        let parsed = if self.held_newline { self.raw.len() - NEWLINE.len() } else { self.raw.len() };
+        self.parser.process(&self.raw[..parsed]);
     }
 
     pub fn scroll_up(&mut self, n: usize) {
@@ -126,16 +137,24 @@ impl TermView {
         strip_ansi(&String::from_utf8_lossy(&self.raw))
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        self.resize(area.height);
+    /// Sizes the view for a pane `rows` tall and clamps the scroll position to
+    /// what exists. `render` does this; call it first to read `scrolled()`
+    /// before the frame is drawn, since a jump to the top asks for more lines
+    /// than there are.
+    pub fn fit(&mut self, rows: u16) {
+        self.resize(rows);
         if self.follow {
             self.scroll = 0;
         }
         self.parser.screen_mut().set_scrollback(self.scroll);
         self.scroll = self.parser.screen().scrollback();
+    }
+
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.fit(area.height);
         self.hscroll = self.hscroll.min(COLUMNS.saturating_sub(area.width));
         let screen = self.parser.screen();
         for row in 0..area.height {
@@ -253,12 +272,47 @@ mod tests {
         let mut buf = Buffer::empty(area);
         v.render(area, &mut buf);
         let first: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(first.starts_with("line 46"), "{first:?}");
+        assert!(first.starts_with("line 45"), "{first:?}");
         v.scroll_up(10);
         let mut buf = Buffer::empty(area);
         v.render(area, &mut buf);
         let first: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(first.starts_with("line 36"), "{first:?}");
+        assert!(first.starts_with("line 35"), "{first:?}");
         assert!(!v.follow);
+    }
+
+    fn rows(v: &mut TermView, w: u16, h: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        v.render(area, &mut buf);
+        (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect()
+    }
+
+    #[test]
+    fn short_output_is_fully_visible_from_the_first_row() {
+        let mut v = TermView::new();
+        v.feed("a\nb\nc\n");
+        // Taller than the output, then exactly as tall, then shrinking and growing again.
+        for h in [10u16, 3, 4, 3, 10, 30, 3] {
+            let r = rows(&mut v, 20, h);
+            assert_eq!(&r[..3], ["a", "b", "c"], "height {h}: {r:?}");
+            assert!(r[3..].iter().all(|l| l.is_empty()), "height {h}: {r:?}");
+        }
+        // One line in a one-row pane is not hidden by the cursor's blank row.
+        let mut v = TermView::new();
+        v.feed("only\n");
+        assert_eq!(rows(&mut v, 20, 1), ["only"]);
+    }
+
+    #[test]
+    fn longer_output_follows_its_last_rows_and_newlines_across_feeds_are_kept() {
+        let mut v = TermView::new();
+        v.feed("a\nb\n");
+        v.feed("c\n\nd");
+        assert_eq!(rows(&mut v, 20, 3), ["c", "", "d"]);
+        assert_eq!(rows(&mut v, 20, 6), ["a", "b", "c", "", "d", ""]);
+        assert_eq!(v.plain_text(), "a\nb\nc\n\nd");
+        v.replace("x\ny\nz\n");
+        assert_eq!(rows(&mut v, 20, 2), ["y", "z"]);
     }
 }

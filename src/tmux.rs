@@ -12,7 +12,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::Duration;
+
+use regex::Regex;
 
 use tokio::process::Command;
 
@@ -233,6 +236,11 @@ impl Tmux {
             args.push("--");
             args.extend(w.argv.iter().map(String::as_str));
             args.extend([";", "set-option", "-w", "-t", &temp_target, "remain-on-exit", "on"]);
+            // tmux writes `Pane is dead (status 1, <date>)` into the pane when
+            // the command exits, which would read as the program's own output.
+            // A blank format (tmux 3.5 and later; `-q` ignores the option on
+            // older versions, which `trim_capture` covers) leaves it out.
+            args.extend([";", "set-option", "-wq", "-t", &temp_target, "remain-on-exit-format", " "]);
             for (k, v) in &opts {
                 args.extend([";", "set-option", "-w", "-t", &temp_target, k, v]);
             }
@@ -354,9 +362,22 @@ impl Tmux {
     }
 }
 
-/// A capture without the blank rows below the last output.
+static DEAD_NOTICE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(\x1b\[[0-9;]*m)*Pane is dead \((status \d+|signal \w+), \w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4}\)(\x1b\[[0-9;]*m)*$")
+        .unwrap()
+});
+
+/// A capture without the blank rows below the last output, and without the
+/// `Pane is dead (…)` line that tmux versions before 3.5 write when a command
+/// exits. Only the last non-empty line is looked at, and only its exact
+/// format matches.
 pub fn trim_capture(pane: &str) -> String {
-    let t = pane.trim_end_matches(['\n', ' ']);
+    let mut t = pane.trim_end_matches(['\n', ' ']);
+    if let Some(i) = t.rfind('\n').map(|i| i + 1).or(Some(0))
+        && DEAD_NOTICE.is_match(&t[i..])
+    {
+        t = t[..i].trim_end_matches(['\n', ' ']);
+    }
     if t.is_empty() { String::new() } else { format!("{t}\n") }
 }
 
@@ -372,6 +393,21 @@ mod tests {
             assert_eq!(decode(&e), s);
         }
         assert_eq!(decode("50%"), "50%", "a stray % is kept");
+    }
+
+    #[test]
+    fn the_dead_pane_notice_is_dropped_only_as_the_last_line() {
+        let dead = "Pane is dead (status 1, Fri Nov 13 08:06:14 2026)";
+        assert_eq!(trim_capture(&format!("hi\n\n\n{dead}\n\n")), "hi\n");
+        assert_eq!(trim_capture("hi\nPane is dead (signal 15, Fri Nov  3 08:06:14 2026)"), "hi\n");
+        assert_eq!(trim_capture(dead), "");
+        // The program's own lines are kept: not last, or not in tmux's exact format.
+        assert_eq!(trim_capture(&format!("{dead}\nmore\n")), format!("{dead}\nmore\n"));
+        assert_eq!(trim_capture("Pane is dead (status 1)\n"), "Pane is dead (status 1)\n");
+        assert_eq!(
+            trim_capture("x Pane is dead (status 1, Fri Nov 13 08:06:14 2026)\n"),
+            "x Pane is dead (status 1, Fri Nov 13 08:06:14 2026)\n"
+        );
     }
 
     #[test]

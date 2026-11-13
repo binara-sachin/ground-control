@@ -65,7 +65,6 @@ pub fn status(project: &Project, svc: &Service, windows: &Windows) -> ServiceSta
         id: svc.id.clone(),
         state: ServiceState::Stopped,
         healthy: false,
-        pid: None,
         port: svc.health.as_ref().and_then(Health::port),
         started_at: None,
         restart_count: 0,
@@ -79,7 +78,6 @@ pub fn status(project: &Project, svc: &Service, windows: &Windows) -> ServiceSta
     let r = &w.report;
     st.state = r.state;
     st.healthy = r.healthy;
-    st.pid = r.pid;
     st.started_at = r.started;
     st.restart_count = r.restarts;
     st.last_exit_code = r.exit;
@@ -92,7 +90,8 @@ pub fn status(project: &Project, svc: &Service, windows: &Windows) -> ServiceSta
     {
         st.state = ServiceState::Crashed;
         st.healthy = false;
-        st.pid = None;
+        // The code is from an earlier exit that was restarted, not from this crash.
+        st.last_exit_code = None;
         st.message = Some("worker exited unexpectedly".into());
     }
     st
@@ -264,18 +263,22 @@ mod tests {
 
         let live = win(4, false, "backend", ServiceState::Running, |w| {
             w.report.healthy = true;
-            w.report.pid = Some(77);
             w.report.restarts = 2;
         });
         let st = status(p, s, &windows(vec![win(3, true, "backend", ServiceState::Crashed, |_| {}), live]));
-        assert_eq!((st.state, st.healthy, st.pid, st.restart_count), (ServiceState::Running, true, Some(77), 2));
+        assert_eq!((st.state, st.healthy, st.restart_count), (ServiceState::Running, true, 2));
 
-        let crashed = win(5, true, "backend", ServiceState::Crashed, |w| w.report.msg = Some("crashed 5× in 5m".into()));
+        let crashed = win(5, true, "backend", ServiceState::Crashed, |w| {
+            w.report.msg = Some("crashed 5× in 5m".into());
+            w.report.exit = Some(3);
+        });
         let st = status(p, s, &windows(vec![crashed]));
-        assert_eq!((st.state, st.message.as_deref()), (ServiceState::Crashed, Some("crashed 5× in 5m")));
+        assert_eq!((st.state, st.message.as_deref(), st.last_exit_code), (ServiceState::Crashed, Some("crashed 5× in 5m"), Some(3)));
 
-        let st = status(p, s, &windows(vec![win(6, true, "backend", ServiceState::Running, |_| {})]));
+        // A worker that died without publishing an end has no exit code of its own.
+        let st = status(p, s, &windows(vec![win(6, true, "backend", ServiceState::Running, |w| w.report.exit = Some(3))]));
         assert_eq!((st.state, st.message.as_deref()), (ServiceState::Crashed, Some("worker exited unexpectedly")));
+        assert_eq!(st.last_exit_code, None);
 
         assert_eq!(status(p, s, &windows(vec![win(7, false, "postgres", ServiceState::Running, |_| {})])).state, ServiceState::Stopped);
     }

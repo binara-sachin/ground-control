@@ -311,7 +311,7 @@ The text-based checks (blocked commands, `--remote`) are **seatbelts, not guaran
 
 ## 10. Interface
 
-The TUI is the only interface. The mockups shared during the interview set the **design language**; they are a reference, not a layout to copy.
+The TUI is the only interface. §10.1 sets its **design language**: a look and a set of rules, not a fixed layout.
 
 ### 10.1 Design language
 
@@ -319,11 +319,11 @@ The TUI is the only interface. The mockups shared during the interview set the *
 - **Panes:** bordered panes with the title set into the top border. The focused pane has a thick accent-coloured border; the others have a thin dim one. A selected row is also marked with `▶`.
 - **Colour roles**, defined once as theme tokens in `src/tui/theme.rs`, the only place a colour is named (captured output keeps the colours the program wrote): accent (amber), success (green), warning (amber), danger (red), muted text, and selection background. Status is never shown by colour alone; it always has a word or symbol as well (`OK`, `FAIL`, `WAIT`, `●`, `×`, `○`).
 - **Protected things are marked consistently:** a protected badge next to pipelines and environments, and a striped accent on approval banners and dialogs.
-- **Layout correctness** (the mockups showed text drawn over other text, which must not happen):
+- **Layout correctness** (text must never be drawn over other text):
   - Columns have fixed or min/max widths, and overflow is truncated with `…`.
   - Width is measured in display cells (`unicode-width`), so wide characters such as the ⛅ wrangler prints take two cells.
   - Nothing is ever drawn on top of other text.
-  - Below 100×28 cells the TUI shows a "terminal too small" message instead of a broken layout.
+  - Below 100×28 cells the TUI shows a "terminal too small" message instead of a broken layout. Only `q` and `ctrl+c` respond until the terminal is larger again.
 
 ### 10.2 Global keys
 
@@ -345,7 +345,7 @@ The TUI is the only interface. The mockups shared during the interview set the *
 
 | Screen | Contents |
 |---|---|
-| **Dashboard** | Full-width bands, top to bottom. A one-line approval banner, only when an approval waits (project and pipeline, run id, environment, message, expiry, "review"). **Projects:** branch, uncommitted changes, ahead/behind (relative to the last fetch; never fetched automatically), service summary. **Runs** that still have a window: status, id, environment, commit, duration, start time. Then the selected project's **services** (each service and group with status, port and uptime) beside the selected service's **output** (last 50 lines). `tab` / `shift+tab` move focus banner → projects → runs → services (the banner only when present); the focused pane has a thick border. Keys: `s` start/stop and `r` restart the selected service or group, `l` shows its full output (all three act on it whichever pane has focus); `enter` opens the selection (the banner opens the run view). |
+| **Dashboard** | Full-width bands, top to bottom. A one-line approval banner, only when an approval waits (project and pipeline, run id, environment, message, expiry, "review"). **Projects:** branch, uncommitted changes, ahead/behind (relative to the last fetch; never fetched automatically), service summary. **Runs** that still have a window: status, id, environment, commit, duration, start time. Then the selected project's **services** (each service and group with status, port and uptime; a crashed service shows its exit code, as `crashed exit 1`) beside the selected service's **output** (last 50 lines). `tab` / `shift+tab` move focus banner → projects → runs → services (the banner only when present); the focused pane has a thick border. Keys, with the services pane focused: `s` start/stop and `r` restart the selected service or group, `l` shows its full output (the bottom bar shows them only then, as on the Project screen); `enter` opens the selection (the banner opens the run view). |
 | **Project** | Header: path, whether `origin` matches, branch, commit, tree state, ahead/behind, and the run in progress. A **pipelines** pane with protected badges, the chosen environment and status hints (for example "1 waiting"), and a **services** pane; `tab` switches between them. A detail panel for the selected pipeline shows its steps, inputs, destructive warning and its latest run that still has a window. Keys, pipelines: `enter` run dialog, `d` dry run, `e` next environment. Keys, services: `s` start/stop, `r` restart, `enter` / `l` full output. |
 | **Run dialog** | Titled `run <project>/<pipeline>`, with ` on <env>` when it has an environment; for protected runs it is the confirmation dialog. Rows for environment (changed with `←→` or `ctrl+e` when the pipeline has several), branch and commit. Dirty and unpushed warnings, each with the note that the run view will show the run that way. The inputs, each with a live pattern check. The pipeline's destructive warning, and the step outline showing where it will stop for approval. An error row and the buttons (start run, dry run, cancel) are always visible; when the dialog is too tall the outline, then the warnings, then other inputs give way. The bottom bar lists the keys for the focused field. Keys: `enter` start, `ctrl+d` dry run, `esc` cancel. |
 | **Run view** | Header: pipeline and run id, status, environment, branch and commit, tree state (`clean, pushed`, `dirty`, `unpushed`), and elapsed time. On the left, a **steps** pane (status, exit code and duration per step, then the selected step's command and working directory) over an **outputs · inputs** pane. On the right, the selected step's **output**: live terminal output with follow mode. When an approval waits, an approval panel with the message and expiry time. Keys: `↑↓` select a step, `f` follow, `pgup`/`pgdn` `g`/`G` `←→` scroll and pan, `y` copy the command, `Y` copy the output (colour codes stripped), `a` approve (with a confirm for protected runs), `x` reject, `c` cancel the run. |
@@ -391,13 +391,13 @@ Once a second the engine lists the windows and turns changes into events; git st
 
 | Event | Meaning |
 |---|---|
-| `Run`, `Step`, `Approval`, `Output` | A run's summary, a step, an approval or a step output changed |
+| `Run`, `Step`, `Approval`, `Output` | A run's summary, a step, an approval or a value a step wrote to `$GC_OUTPUT` changed |
 | `Service` | A service's status changed |
 | `Git` | A project's git status changed |
 | `Projects` | The project list changed shape (a config reload or a run opening or closing); call `projects()` again |
 | `Config` | The config status changed |
-| `Log` | A followed step's output so far |
-| `ServiceLog` | A followed service's whole output, which replaces what was shown |
+| `StepOutput` | A followed step's output so far |
+| `ServiceOutput` | A followed service's whole output, which replaces what was shown |
 
 ## 11. Where state lives
 

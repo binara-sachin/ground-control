@@ -30,6 +30,8 @@ pub struct TextOverlay {
     pub view: TermView,
     /// For output fed live: the service whose events extend this view.
     pub follow_service: Option<(String, String)>,
+    /// The run dialog this view was opened from; closing the view returns to it.
+    pub dialog: Option<Box<dialog::RunDialog>>,
 }
 
 pub struct Confirm {
@@ -71,7 +73,7 @@ pub fn key(app: &mut App, overlay: Overlay, k: KeyEvent) -> Option<Overlay> {
         Overlay::Text(mut t) => {
             let page = 20;
             match k.code {
-                KeyCode::Esc | KeyCode::Char('q') => return None,
+                KeyCode::Esc | KeyCode::Char('q') => return t.dialog.take().map(Overlay::Dialog),
                 KeyCode::Up | KeyCode::Char('k') => t.view.scroll_up(1),
                 KeyCode::Down | KeyCode::Char('j') => t.view.scroll_down(1),
                 KeyCode::PageUp | KeyCode::Char('b') => t.view.scroll_up(page),
@@ -109,6 +111,7 @@ pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
         Some(Overlay::Dialog(d)) => dialog::draw(d, f, area, &app.hits),
         Some(Overlay::Text(t)) => {
             clear(f, area);
+            t.view.fit(area.height.saturating_sub(2));
             let mut title = vec![title_text(t.title.clone())];
             if !t.subtitle.is_empty() {
                 title.push(title_muted(format!("  {}", t.subtitle)));
@@ -129,7 +132,7 @@ pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
             let w = 90.min(area.width.saturating_sub(4));
             let h = c.lines.len() as u16 + 6;
             let r = centered(area, w, h);
-            clear(f, r);
+            clear_band(f, area, r);
             let inner = framed_alert(f, r, &c.title, true);
             // The button row is the last line: " y confirm" then "n / esc cancel".
             let row = Rect { y: inner.y + c.lines.len() as u16 + 2, height: 1, ..inner };
@@ -186,10 +189,9 @@ impl HelpScreen {
                 ("tab / shift+tab", "next / previous pane"),
                 ("↑↓ / j k", "move the selection in the focused pane"),
                 ("enter", "open the selection (approval banner: review the run)"),
-                ("s", "start/stop the selected service or group"),
-                ("r", "restart it"),
-                ("l", "show its full output"),
-                ("", "s r l act on it whichever pane has focus"),
+                ("s", "services pane: start/stop the selected service or group"),
+                ("r", "services pane: restart it"),
+                ("l", "services pane: show its full output"),
                 ("↑ ↓ column", "commits ahead/behind as of the last fetch (never fetched)"),
             ],
             HelpScreen::Project => &[
@@ -253,7 +255,7 @@ fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap, screen: HelpScreen) {
     let lines = help_lines(screen);
     let h = (lines.len() as u16 + 2).min(area.height);
     let r = centered(area, 84, h);
-    clear(f, r);
+    clear_band(f, area, r);
     hits.add(r, Target::HelpPanel, 0);
     let inner = framed(f, r, vec![title_text("help"), title_muted(format!("  {}", screen.name()))], true);
     f.render_widget(para(lines), inner);

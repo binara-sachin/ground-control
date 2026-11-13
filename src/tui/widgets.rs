@@ -254,6 +254,12 @@ pub fn clear(f: &mut Frame, r: Rect) {
     f.render_widget(Block::default().style(theme::base()), r);
 }
 
+/// Clears the rows of `area` that a box `r` occupies, across its full width,
+/// so nothing of the screen behind shows beside the box (§10.1).
+pub fn clear_band(f: &mut Frame, area: Rect, r: Rect) {
+    clear(f, Rect { x: area.x, width: area.width, ..r });
+}
+
 pub fn para(lines: Vec<Line<'static>>) -> Paragraph<'static> {
     Paragraph::new(lines).style(theme::base())
 }
@@ -270,6 +276,12 @@ pub fn key_hints(hints: &[(&str, &str)]) -> Vec<Span<'static>> {
     }
     out.push(Span::raw(" "));
     out
+}
+
+/// The most `hints` that fit in `avail` cells, dropped whole from the right.
+pub fn fit_key_hints(hints: &[(&str, &str)], avail: usize) -> Vec<Span<'static>> {
+    let text_w = |spans: &[Span<'static>]| spans.iter().map(|s| width(&s.content)).sum::<usize>();
+    (0..=hints.len()).rev().map(|n| key_hints(&hints[..n])).find(|spans| text_w(spans) <= avail).unwrap_or_default()
 }
 
 // ── status words ──
@@ -318,7 +330,8 @@ pub fn service_word(s: &ServiceStatus) -> (&'static str, String, Style) {
         ServiceState::Starting => ("◐", "starting".into(), theme::warning()),
         ServiceState::Restarting => ("◐", format!("restarting ({})", s.restart_count), theme::warning()),
         ServiceState::Stopping => ("◐", "stopping".into(), theme::warning()),
-        ServiceState::Crashed => ("×", "crashed".into(), theme::danger()),
+        // "crashed exit 255" is 16 cells, the width of the status column.
+        ServiceState::Crashed => ("×", s.last_exit_code.map_or("crashed".into(), |c| format!("crashed exit {c}")), theme::danger()),
         ServiceState::Stopped => ("○", "stopped".into(), theme::muted()),
     }
 }

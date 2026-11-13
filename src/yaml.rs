@@ -21,10 +21,8 @@ impl From<Marker> for Pos {
 #[derive(Debug, Clone)]
 pub enum Value {
     Null,
-    /// A scalar; `quoted` is true when it was written in quotes or as a block.
     Scalar {
         text: String,
-        quoted: bool,
     },
     Seq(Vec<Node>),
     /// Entries in source order. Duplicate keys are reported by the builder.
@@ -55,10 +53,6 @@ impl Node {
             Value::Scalar { text, .. } => Some(text),
             _ => None,
         }
-    }
-
-    pub fn is_null(&self) -> bool {
-        matches!(self.value, Value::Null)
     }
 
     pub fn kind(&self) -> &'static str {
@@ -127,7 +121,7 @@ impl MarkedEventReceiver for Builder {
                 let quoted = !matches!(style, TScalarStyle::Plain);
                 let is_null =
                     !quoted && tag.is_none() && (text.is_empty() || text == "~" || text == "null" || text == "Null" || text == "NULL");
-                let value = if is_null { Value::Null } else { Value::Scalar { text, quoted } };
+                let value = if is_null { Value::Null } else { Value::Scalar { text } };
                 self.push_node(Node { value, pos });
             }
             Event::Alias(_) => {
@@ -192,11 +186,11 @@ mod tests {
     }
 
     #[test]
-    fn quoted_flags() {
-        let n = parse("a: \"x\"\nb: y\nc:\n").unwrap();
+    fn only_plain_untagged_nulls_are_null() {
+        let n = parse("a: \"null\"\nb: y\nc:\nd: ~\n").unwrap();
         let Value::Map(e) = &n.value else { panic!() };
-        assert!(matches!(e[0].1.value, Value::Scalar { quoted: true, .. }));
-        assert!(matches!(e[1].1.value, Value::Scalar { quoted: false, .. }));
-        assert!(e[2].1.is_null());
+        assert!(matches!(e[0].1.value, Value::Scalar { .. }), "a quoted null is text");
+        assert!(matches!(e[1].1.value, Value::Scalar { .. }));
+        assert!(matches!(e[2].1.value, Value::Null) && matches!(e[3].1.value, Value::Null));
     }
 }

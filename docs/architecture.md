@@ -62,6 +62,9 @@ you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI + engine) �
   without a shell.
 - Windows set `remain-on-exit`, so a crashed service or failed run keeps its
   last output on screen.
+  They also blank `remain-on-exit-format`, so tmux's own `Pane is dead` line is
+  not written into the output (tmux before 3.5 ignores that option, and the
+  line is dropped from captures instead).
 - The session's `history-limit` is raised to 50,000 lines, since a window's
   scrollback is the only copy of its output. The window that creates the
   session keeps tmux's default (usually 2,000 lines), because it exists before

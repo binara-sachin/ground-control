@@ -35,10 +35,6 @@ impl Masker {
         Masker { secrets, re, carry: Vec::new() }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.secrets.is_empty()
-    }
-
     /// Masks a complete buffer (no streaming state).
     pub fn mask_all(&self, data: &[u8]) -> Vec<u8> {
         match &self.re {
@@ -105,7 +101,6 @@ mod tests {
     #[test]
     fn ignores_short_values() {
         let m = Masker::new(["abc", "12345"]);
-        assert!(m.is_empty());
         assert_eq!(m.mask_all(b"abc 12345"), b"abc 12345");
     }
 

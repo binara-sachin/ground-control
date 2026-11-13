@@ -68,6 +68,7 @@ pub enum Event {
         run_id: i64,
         key: String,
         value: String,
+        step_index: Option<usize>,
     },
     Service(ServiceStatus),
     Git {
@@ -77,9 +78,9 @@ pub enum Event {
     /// The project list changed shape (config reload); call `Engine::projects` again.
     Projects,
     Config(ConfigStatus),
-    Log(LogChunk),
+    StepOutput(OutputChunk),
     /// The service window's whole output, which replaces what was shown.
-    ServiceLog {
+    ServiceOutput {
         project: String,
         service: String,
         data: String,
@@ -217,7 +218,6 @@ pub struct ServiceStatus {
     pub id: String,
     pub state: ServiceState,
     pub healthy: bool,
-    pub pid: Option<i32>,
     pub port: Option<u16>,
     pub started_at: Option<Timestamp>,
     pub restart_count: u32,
@@ -408,7 +408,7 @@ pub struct RunList {
 }
 
 #[derive(Debug, Clone)]
-pub struct LogChunk {
+pub struct OutputChunk {
     pub run: i64,
     pub step: usize,
     /// The step's whole output so far, as captured from the run's pane

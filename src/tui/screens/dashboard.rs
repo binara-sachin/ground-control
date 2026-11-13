@@ -2,6 +2,8 @@
 //! bands, then the selected project's services beside the selected service's
 //! output.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -12,10 +14,10 @@ use super::super::mouse::Target;
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
-use super::services::{control, open_full_log, row_service, service_lines, service_rows, service_summary};
+use super::services::{SvcRow, control, open_full_output, row_service, service_lines, service_rows, service_summary};
 use crate::model::*;
 
-pub const LOG_LINES: usize = 50;
+pub const OUTPUT_LINES: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -30,8 +32,14 @@ pub struct DashState {
     pub project_sel: usize,
     pub service_sel: usize,
     pub run_sel: usize,
-    pub log: TermView,
-    pub log_target: Option<(String, String)>,
+    /// First visible row of each list. Drawing moves it only as far as needed
+    /// to keep the selection visible, so a click on a visible row never makes
+    /// the list jump. A `Cell` because drawing only borrows the app.
+    pub project_top: Cell<usize>,
+    pub service_top: Cell<usize>,
+    pub run_top: Cell<usize>,
+    pub output: TermView,
+    pub output_target: Option<(String, String)>,
     pub focus_banner_on_new: bool,
 }
 
@@ -42,8 +50,11 @@ impl Default for DashState {
             project_sel: 0,
             service_sel: 0,
             run_sel: 0,
-            log: TermView::new(),
-            log_target: None,
+            project_top: Cell::new(0),
+            service_top: Cell::new(0),
+            run_top: Cell::new(0),
+            output: TermView::new(),
+            output_target: None,
             focus_banner_on_new: true,
         }
     }
@@ -55,7 +66,7 @@ fn selected_project(app: &App) -> Option<&ProjectInfo> {
 
 /// The service whose output the output pane shows: the selected service, or
 /// the first member of the selected group.
-fn log_service(app: &App) -> Option<(String, String)> {
+fn output_service(app: &App) -> Option<(String, String)> {
     let p = selected_project(app)?;
     let rows = service_rows(p);
     let row = rows.get(app.dash.service_sel.min(rows.len().saturating_sub(1)))?;
@@ -63,15 +74,15 @@ fn log_service(app: &App) -> Option<(String, String)> {
 }
 
 /// Loads the last lines of the selected service's output when the selection changes.
-pub fn load_log(app: &mut App, force: bool) {
-    let target = log_service(app);
-    if target == app.dash.log_target && !force {
+pub fn load_output(app: &mut App, force: bool) {
+    let target = output_service(app);
+    if target == app.dash.output_target && !force {
         return;
     }
-    app.dash.log_target = target.clone();
-    app.dash.log.reset();
+    app.dash.output_target = target.clone();
+    app.dash.output.reset();
     if let Some((project, service)) = target {
-        app.dash.log.loading = true;
+        app.dash.output.loading = true;
         app.call(move |e| async move {
             let result = e.service_output(&project, &service).await;
             Reply::ServiceOutput { project, service, result }
@@ -122,9 +133,9 @@ pub fn key(app: &mut App, k: KeyEvent) {
                     }
                 }
                 Focus::Services => step(&mut app.dash.service_sel, svc_len),
-                Focus::Runs => step(&mut app.dash.run_sel, app.recent.len()),
+                Focus::Runs => step(&mut app.dash.run_sel, app.runs.len()),
             }
-            load_log(app, false);
+            load_output(app, false);
         }
         KeyCode::Enter => match app.dash.focus {
             Focus::Banner => {
@@ -140,18 +151,18 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 }
             }
             Focus::Services => {
-                if let Some((p, s)) = log_service(app) {
-                    open_full_log(app, &p, &s);
+                if let Some((p, s)) = output_service(app) {
+                    open_full_output(app, &p, &s);
                 }
             }
             Focus::Runs => {
-                if let Some(r) = app.recent.get(app.dash.run_sel) {
+                if let Some(r) = app.runs.get(app.dash.run_sel) {
                     let id = r.id;
                     app.open_run(id);
                 }
             }
         },
-        KeyCode::Char('s') | KeyCode::Char('r') => {
+        KeyCode::Char('s') | KeyCode::Char('r') if app.dash.focus == Focus::Services => {
             let Some(p) = selected_project(app).cloned() else { return };
             let rows = service_rows(&p);
             if let Some(row) = rows.get(app.dash.service_sel.min(rows.len().saturating_sub(1))) {
@@ -160,9 +171,9 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 app.toast(format!("{} has no services", p.id), Level::Info);
             }
         }
-        KeyCode::Char('l') => {
-            if let Some((p, s)) = log_service(app) {
-                open_full_log(app, &p, &s);
+        KeyCode::Char('l') if app.dash.focus == Focus::Services => {
+            if let Some((p, s)) = output_service(app) {
+                open_full_output(app, &p, &s);
             }
         }
         _ => {}
@@ -187,7 +198,7 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
                 app.dash.project_sel = row;
                 app.dash.service_sel = 0;
             }
-            load_log(app, false);
+            load_output(app, false);
             true
         }
         Target::DashServices => {
@@ -197,12 +208,12 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
                 return false;
             }
             app.dash.service_sel = row;
-            load_log(app, false);
+            load_output(app, false);
             true
         }
         Target::DashRuns => {
             app.dash.focus = Focus::Runs;
-            if row >= app.recent.len() {
+            if row >= app.runs.len() {
                 return false;
             }
             app.dash.run_sel = row;
@@ -214,7 +225,25 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
 
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let enter = if app.dash.focus == Focus::Banner { ("enter", "review") } else { ("enter", "open") };
-    vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
+    if app.dash.focus == Focus::Services {
+        vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
+    } else {
+        vec![("↑↓", "select"), enter, ("tab", "next pane")]
+    }
+}
+
+/// The first visible row of a list of `len` rows showing `visible` at a time:
+/// `top` as it was, moved only if the selection would be out of view.
+fn keep_visible(top: &Cell<usize>, sel: usize, visible: usize, len: usize) -> usize {
+    let visible = visible.max(1);
+    let mut t = top.get().min(len.saturating_sub(visible));
+    if sel < t {
+        t = sel;
+    } else if sel >= t + visible {
+        t = sel + 1 - visible;
+    }
+    top.set(t);
+    t
 }
 
 const BANNER_H: u16 = 3;
@@ -226,18 +255,18 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let banner_h = if app.waiting.is_empty() { 0 } else { BANNER_H.min(area.height) };
     let rest = area.height - banner_h;
     let projects_h = (app.projects.len().max(1) as u16 + 3).min(rest.saturating_sub(RUNS_MIN_H + SERVICES_MIN_H));
-    let runs_h = (app.recent.len() as u16 + 2).clamp(RUNS_MIN_H, RUNS_MAX_H).min(rest.saturating_sub(projects_h + SERVICES_MIN_H));
+    let runs_h = (app.runs.len() as u16 + 2).clamp(RUNS_MIN_H, RUNS_MAX_H).min(rest.saturating_sub(projects_h + SERVICES_MIN_H));
     let [banner, projects, runs, bottom] =
         Layout::vertical([Constraint::Length(banner_h), Constraint::Length(projects_h), Constraint::Length(runs_h), Constraint::Min(0)])
             .areas(area);
-    let [services, log] = Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(bottom);
+    let [services, output] = Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(bottom);
     if banner_h > 0 {
         draw_banner(app, f, banner);
     }
     draw_projects(app, f, projects);
     draw_runs(app, f, runs);
     draw_services(app, f, services);
-    draw_log(app, f, log);
+    draw_output(app, f, output);
 }
 
 fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
@@ -246,7 +275,8 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed_alert(f, area, &title, true);
     app.hits.add(area, Target::DashBanner, 0);
     let a = &app.waiting[0];
-    let w = inner.width as usize;
+    // One cell is left free before the right border.
+    let w = (inner.width as usize).saturating_sub(1);
     let mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
     let mut head = vec![
         mark,
@@ -282,7 +312,7 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed(f, area, vec![title_text("projects")], focused);
     let w = inner.width;
     let visible = (inner.height as usize).saturating_sub(1);
-    let start = app.dash.project_sel.saturating_sub(visible.saturating_sub(1));
+    let start = keep_visible(&app.dash.project_top, app.dash.project_sel, visible, app.projects.len());
     // Project rows start below the column header.
     app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, start);
     let mut lines = vec![row(
@@ -338,8 +368,9 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
         return;
     };
     let inner = framed(f, area, vec![title_text(p.id.clone()), title_muted(" services")], focused);
-    let sel = app.dash.service_sel.min(service_rows(p).len().saturating_sub(1));
-    let start = sel.saturating_sub((inner.height as usize).saturating_sub(1));
+    let len = service_rows(p).len();
+    let sel = app.dash.service_sel.min(len.saturating_sub(1));
+    let start = keep_visible(&app.dash.service_top, sel, inner.height as usize, len);
     app.hits.add(inner, Target::DashServices, start);
     let lines = service_lines(p, sel, focused, inner.width).into_iter().skip(start).collect();
     f.render_widget(para(lines), inner);
@@ -350,13 +381,13 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed(f, area, vec![title_text("runs")], focused);
     let w = inner.width;
     let mut lines = Vec::new();
-    if app.recent.is_empty() {
+    if app.runs.is_empty() {
         lines.push(Line::styled(" no open runs — open a project and press enter on a pipeline", theme::muted()));
     }
     let visible = inner.height as usize;
-    let start = app.dash.run_sel.saturating_sub(visible.saturating_sub(1));
+    let start = keep_visible(&app.dash.run_top, app.dash.run_sel, visible, app.runs.len());
     app.hits.add(inner, Target::DashRuns, start);
-    for (i, r) in app.recent.iter().enumerate().skip(start).take(visible) {
+    for (i, r) in app.runs.iter().enumerate().skip(start).take(visible) {
         let (word, style) = run_status_word(r.status);
         let mut name = format!("{}/{}", r.project, r.pipeline);
         if r.dirty {
@@ -387,21 +418,45 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(para(lines), inner);
 }
 
-fn draw_log(app: &mut App, f: &mut Frame, area: Rect) {
-    let title = match &app.dash.log_target {
-        Some((_, s)) => vec![title_text(format!("{s} output")), title_muted(format!("  last {LOG_LINES} lines"))],
-        None => vec![title_text("output")],
-    };
+/// The output pane's title. With a group selected it says which member's
+/// output this is, and why that one: it crashed or is unhealthy.
+fn output_title(app: &App) -> Vec<ratatui::text::Span<'static>> {
+    let Some((_, s)) = &app.dash.output_target else { return vec![title_text("output")] };
+    let mut title = Vec::new();
+    let group = selected_project(app).and_then(|p| {
+        let rows = service_rows(p);
+        match rows.get(app.dash.service_sel.min(rows.len().saturating_sub(1)))? {
+            SvcRow::Group(g) => Some((g.clone(), p.services.iter().find(|x| &x.id == s).map(|x| x.state))),
+            SvcRow::Service(_) => None,
+        }
+    });
+    match group {
+        Some((g, state)) => {
+            title.push(title_text(format!("{g} › {s} output")));
+            match state {
+                Some(ServiceState::Crashed) => title.push(title_muted("  crashed")),
+                Some(ServiceState::Unhealthy) => title.push(title_muted("  unhealthy")),
+                _ => {}
+            }
+        }
+        None => title.push(title_text(format!("{s} output"))),
+    }
+    title.push(title_muted(format!("  last {OUTPUT_LINES} lines")));
+    title
+}
+
+fn draw_output(app: &mut App, f: &mut Frame, area: Rect) {
+    let title = output_title(app);
     let inner = framed(f, area, title, false);
-    app.hits.add(inner, Target::DashLog, 0);
-    if app.dash.log_target.is_none() {
+    app.hits.add(inner, Target::DashOutput, 0);
+    if app.dash.output_target.is_none() {
         f.render_widget(para(vec![Line::styled(" select a service to see its output", theme::muted())]), inner);
         return;
     }
-    if app.dash.log.is_empty() {
-        let msg = if app.dash.log.loading { " loading…" } else { " no output yet" };
+    if app.dash.output.is_empty() {
+        let msg = if app.dash.output.loading { " loading…" } else { " no output yet" };
         f.render_widget(para(vec![Line::styled(msg, theme::muted())]), inner);
         return;
     }
-    app.dash.log.render(inner, f.buffer_mut());
+    app.dash.output.render(inner, f.buffer_mut());
 }

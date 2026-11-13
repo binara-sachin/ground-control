@@ -33,12 +33,12 @@ use widgets::*;
 const MIN_WIDTH: u16 = 100;
 const MIN_HEIGHT: u16 = 28;
 
-pub fn run() -> anyhow::Result<()> {
+pub fn run() -> std::io::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     rt.block_on(main_loop())
 }
 
-async fn main_loop() -> anyhow::Result<()> {
+async fn main_loop() -> std::io::Result<()> {
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
     // A panic must not leave the terminal reporting mouse events.
@@ -72,7 +72,7 @@ async fn main_loop() -> anyhow::Result<()> {
     app.start();
     let result = loop {
         if let Err(e) = terminal.draw(|f| draw(&mut app, f)) {
-            break Err(e.into());
+            break Err(e);
         }
         let Some(msg) = rx.recv().await else { break Ok(()) };
         app.update(msg);
@@ -96,7 +96,8 @@ fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     app.hits.clear();
     f.render_widget(Block::default().style(theme::base()), area);
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+    app.too_small = area.width < MIN_WIDTH || area.height < MIN_HEIGHT;
+    if app.too_small {
         let msg = vec![
             Line::styled("terminal too small", theme::warning().add_modifier(Modifier::BOLD)),
             Line::styled(format!("{}×{} — GroundControl needs at least {MIN_WIDTH}×{MIN_HEIGHT}", area.width, area.height), theme::muted()),
@@ -253,7 +254,7 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
     });
     let tw = toast.as_ref().map_or(0, |(_, tw)| *tw);
     let [l, t, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(tw as u16), Constraint::Length(rw as u16)]).areas(area);
-    f.render_widget(ratatui::widgets::Paragraph::new(clip_line(key_hints(&hints), l.width as usize)), l);
+    f.render_widget(ratatui::widgets::Paragraph::new(Line::from(fit_key_hints(&hints, l.width as usize))), l);
     if let Some((line, _)) = toast {
         f.render_widget(ratatui::widgets::Paragraph::new(line), t);
     }

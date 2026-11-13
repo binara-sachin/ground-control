@@ -4,6 +4,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::app::Reply;
 use super::*;
 use crate::model::*;
 
@@ -158,10 +159,11 @@ fn the_text_overlay_scrolls_with_the_wheel() {
     let mut view = term_view::TermView::new();
     view.feed(&"line\r\n".repeat(200));
     app.overlay = Some(Overlay::Text(Box::new(screens::overlay::TextOverlay {
-        title: "log".into(),
+        title: "output".into(),
         subtitle: String::new(),
         view,
         follow_service: None,
+        dialog: None,
     })));
     redraw(&mut app, &mut t);
     let at = cell_of(&app, Target::TextOverlay, 0, true);
@@ -254,7 +256,6 @@ fn service(id: &str, state: ServiceState) -> ServiceStatus {
         id: id.into(),
         state,
         healthy: true,
-        pid: None,
         port: None,
         started_at: None,
         restart_count: 0,
@@ -302,7 +303,7 @@ fn busy_app(w: u16, h: u16) -> (App, Terminal<TestBackend>) {
     let (mut app, _) = app();
     app.projects[0].git = Some(git_status());
     app.projects[0].services = vec![service("web", ServiceState::Running), service("db", ServiceState::Crashed)];
-    app.recent = vec![run(8, "alpha", "deploy-everything", false), run(7, "beta", "gated", true)];
+    app.runs = vec![run(8, "alpha", "deploy-everything", false), run(7, "beta", "gated", true)];
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| draw(&mut app, f)).unwrap();
     (app, term)
@@ -359,11 +360,12 @@ fn the_banner_is_one_line_with_the_message_and_the_review_key() {
     assert_eq!(symbol(&term, 0, y + 3), "┏", "the projects pane follows at once");
     let line = screen_row(&term, y + 1);
     assert!(line.contains("\"Proceed with the gated change?\"") && line.contains("enter review"), "{line}");
+    assert!(line.ends_with("enter review ║"), "one cell between the text and the border: {line}");
     app.waiting = vec![approval(&"⛅ a very long approval message ".repeat(6)), approval("two")];
     redraw(&mut app, &mut term);
     let line = screen_row(&term, y + 1);
     assert!(line.contains("alpha/gated #7") && line.contains("env prod") && line.contains("(+1 more)"), "{line}");
-    assert!(line.contains('…') && line.contains("enter review"), "{line}");
+    assert!(line.contains('…') && line.ends_with("enter review ║"), "{line}");
 }
 
 #[test]
@@ -388,7 +390,7 @@ fn clicking_a_row_in_each_list_selects_it() {
 fn long_lists_scroll_with_the_selection_and_clicks_follow() {
     let (mut app, mut term) = busy_app(100, 28);
     app.projects = (0..30).map(|i| project(&format!("p{i:02}"))).collect();
-    app.recent = (0..8).map(|i| run(i, "alpha", "deploy", false)).collect();
+    app.runs = (0..8).map(|i| run(i, "alpha", "deploy", false)).collect();
     app.projects[0].services = (0..30).map(|i| service(&format!("s{i:02}"), ServiceState::Running)).collect();
     app.dash.project_sel = 29;
     app.dash.run_sel = 7;
@@ -563,6 +565,20 @@ fn the_step_output_keeps_the_full_body_height_and_the_steps_never_clip() {
             }
         }
     }
+}
+
+#[test]
+fn an_output_event_is_labelled_with_the_step_that_wrote_it() {
+    // Step 2 is the active one when the event for step 0's output arrives.
+    let mut d = run_detail(4, 0, 0);
+    d.steps[0].status = StepStatus::Succeeded;
+    d.steps[2].status = StepStatus::Running;
+    let (mut app, mut term) = run_app(d, 100, 28);
+    app.update(Msg::Event(crate::model::Event::Output { run_id: 7, key: "late".into(), value: "v".into(), step_index: Some(0) }));
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains("late from step 1"), "{screen}");
+    assert!(!screen.contains("late from step 3"), "{screen}");
 }
 
 #[test]
@@ -774,7 +790,7 @@ fn help_fits_on_every_screen_and_lists_ctrl_c() {
             let screen_text = screen_text(&term);
             assert!(screen_text.contains("ctrl+c") && screen_text.contains("everywhere"), "{screen:?}");
             let own = match screen {
-                HelpScreen::Dashboard => "whichever pane has focus",
+                HelpScreen::Dashboard => "services pane: start/stop the selected service or group",
                 HelpScreen::Project => "open the run dialog",
                 HelpScreen::Run => "approve (asks first if protected)",
                 HelpScreen::Health => "re-check tools, tmux, Docker and config now",
@@ -843,6 +859,71 @@ fn dialog_project(inputs: usize, long: bool) -> (ProjectInfo, PipelineInfo) {
         waiting: 0,
     };
     (p, pl)
+}
+
+fn dry_run_plan(steps: usize) -> DryRunPlan {
+    DryRunPlan {
+        project: "alpha".into(),
+        pipeline: "deploy".into(),
+        env: None,
+        protected: false,
+        inputs: Default::default(),
+        steps: (0..steps)
+            .map(|i| DryRunStep {
+                index: i,
+                kind: StepKindName::Run,
+                label: format!("step-{i}"),
+                command: format!("echo {i}"),
+                cwd: "/tmp".into(),
+                env_names: vec![],
+                timeout_secs: None,
+            })
+            .collect(),
+        blockers: vec![],
+    }
+}
+
+#[test]
+fn closing_the_dry_run_returns_to_the_dialog_as_it_was() {
+    let (mut app, mut term) = dialog_app(2, false, 100, 28);
+    for c in "v1".chars() {
+        app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+    }
+    app.update(Msg::Reply(Reply::DryRun(Ok(StartOutcome::DryRun(dry_run_plan(2))))));
+    redraw(&mut app, &mut term);
+    assert!(matches!(app.overlay, Some(Overlay::Text(_))));
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+    redraw(&mut app, &mut term);
+    let Some(Overlay::Dialog(d)) = &app.overlay else { panic!("the dialog is back") };
+    assert_eq!(d.fields[0].value, "v1");
+    assert!(!d.busy);
+    // A second Esc closes the dialog as before.
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn closing_a_dry_run_started_without_a_dialog_closes_the_overlay() {
+    let (mut app, _term) = app();
+    app.update(Msg::Reply(Reply::DryRun(Ok(StartOutcome::DryRun(dry_run_plan(2))))));
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))));
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn the_dry_run_plan_opens_on_its_first_line() {
+    for steps in [1, 3, 8, 20, 60] {
+        for (w, h) in [(100, 28), (120, 40)] {
+            let (mut app, mut term) = dialog_app(1, false, w, h);
+            app.update(Msg::Reply(Reply::DryRun(Ok(StartOutcome::DryRun(dry_run_plan(steps))))));
+            redraw(&mut app, &mut term);
+            let screen = screen_text(&term);
+            assert!(screen.contains("alpha/deploy"), "{steps} steps at {w}x{h}\n{screen}");
+            let lines: Vec<&str> = screen.lines().collect();
+            assert!(lines[2].starts_with("┃alpha/deploy"), "{steps} steps at {w}x{h}: first line is not on top\n{screen}");
+            assert!(!lines[1].contains("9223372036854775807"), "{steps} steps at {w}x{h}\n{screen}");
+        }
+    }
 }
 
 fn dialog_app(inputs: usize, long: bool, w: u16, h: u16) -> (App, Terminal<TestBackend>) {
@@ -1010,4 +1091,271 @@ fn the_dialog_hints_follow_the_focused_field_and_fit() {
     redraw(&mut app, &mut term);
     let bar = screen_row(&term, 27);
     assert!(bar.contains("space/←→ toggle  ↑↓/tab field  enter start run") && !bar.contains("ctrl+e"), "{bar}");
+}
+
+#[test]
+fn only_quit_works_while_the_terminal_is_too_small() {
+    let (mut app, mut term) = app();
+    // Hidden behind the message: nothing may act, open or navigate.
+    let mut small = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    redraw(&mut app, &mut small);
+    assert!(app.too_small);
+    let key = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(c, KeyModifiers::NONE))));
+    for c in ['2', '?', 's', 'a', 'c', 'r', 'l'] {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    app.update(Msg::Input(Event::Paste("x".into())));
+    click(&mut app, (5, 5));
+    assert!(matches!(app.top(), View::Dashboard) && app.overlay.is_none() && !app.quit, "nothing responded");
+    // Growing back restores the screen exactly as it was, and keys work again.
+    redraw(&mut app, &mut term);
+    assert!(!app.too_small);
+    key(&mut app, KeyCode::Char('?'));
+    assert!(matches!(app.overlay, Some(Overlay::Help)));
+    key(&mut app, KeyCode::Esc);
+    // `q` quits from the small screen, as the message says.
+    redraw(&mut app, &mut small);
+    key(&mut app, KeyCode::Char('q'));
+    assert!(app.quit);
+}
+
+#[test]
+fn ctrl_c_quits_while_the_terminal_is_too_small() {
+    let (mut app, _term) = app();
+    let mut small = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    redraw(&mut app, &mut small);
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))));
+    assert!(app.quit);
+}
+
+#[test]
+fn dashboard_service_keys_act_only_in_the_services_pane() {
+    // `alpha` has no services, so a service key that acts says so in a toast.
+    let (mut app, _t) = app();
+    let press = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+    for focus in [dashboard::Focus::Projects, dashboard::Focus::Runs] {
+        app.dash.focus = focus;
+        for c in ['s', 'r', 'l'] {
+            press(&mut app, c);
+        }
+        assert!(app.toast.is_none() && app.overlay.is_none(), "{focus:?}: the service keys must do nothing");
+        let hints: Vec<_> = dashboard::hints(&app).iter().map(|h| h.0).collect();
+        assert!(!hints.contains(&"s") && !hints.contains(&"r") && !hints.contains(&"l"), "{hints:?}");
+    }
+    app.dash.focus = dashboard::Focus::Services;
+    press(&mut app, 's');
+    assert!(app.toast.as_ref().is_some_and(|t| t.0.contains("alpha has no services")), "{:?}", app.toast);
+    let hints: Vec<_> = dashboard::hints(&app).iter().map(|h| h.0).collect();
+    assert!(hints.contains(&"s") && hints.contains(&"r") && hints.contains(&"l"), "{hints:?}");
+}
+
+#[test]
+fn a_crashed_service_shows_its_exit_code_within_the_status_column() {
+    let (mut app, mut term) = busy_app(100, 28);
+    for (code, want) in [(Some(1), "crashed exit 1"), (Some(255), "crashed exit 255"), (None, "crashed")] {
+        app.projects[0].services[1].last_exit_code = code;
+        redraw(&mut app, &mut term);
+        let line = row_at(&app, &term, Target::DashServices, 1);
+        assert!(line.contains(want), "{want}: {line}");
+        if code == Some(255) {
+            // The port and detail columns after it are not pushed out.
+            assert!(line.contains("crashed exit 255 "), "{line}");
+        }
+        if code.is_none() {
+            assert!(!line.contains("exit"), "{line}");
+        }
+    }
+}
+
+/// The index of the first list row on screen, read from the hit map.
+fn first_row_of(app: &App, target: Target) -> usize {
+    (0..64).find(|r| (0..60).any(|y| (0..200).any(|x| app.hits.at(x, y, false) == Some((target, *r))))).expect("a row is on screen")
+}
+
+#[test]
+fn clicking_a_visible_row_never_moves_a_scrolled_list() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.projects = (0..30).map(|i| project(&format!("p{i:02}"))).collect();
+    app.projects[0].services = (0..30).map(|i| service(&format!("s{i:02}"), ServiceState::Running)).collect();
+    app.runs = (0..30).map(|i| run(i, "alpha", "deploy", false)).collect();
+    for (target, focus) in [
+        (Target::DashProjects, dashboard::Focus::Projects),
+        (Target::DashServices, dashboard::Focus::Services),
+        (Target::DashRuns, dashboard::Focus::Runs),
+    ] {
+        // Selection at the bottom of a long list: the view scrolls to show it.
+        app.dash.project_sel = if target == Target::DashProjects { 29 } else { 0 };
+        app.dash.service_sel = if target == Target::DashServices { 29 } else { 0 };
+        app.dash.run_sel = if target == Target::DashRuns { 29 } else { 0 };
+        app.dash.focus = focus;
+        redraw(&mut app, &mut term);
+        let top = first_row_of(&app, target);
+        assert!(top > 0, "{target:?} scrolled to show the selection");
+        // Clicking the first visible row selects it and leaves the view where it was.
+        click_on(&mut app, target, top, false);
+        redraw(&mut app, &mut term);
+        assert_eq!(first_row_of(&app, target), top, "{target:?} jumped after a click");
+        // Moving the selection up past the top scrolls just enough to show it.
+        for _ in 0..2 {
+            app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))));
+        }
+        redraw(&mut app, &mut term);
+        assert_eq!(first_row_of(&app, target), top - 2, "{target:?}");
+    }
+}
+
+#[test]
+fn a_selected_group_names_the_member_whose_output_is_shown() {
+    let (mut app, mut term) = busy_app(100, 28);
+    app.projects[0].groups = vec![GroupInfo { id: "both".into(), members: vec!["web".into(), "db".into()] }];
+    app.dash.focus = dashboard::Focus::Services;
+    // Rows: the group first, then web and db.
+    app.dash.service_sel = 0;
+    dashboard::load_output(&mut app, true);
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains("both › db output  crashed"), "the crashed member is shown, and says why\n{screen}");
+    // A plain service keeps its own name.
+    app.dash.service_sel = 1;
+    dashboard::load_output(&mut app, true);
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains("web output") && !screen.contains("both ›"), "{screen}");
+}
+
+/// The screen column of the value on a dialog row labelled `label`, past the
+/// `‹ ` marker of a focused selector.
+fn value_column(term: &Terminal<TestBackend>, label: &str) -> usize {
+    let screen = screen_text(term);
+    for row in screen.lines() {
+        let chars: Vec<char> = row.chars().collect();
+        let Some(border) = chars.iter().position(|c| ['┃', '║'].contains(c)) else { continue };
+        let mut i = border + 1;
+        while chars.get(i) == Some(&' ') {
+            i += 1;
+        }
+        let text: String = chars[i..].iter().collect();
+        if !text.starts_with(label) || !text[label.len()..].starts_with(' ') {
+            continue;
+        }
+        i += label.chars().count();
+        while chars.get(i) == Some(&' ') {
+            i += 1;
+        }
+        if chars.get(i) == Some(&'‹') {
+            i += 2;
+        }
+        return i;
+    }
+    panic!("no {label} row\n{screen}");
+}
+
+#[test]
+fn the_env_value_lines_up_with_branch_and_commit_focused_or_not() {
+    let (mut app, mut term) = app();
+    let (p, mut pl) = dialog_project(1, false);
+    pl.environments = vec!["staging".into(), "prod".into()];
+    let d = screens::dialog::RunDialog::new(&p, &pl, None);
+    app.overlay = Some(Overlay::Dialog(Box::new(d)));
+    let mut term2 = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    std::mem::swap(&mut term, &mut term2);
+    redraw(&mut app, &mut term);
+    // Focus starts on the environment selector.
+    let (env, branch, commit) = (value_column(&term, "env"), value_column(&term, "branch"), value_column(&term, "commit"));
+    assert_eq!((env, commit), (branch, branch), "focused");
+    assert!(screen_text(&term).contains("‹ staging ›"));
+    let Some(Overlay::Dialog(d)) = &mut app.overlay else { panic!() };
+    d.focus = 1;
+    redraw(&mut app, &mut term);
+    let (env, branch) = (value_column(&term, "env"), value_column(&term, "branch"));
+    assert_eq!(env, branch, "unfocused");
+    assert!(screen_text(&term).contains("env      staging"), "{}", screen_text(&term));
+}
+
+/// Cells outside the box `r` in the rows it occupies, which must be blank.
+fn beside_the_box(term: &Terminal<TestBackend>, r: Rect) -> String {
+    let w = term.backend().buffer().area.width;
+    let mut out = String::new();
+    for y in r.y..r.y + r.height {
+        for x in (0..r.x).chain(r.x + r.width..w) {
+            out.push_str(&symbol(term, x, y));
+        }
+    }
+    out.trim().to_string()
+}
+
+#[test]
+fn nothing_of_the_screen_behind_shows_beside_a_dialog_or_the_help_panel() {
+    // The run dialog, over the dashboard's borders.
+    let (_app, term) = dialog_app(2, false, 100, 28);
+    let screen = screen_text(&term);
+    let y0 = screen.lines().position(|l| l.contains("run alpha/deploy")).unwrap() as u16;
+    let x0 = screen.lines().nth(y0 as usize).unwrap().chars().position(|c| c == '┏' || c == '╔').unwrap() as u16;
+    let x1 = (x0..100).find(|x| ["┓", "╗"].contains(&symbol(&term, *x, y0).as_str())).unwrap();
+    let y1 = (y0..28).find(|y| ["┗", "╚"].contains(&symbol(&term, x0, *y).as_str())).unwrap();
+    assert_eq!(beside_the_box(&term, Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)), "", "{screen}");
+    // The help panel.
+    for (_, app, term) in help_on_every_screen(100, 28) {
+        assert_eq!(beside_the_box(&term, help_panel(&app, 100, 28)), "");
+    }
+    // The confirm dialog.
+    let (mut app, mut term) = busy_app(100, 28);
+    app.overlay = Some(Overlay::Confirm(screens::overlay::Confirm {
+        title: "cancel run #7".into(),
+        lines: vec![ratatui::text::Line::raw("Stop the run?")],
+        action: screens::overlay::ConfirmAction::CancelRun(7),
+    }));
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    let y0 = screen.lines().position(|l| l.contains("cancel run #7")).unwrap() as u16;
+    let x0 = screen.lines().nth(y0 as usize).unwrap().chars().position(|c| c == '╔').unwrap() as u16;
+    let x1 = (x0..100).find(|x| symbol(&term, *x, y0) == "╗").unwrap();
+    let y1 = (y0..28).find(|y| symbol(&term, x0, *y) == "╚").unwrap();
+    assert_eq!(beside_the_box(&term, Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)), "", "{screen}");
+}
+
+#[test]
+fn a_long_error_gets_the_rows_it_needs_and_the_buttons_stay() {
+    let (mut app, mut term) = dialog_app(1, false, 100, 28);
+    let long = "the tmux server refused the new window because ".repeat(8);
+    let Some(Overlay::Dialog(d)) = &mut app.overlay else { panic!() };
+    d.error = Some(long.trim().to_string());
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    let error_rows = screen.lines().filter(|l| l.contains("× ") && l.contains("tmux") || l.contains("because")).count();
+    assert!(error_rows > 3, "more than three rows are kept when there is room: {error_rows}\n{screen}");
+    assert_buttons(&app, &term, 100, 28);
+    // With much less room the error is cut, with an ellipsis, and the buttons are still there.
+    let (mut app, mut term) = dialog_app(12, true, 100, 28);
+    let Some(Overlay::Dialog(d)) = &mut app.overlay else { panic!() };
+    d.error = Some(long.trim().to_string());
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains('…'), "{screen}");
+    assert_buttons(&app, &term, 100, 28);
+}
+
+#[test]
+fn a_toast_drops_whole_hints_from_the_right_never_part_of_one() {
+    let (mut app, mut term) = app_at(100, 28);
+    app.dash.focus = dashboard::Focus::Services;
+    let hints = dashboard::hints(&app);
+    // The left part of the bar for the first `n` hints.
+    let prefix = |n: usize| format!(" {}", hints[..n].iter().map(|(k, l)| format!("{k} {l}")).collect::<Vec<_>>().join("  "));
+    let mut shown = std::collections::BTreeSet::new();
+    for len in (0..70).step_by(2) {
+        app.toast("x".repeat(len), Level::Info);
+        redraw(&mut app, &mut term);
+        let bar = screen_row(&term, 27);
+        assert!(bar.trim_end().ends_with("? help  q quit"), "{bar}");
+        let n = (0..=hints.len()).rev().find(|n| bar.starts_with(&prefix(*n))).expect("a whole number of hints");
+        shown.insert(n);
+        // Nothing of a hidden hint follows: the rest is blank or the toast.
+        let rest = bar[prefix(n).len()..].trim_start();
+        for (k, l) in &hints[n..] {
+            assert!(!rest.starts_with(&format!("{k} {}", &l[..1])), "part of `{k} {l}` is left: {bar}");
+        }
+    }
+    assert!(shown.len() > 2, "the hints were dropped one by one: {shown:?}");
 }
