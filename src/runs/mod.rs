@@ -4,8 +4,9 @@
 //! and everything known about it lives in that window's `@gc_*` options: the
 //! worker publishes its progress there, and the TUI asks for a cancel or
 //! answers an approval there. Nothing is written to disk. Also: inputs,
-//! environments, step env, outputs and dry runs (§6.1–§6.4, §8).
+//! environments, env layers, outputs and dry runs (§6.1–§6.4, §8).
 
+pub mod pane;
 pub mod worker;
 
 use std::collections::BTreeMap;
@@ -17,20 +18,20 @@ use regex::Regex;
 use crate::config::{Config, InputKind, Pipeline, Project, StepKind};
 use crate::ctx::Ctx;
 use crate::envlayers::{self, Layer, RunScope};
-use crate::protocol::*;
+use crate::model::*;
 use crate::tmux::{NewWindow, target};
 use crate::window::{self, RunParams, RunWindow, Windows};
 
 pub const APPROVAL_TTL: Duration = Duration::from_secs(30 * 60);
 
-pub type ReqError = (ErrorCode, String);
+pub type RunError = (ErrorCode, String);
 
-pub fn err(code: ErrorCode, msg: impl Into<String>) -> ReqError {
+fn err(code: ErrorCode, msg: impl Into<String>) -> RunError {
     (code, msg.into())
 }
 
 /// Validates inputs against the pipeline's declarations, applying defaults.
-pub fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     for k in given.keys() {
         if !p.inputs.iter().any(|i| &i.name == k) {
             return Err(format!("unknown input `{k}`"));
@@ -67,7 +68,7 @@ pub fn resolve_inputs(p: &Pipeline, given: &BTreeMap<String, String>) -> Result<
     Ok(out)
 }
 
-pub fn check_env(project: &Project, p: &Pipeline, env: Option<&str>) -> Result<(), String> {
+fn check_env(project: &Project, p: &Pipeline, env: Option<&str>) -> Result<(), String> {
     match (p.environments.is_empty(), env) {
         (true, None) => Ok(()),
         (true, Some(e)) => Err(format!("pipeline `{}` does not run against an environment (got `{e}`)", p.id)),
@@ -105,7 +106,7 @@ pub fn fmt_secs(s: u64) -> String {
 }
 
 /// Checks that refuse a run whoever executes it (§8.4).
-pub async fn common_blockers(project: &Project) -> Vec<String> {
+async fn common_blockers(project: &Project) -> Vec<String> {
     let mut blockers = Vec::new();
     if let Some(reason) = &project.disabled {
         blockers.push(format!("project is disabled: {reason}"));
@@ -117,7 +118,7 @@ pub async fn common_blockers(project: &Project) -> Vec<String> {
     blockers
 }
 
-pub fn dry_run_plan(
+fn dry_run_plan(
     config: &Config,
     project: &Project,
     pipeline: &Pipeline,
@@ -189,7 +190,7 @@ fn run_status(w: &RunWindow) -> (RunStatus, Option<String>) {
     (w.state, w.reason.clone())
 }
 
-pub fn summary(w: &RunWindow) -> RunSummary {
+fn summary(w: &RunWindow) -> RunSummary {
     let (status, reason) = run_status(w);
     let p = &w.params;
     RunSummary {
@@ -251,7 +252,6 @@ pub fn detail(config: &Config, w: &RunWindow) -> RunDetail {
                 exit_code: st.exit_code,
                 started_at: st.started_at,
                 finished_at: st.finished_at,
-                has_log: st.started_at.is_some(),
             }
         })
         .collect();
@@ -269,20 +269,11 @@ pub fn detail(config: &Config, w: &RunWindow) -> RunDetail {
                 protected: s.protected,
                 message: a.message,
                 status,
-                requested_at: a.requested_at,
-                decided_at: a.decided_at,
                 expires_at: a.expires_at,
             }]
         })
         .unwrap_or_default();
-    RunDetail {
-        inputs: w.params.inputs.clone(),
-        steps,
-        approvals,
-        outputs: w.outputs.clone(),
-        unpushed_count: w.params.unpushed,
-        summary: s,
-    }
+    RunDetail { inputs: w.params.inputs.clone(), steps, approvals, outputs: w.outputs.clone(), summary: s }
 }
 
 /// The project's run in progress: a live run window whose run is active.
@@ -292,7 +283,7 @@ pub fn busy_run(windows: &Windows, project: &str) -> Option<i64> {
 
 /// Validates a run and opens its worker's window. One run per project: a
 /// second start is refused, never queued.
-pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result<Response, ReqError> {
+pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result<StartOutcome, RunError> {
     let project =
         config.project(&params.project).ok_or_else(|| err(ErrorCode::NotFound, format!("unknown project `{}`", params.project)))?;
     let pipeline = project
@@ -309,7 +300,7 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
         blockers.push(format!("{} already has run #{id} in progress", project.id));
     }
     if params.dry_run {
-        return Ok(Response::DryRun(dry_run_plan(config, project, pipeline, env, inputs, protected, blockers)));
+        return Ok(StartOutcome::DryRun(dry_run_plan(config, project, pipeline, env, inputs, protected, blockers)));
     }
     if protected && !params.confirmed {
         return Err(err(ErrorCode::Refused, "protected run needs the confirmation dialog"));
@@ -346,10 +337,10 @@ pub async fn start(ctx: &Ctx, config: &Config, params: RunStartParams) -> Result
         .new_window(&NewWindow { name: &name, cwd: &project.path, argv: &argv, env: &ctx.window_env(), options: &options })
         .await
         .map_err(|e| err(ErrorCode::Internal, format!("cannot open the run's tmux window: {e}")))?;
-    Ok(Response::RunStarted { id })
+    Ok(StartOutcome::Started(id))
 }
 
-async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, ReqError> {
+async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, RunError> {
     match window::run(&ctx.tmux, id).await.map_err(|e| err(ErrorCode::Internal, e))? {
         Some(w) if !w.dead && run_status(&w).0.is_active() => Ok(w),
         _ => Err(err(ErrorCode::NotFound, format!("run #{id} is not active"))),
@@ -357,15 +348,15 @@ async fn active_window(ctx: &Ctx, id: i64) -> Result<RunWindow, ReqError> {
 }
 
 /// Asks a run's worker to cancel it.
-pub async fn cancel(ctx: &Ctx, id: i64) -> Result<Response, ReqError> {
+pub async fn cancel(ctx: &Ctx, id: i64) -> Result<(), RunError> {
     active_window(ctx, id).await?;
     ctx.tmux.request(id, &RunWindow::cancel_request()).await.map_err(|e| err(ErrorCode::Internal, e))?;
-    Ok(Response::Ok)
+    Ok(())
 }
 
 /// Records an approval decision on the run's window and wakes the waiting
 /// worker. The first answer wins.
-pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<Response, ReqError> {
+pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<(), RunError> {
     let w = active_window(ctx, id).await?;
     let approval = w
         .approval
@@ -384,9 +375,9 @@ pub async fn decide(ctx: &Ctx, id: i64, step: usize, decision: Decision, confirm
         Decision::Approve => ApprovalStatus::Approved,
         Decision::Reject => ApprovalStatus::Rejected,
     };
-    let request = RunWindow::decision_request(window::Decision { status, step });
+    let request = RunWindow::decision_request(window::Answer { status, step });
     ctx.tmux.request(id, &request).await.map_err(|e| err(ErrorCode::Internal, e))?;
-    Ok(Response::Ok)
+    Ok(())
 }
 
 #[cfg(test)]

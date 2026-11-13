@@ -1,4 +1,4 @@
-//! End-to-end tests for the TUI's engine: requests, and the events it derives
+//! End-to-end tests for the TUI's engine: its calls, and the events it derives
 //! from what the workers publish in tmux, against a private tmux server. Also
 //! opens the real TUI in a tmux window and reads its first screen. Skipped
 //! when tmux is not installed.
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use groundcontrol::config::ServiceAction;
 use groundcontrol::ctx::Ctx;
 use groundcontrol::engine::Engine;
-use groundcontrol::protocol::*;
+use groundcontrol::model::*;
 use groundcontrol::tmux::Tmux;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -65,14 +65,14 @@ async fn engine_end_to_end() {
     let Some(env) = common::setup(config) else { return };
     let (engine, mut rx) = engine(&env);
 
-    let Response::Projects(p) = engine.request(Request::ProjectsList).await.unwrap() else { panic!() };
+    let p = engine.projects().await.unwrap();
     assert_eq!(p[0].pipelines.len(), 2);
     assert_eq!(p[0].services[0].state, ServiceState::Stopped);
 
     // A run started through the engine streams step events and its whole
     // step output, captured from the run's pane.
-    let Response::RunStarted { id } = engine.request(Request::RunStart(run_params("hello"))).await.unwrap() else { panic!() };
-    engine.request(Request::Subscribe { topics: vec!["runs".into(), format!("log:{id}")] }).await.unwrap();
+    let StartOutcome::Started(id) = engine.start_run(run_params("hello")).await.unwrap() else { panic!() };
+    engine.watch(Watch { runs: [id].into(), ..Default::default() });
     next_event(&mut rx, "step", |e| matches!(e, Event::Step { run_id, .. } if *run_id == id)).await;
     let (mut text, mut succeeded) = (String::new(), false);
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -85,18 +85,18 @@ async fn engine_end_to_end() {
         }
     }
     assert!(text.starts_with("one\n"), "{text:?}");
-    let Response::Log(c) = engine.request(Request::LogRead { run: id, step: 0 }).await.unwrap() else { panic!() };
+    let c = engine.step_output(id, 0).await.unwrap();
     assert_eq!(c.data, "one\ntwo\n");
     assert!(c.complete);
-    let Response::Runs(page) = engine.request(Request::RunsList).await.unwrap() else { panic!() };
+    let page = engine.runs().await.unwrap();
     assert_eq!(page.runs[0].id, id, "newest first");
 
     // Approvals arrive as events and are answered through the engine.
     let mut started = None;
     for _ in 0..50 {
         // The previous run's window stays alive for a moment after its final state.
-        match engine.request(Request::RunStart(run_params("gated"))).await {
-            Ok(Response::RunStarted { id }) => {
+        match engine.start_run(run_params("gated")).await {
+            Ok(StartOutcome::Started(id)) => {
                 started = Some(id);
                 break;
             }
@@ -105,17 +105,17 @@ async fn engine_end_to_end() {
     }
     let gated = started.expect("gated run started");
     next_event(&mut rx, "approval", |e| matches!(e, Event::Approval(a) if a.run_id == gated && a.status == ApprovalStatus::Pending)).await;
-    let Response::Runs(page) = engine.request(Request::RunsList).await.unwrap() else { panic!() };
+    let page = engine.runs().await.unwrap();
     assert_eq!(page.waiting.len(), 1);
-    let Response::Projects(p) = engine.request(Request::ProjectsList).await.unwrap() else { panic!() };
+    let p = engine.projects().await.unwrap();
     assert_eq!(p[0].busy_run, Some(gated));
     assert_eq!(p[0].pipelines.iter().find(|pl| pl.id == "gated").unwrap().waiting, 1);
-    engine.request(Request::RunDecide { id: gated, step: 0, decision: Decision::Approve, confirmed: false }).await.unwrap();
+    engine.decide(gated, 0, Decision::Approve, false).await.unwrap();
     next_event(&mut rx, "finished gated run", |e| matches!(e, Event::Run(s) if s.id == gated && s.status == RunStatus::Succeeded)).await;
 
     // Services: start through the engine, see the status event and the pane output.
-    engine.request(Request::Subscribe { topics: vec!["services".into(), "service-log:app/web".into()] }).await.unwrap();
-    let r = engine.request(Request::ServiceControl { project: "app".into(), id: "web".into(), action: ServiceAction::Start }).await;
+    engine.watch(Watch { services: [("app".into(), "web".into())].into(), ..Default::default() });
+    let r = engine.control_service("app", "web", ServiceAction::Start).await;
     assert!(r.is_ok(), "{r:?}");
     next_event(&mut rx, "service", |e| matches!(e, Event::Service(s) if s.id == "web" && s.state == ServiceState::Running)).await;
     next_event(
@@ -124,14 +124,12 @@ async fn engine_end_to_end() {
         |e| matches!(e, Event::ServiceLog { service, data, .. } if service == "web" && data.contains("starting")),
     )
     .await;
-    let Response::Text { text } = engine.request(Request::ServiceLog { project: "app".into(), id: "web".into() }).await.unwrap() else {
-        panic!()
-    };
+    let text = engine.service_output("app", "web").await.unwrap();
     assert!(text.contains("starting: python3"), "{text}");
-    engine.request(Request::ServiceControl { project: "app".into(), id: "web".into(), action: ServiceAction::Stop }).await.unwrap();
+    engine.control_service("app", "web", ServiceAction::Stop).await.unwrap();
 
     // Health: tools resolved in-process, tmux reachable, Docker only on the Health screen.
-    let Response::Health(h) = engine.request(Request::HealthGet).await.unwrap() else { panic!() };
+    let h = engine.health().await;
     assert!(h.tools.iter().any(|t| t.name == "git" && t.ok));
     assert!(h.tmux.as_ref().is_some_and(|t| t.ok), "{:?}", h.tmux);
     assert!(h.docker.is_none());
@@ -148,9 +146,9 @@ async fn config_reload_keeps_last_good() {
     let Event::Config(status) = next_event(&mut rx, "config", |e| matches!(e, Event::Config(c) if !c.ok)).await else { unreachable!() };
     assert!(status.active, "previous config stays active");
     assert!(status.diagnostics.iter().any(|d| d.line > 0), "{:?}", status.diagnostics);
-    let Response::Projects(p) = engine.request(Request::ProjectsList).await.unwrap() else { panic!() };
+    let p = engine.projects().await.unwrap();
     assert_eq!(p[0].pipelines.len(), 2, "the old pipelines still work");
-    let Response::Health(h) = engine.request(Request::HealthGet).await.unwrap() else { panic!() };
+    let h = engine.health().await;
     assert!(!h.config.ok);
 }
 

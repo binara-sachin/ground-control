@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::protocol::{ApprovalStatus, OutputInfo, RunStatus, ServiceState, StepStatus, Timestamp};
+use crate::model::{ApprovalStatus, OutputInfo, RunStatus, ServiceState, StepStatus, Timestamp};
 use crate::tmux::{Tmux, Window, decode, encode};
 
 /// `@gc_kind` of a run window.
@@ -53,7 +53,7 @@ const KEYS: [&str; 26] = [
 ];
 
 /// Options as `(key, value)` pairs, ready for `tmux`.
-pub type Options = Vec<(&'static str, String)>;
+type Options = Vec<(&'static str, String)>;
 
 /// The windows of the `ground-control` session that GroundControl opened,
 /// each kind oldest first.
@@ -64,7 +64,7 @@ pub struct Windows {
 }
 
 impl Windows {
-    pub fn from_tmux(windows: &[Window]) -> Self {
+    fn from_tmux(windows: &[Window]) -> Self {
         let mut w = Windows {
             runs: windows.iter().filter_map(RunWindow::read).collect(),
             services: windows.iter().filter_map(ServiceWindow::read).collect(),
@@ -130,7 +130,7 @@ pub struct RunWindow {
     /// The TUI asked for a cancel.
     pub cancel: bool,
     /// The TUI's answer to the approval.
-    pub decision: Option<Decision>,
+    pub decision: Option<Answer>,
 }
 
 /// What a run window is opened with.
@@ -170,7 +170,7 @@ pub struct ApprovalState {
 
 /// An answer to the approval at `step`, as the TUI records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Decision {
+pub struct Answer {
     pub status: ApprovalStatus,
     pub step: usize,
 }
@@ -273,13 +273,13 @@ impl RunWindow {
     }
 
     /// Answers the approval.
-    pub fn decision_request(d: Decision) -> Options {
+    pub fn decision_request(d: Answer) -> Options {
         vec![("decision", format!("{}:{}", d.status.as_str(), d.step))]
     }
 }
 
 /// The requests on a run window, read fresh rather than from a listing.
-pub async fn run_requests(tmux: &Tmux, target: &str) -> Result<(bool, Option<Decision>), String> {
+pub async fn run_requests(tmux: &Tmux, target: &str) -> Result<(bool, Option<Answer>), String> {
     let v = tmux.options(target, &["cancel", "decision"]).await?;
     Ok((v[0] == "1", decode_decision(&v[1])))
 }
@@ -347,9 +347,9 @@ fn decode_approval(s: &str) -> Option<ApprovalState> {
 }
 
 /// `<status>:<step>`.
-fn decode_decision(s: &str) -> Option<Decision> {
+fn decode_decision(s: &str) -> Option<Answer> {
     let (status, step) = s.split_once(':')?;
-    Some(Decision { status: ApprovalStatus::parse(status), step: step.parse().ok()? })
+    Some(Answer { status: ApprovalStatus::parse(status), step: step.parse().ok()? })
 }
 
 // ── service windows ─────────────────────────────────────────────────────
@@ -491,7 +491,7 @@ mod tests {
             decided_at: None,
             message: "Go: now?".into(),
         };
-        let decision = Decision { status: ApprovalStatus::Approved, step: 1 };
+        let decision = Answer { status: ApprovalStatus::Approved, step: 1 };
         let w = window(
             7,
             false,
@@ -533,7 +533,7 @@ mod tests {
             decided_at: None,
             message: String::new(),
         };
-        let old = RunWindow::decision_request(Decision { status: ApprovalStatus::Approved, step: 0 });
+        let old = RunWindow::decision_request(Answer { status: ApprovalStatus::Approved, step: 0 });
         let w = window(1, false, &[RunWindow::create(&params(), 3), old.clone(), RunWindow::update(RunUpdate::Approval(&a))]);
         assert_eq!(RunWindow::read(&w).unwrap().decision, None);
         a.status = ApprovalStatus::Approved;

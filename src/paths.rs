@@ -2,11 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-pub const CONFIG_FILE: &str = "groundcontrol.yaml";
+const CONFIG_FILE: &str = "groundcontrol.yaml";
 
 /// `~/.config/ground-control`, where `make install` links the repository's
 /// `groundcontrol.yaml` so the TUI finds it from any folder.
-pub fn config_dir() -> PathBuf {
+fn config_dir() -> PathBuf {
     home_dir().join(".config").join("ground-control")
 }
 
@@ -26,7 +26,7 @@ pub fn config_path() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(CONFIG_FILE)
 }
 
-pub fn home_dir() -> PathBuf {
+fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 

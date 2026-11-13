@@ -34,7 +34,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub fn is_overlay(self) -> bool {
+    fn is_overlay(self) -> bool {
         matches!(
             self,
             Target::TextOverlay

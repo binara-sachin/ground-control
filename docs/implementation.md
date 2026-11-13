@@ -7,10 +7,10 @@ the decisions taken where the spec left room, and what is still open.
 
 ### Architecture ([`architecture.md`](architecture.md))
 
-- [x] `groundcontrol` is the TUI with an in-process engine (`engine.rs`): config loading, validation (§7.4) with line and column, hot reload that keeps the last good config, git polling, and live updates from one `list-windows` per poll plus pane captures for what is on screen
+- [x] `groundcontrol` is the TUI with an in-process engine (`engine.rs`, typed calls and events in `model.rs`): config loading, validation (§7.3) with line and column, hot reload that keeps the last good config, git polling, and live updates from one `list-windows` per poll plus pane captures for what is on screen
 - [x] Runs execute in `groundcontrol run-exec` in a `<project>/<pipeline>` window, services in `groundcontrol svc-exec <project> <service>` in a `<project>/<service>` window, all in the `ground-control` tmux session, created if it doesn't exist (`runs/worker.rs`, `services/worker.rs`, `tmux.rs`)
 - [x] All state in tmux: `@gc_*` window options (percent-encoded where tmux would alter them) and pane scrollback. No database, log files, history or lock files. `window.rs` is the only code that knows the options' names and formats, and a test keeps it in step with spec §11
-- [x] Workers wait on their window's `tmux wait-for` channel and are woken by the TUI's requests, so an idle worker starts no processes
+- [x] Workers wait on their window's `tmux wait-for` channel and are woken by the TUI's requests, so an idle worker starts no processes. The plumbing both workers share is in `worker.rs`
 - [x] A run's id is its window's id; a dead window with an active run shows as "worker exited unexpectedly"
 - [x] One run per project and one worker per service, decided by the oldest live window
 - [x] Tool check resolves on `PATH` in-process; tmux checked at TUI start and on the Health screen; Docker only while the Health screen is open
@@ -19,7 +19,7 @@ the decisions taken where the spec left room, and what is still open.
 ### Pipelines (§6, §8)
 
 - [x] Steps run as `/bin/zsh -c` in a new session (own process group, no controlling terminal), stdin `/dev/null`, stdout and stderr merged in order
-- [x] Environment precedence (§6.1), including `INPUT_*`, `OUTPUT_*`, `GC_*`, `FORCE_COLOR`, `CLICOLOR_FORCE`, `TERM` and `COLUMNS=120`
+- [x] Env layers (§6.1), including `INPUT_*`, `OUTPUT_*`, `GC_*`, `FORCE_COLOR`, `CLICOLOR_FORCE`, `TERM` and `COLUMNS=120`
 - [x] Typed inputs validated before the run (pattern, choice, bool); they reach commands only as environment variables
 - [x] Per-step timeout (default 15m); cancel sends `SIGTERM` to the group, then `SIGKILL` after 10 s
 - [x] One run per project; a second trigger is rejected, never queued
@@ -52,20 +52,27 @@ the decisions taken where the spec left room, and what is still open.
 
 - [x] Chrome:
   - top bar with screen tabs, breadcrumbs, `!` attention markers, config status with reload time, and the clock
-  - bottom key bar
-- [x] Theme tokens in one place (`tui/theme.rs`); every status carries a word or symbol, never colour alone
+  - bottom key bar, with the keys of the focused row (the run dialog's change with the focused field)
+- [x] Theme tokens in one place (`tui/theme.rs`); every status carries a word or symbol, never colour alone. The focused pane has a thick border and the selected row a `▶` marker, so neither relies on colour
 - [x] Layout safety:
   - fixed or flexible columns measured in display cells (`unicode-width`), truncated with `…`
   - pane titles clipped to the pane
   - a "terminal too small" screen below 100×28
-- [x] Screens: Dashboard, Project, Run dialog, Run view, Health, plus help, service output viewer, dry-run viewer and confirm prompts. No history screen
+- [x] Screens:
+  - Dashboard in full-width bands: approval banner (one line), projects, runs, then services beside the selected service's output. `tab` follows that order
+  - Project: pipelines and their steps beside the services
+  - Run dialog with its error row and buttons pinned to the bottom
+  - Run view: steps, an `outputs · inputs` pane and the step's output
+  - Health in bands (version, tool check with each tool listed once, config)
+  - per-screen help (`?`), service output viewer, dry-run viewer and confirm prompts (`tui/screens/overlay.rs`)
+  - no history screen
 - [x] Output pane:
   - `vt100` parser, 120 columns with horizontal scroll
   - follow mode and scrollback
   - each step's output is cut from the run's pane capture at the worker's step headers and replaces the view, keeping the scroll position
 - [x] Approval only in the run view; the dashboard banner offers only "review". A protected approval takes two keys; a rejection takes one
 - [x] If the engine cannot start: an explanatory screen that retries automatically
-- [x] Mouse (`src/tui/mouse.rs`): the TUI captures the mouse, so the terminal's own text selection needs Shift (Option in iTerm). Every `draw` records its clickable areas in a hit map; a click or wheel event is matched against the last frame, and an open overlay hides everything under it. Click focuses a pane and selects the row, a double click is `enter`, a click on the approval banner opens the run, the wheel scrolls output and logs and moves selection in lists, and the top-bar tabs, dialog fields and buttons and confirm buttons are clickable. Clicks reuse the key handlers. The bottom hint bar is not clickable. Not yet checked inside a `tmux display-popup`
+- [x] Mouse (`src/tui/mouse.rs`): the TUI captures the mouse, so the terminal's own text selection needs Shift (Option in iTerm). Every `draw` records its clickable areas in a hit map; a click or wheel event is matched against the last frame, and an open overlay hides everything under it. Click focuses a pane and selects the row, a double click is `enter`, a click on the approval banner opens the run, the wheel scrolls output and moves selection in lists, and the top-bar tabs, dialog fields and buttons and confirm buttons are clickable. Clicks reuse the key handlers. The bottom hint bar is not clickable. Not yet checked inside a `tmux display-popup`
 
 ### Install (§5.4)
 
@@ -93,15 +100,14 @@ the decisions taken where the spec left room, and what is still open.
 | Theme colours (§13.9) | Amber `#e5b567` accent and warning, green `#a6cc70`, red `#f07178`, muted `#838b99`, selection `#2c3a52`, background `#1b1f27`. |
 | tmux layout | One session, `ground-control`. Windows are named `<project>/<service>` and `<project>/<pipeline>` for display; what a window is comes from its `@gc_kind`, `@gc_project` and `@gc_service`/`@gc_pipeline` options, and windows are addressed by id. |
 | Finished runs | A succeeded run's window closes 5 s after it ends; a failed one stays until the project's next run. Nothing remains after that. |
-| Placeholder commands (§13.1) | Written as commands that print `TODO(§13.x)` and exit 1. Unknown health ports are commented out. |
 
 ## Verification
 
 - `cargo test` (on macOS with tmux 3.8; not tested on Linux):
-  - unit tests: config rules, YAML positions, masking at every split point, env files, git parsing, remote normalisation, tmux option encoding and window parsing, run-state encodings, service status from windows, splitting a pane into steps, the restart policy, health checks, process sessions and groups, terminal rendering and run-view output replacement
+  - unit tests: config rules, YAML positions, masking at every split point, env files, git parsing, remote normalisation, tmux option encoding and window parsing, run-state encodings, service status from windows, splitting a pane into steps, the restart policy, health checks, process sessions and groups, terminal rendering, run-view output replacement, and mouse input and overlays against a drawn frame (`tui/tests.rs`)
   - `tmux_e2e`: the `ground-control` session created once and reused, options set before the command runs, values with separators, newlines and non-ASCII, argv commands, dead panes
   - `services_e2e`: port in use, health checks, failed start, on-failure restarts, group stop, masking in the pane, stop in copy mode, `C-c`, closing the window, a duplicate worker closing itself
-  - `runs_e2e`: inputs, env precedence, masking, outputs, dry run, failure and skip, a succeeded run's window closing itself, protected confirm, approval with first-answer-wins, reject, cancel while a step prints constantly, closing the window, `service:` steps, a dead worker, guards
+  - `runs_e2e`: inputs, env layers, masking, outputs, dry run, failure and skip, a succeeded run's window closing itself, protected confirm, approval with first-answer-wins, reject, cancel while a step prints constantly, closing the window, `service:` steps, a dead worker, guards
   - `engine_e2e`: projects, run, step and output events, approvals through the engine, service events and output, health, config reload keeping the last good config, and the real TUI rendering its dashboard in tmux
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` are clean.
 - Manual pass on macOS: from the TUI, started a service (it opened in the `ground-control` session), ran a pipeline and saw its output, approved a gated run, saw the succeeded windows close themselves, and quit with the service still serving. GroundControl wrote no files.

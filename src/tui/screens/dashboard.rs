@@ -1,17 +1,19 @@
-//! Dashboard (§10.3): approval banner, projects, services of the selected
-//! project, recent runs, and the selected service's log.
+//! Dashboard (§10.3): approval banner, projects and open runs in full-width
+//! bands, then the selected project's services beside the selected service's
+//! output.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Level, Overlay, Tag, TextOverlay};
+use super::super::app::{App, Level, Reply};
 use super::super::mouse::Target;
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
-use crate::protocol::*;
+use super::services::{control, open_full_log, row_service, service_lines, service_rows, service_summary};
+use crate::model::*;
 
 pub const LOG_LINES: usize = 50;
 
@@ -47,25 +49,12 @@ impl Default for DashState {
     }
 }
 
-/// A row of a services pane: a group or a service.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SvcRow {
-    Group(String),
-    Service(String),
-}
-
-pub fn service_rows(p: &ProjectInfo) -> Vec<SvcRow> {
-    let mut rows: Vec<SvcRow> = p.groups.iter().map(|g| SvcRow::Group(g.id.clone())).collect();
-    rows.extend(p.services.iter().map(|s| SvcRow::Service(s.id.clone())));
-    rows
-}
-
 fn selected_project(app: &App) -> Option<&ProjectInfo> {
     app.projects.get(app.dash.project_sel.min(app.projects.len().saturating_sub(1)))
 }
 
-/// The service whose log the log pane shows: the selected service, or the
-/// first member of the selected group.
+/// The service whose output the output pane shows: the selected service, or
+/// the first member of the selected group.
 fn log_service(app: &App) -> Option<(String, String)> {
     let p = selected_project(app)?;
     let rows = service_rows(p);
@@ -73,23 +62,7 @@ fn log_service(app: &App) -> Option<(String, String)> {
     Some((p.id.clone(), row_service(p, row)?))
 }
 
-/// The service a row's log comes from: the service itself, or for a group a
-/// member that crashed or is unhealthy, otherwise its last member.
-pub fn row_service(p: &ProjectInfo, row: &SvcRow) -> Option<String> {
-    match row {
-        SvcRow::Service(s) => Some(s.clone()),
-        SvcRow::Group(g) => {
-            let g = p.groups.iter().find(|x| &x.id == g)?;
-            g.members
-                .iter()
-                .find(|m| p.services.iter().any(|s| &s.id == *m && matches!(s.state, ServiceState::Crashed | ServiceState::Unhealthy)))
-                .or(g.members.last())
-                .cloned()
-        }
-    }
-}
-
-/// Loads the last lines of the selected service's log when the selection changes.
+/// Loads the last lines of the selected service's output when the selection changes.
 pub fn load_log(app: &mut App, force: bool) {
     let target = log_service(app);
     if target == app.dash.log_target && !force {
@@ -99,57 +72,20 @@ pub fn load_log(app: &mut App, force: bool) {
     app.dash.log.reset();
     if let Some((project, service)) = target {
         app.dash.log.loading = true;
-        app.request(Request::ServiceLog { project: project.clone(), id: service.clone() }, Tag::ServiceLog { project, service });
+        app.call(move |e| async move {
+            let result = e.service_output(&project, &service).await;
+            Reply::ServiceOutput { project, service, result }
+        });
     }
-    app.sync_subscription();
-}
-
-pub fn open_full_log(app: &mut App, project: &str, service: &str) {
-    let mut view = TermView::new();
-    view.loading = true;
-    app.overlay = Some(Overlay::Text(Box::new(TextOverlay {
-        title: format!("{project}/{service} log"),
-        subtitle: String::new(),
-        view,
-        follow_service: Some((project.to_string(), service.to_string())),
-    })));
-    app.request(Request::ServiceLog { project: project.into(), id: service.into() }, Tag::FullLog);
-    app.sync_subscription();
-}
-
-/// Start/stop toggle or restart for a service or group row.
-pub fn control(app: &mut App, project: &ProjectInfo, row: &SvcRow, restart: bool) {
-    // Up while its worker has anything to stop, restarting and stopping included.
-    let up = |x: &ServiceStatus| !matches!(x.state, ServiceState::Stopped | ServiceState::Crashed);
-    let (id, up) = match row {
-        SvcRow::Service(s) => (s.clone(), project.services.iter().any(|x| &x.id == s && up(x))),
-        SvcRow::Group(g) => {
-            let members = project.groups.iter().find(|x| &x.id == g).map(|x| x.members.clone()).unwrap_or_default();
-            (g.clone(), project.services.iter().any(|x| members.contains(&x.id) && up(x)))
-        }
-    };
-    let action = if restart {
-        ServiceAction::Restart
-    } else if up {
-        ServiceAction::Stop
-    } else {
-        ServiceAction::Start
-    };
-    let verb = match action {
-        ServiceAction::Start => "starting",
-        ServiceAction::Stop => "stopping",
-        ServiceAction::Restart => "restarting",
-    };
-    app.toast(format!("{verb} {id}…"), Level::Info);
-    app.request(Request::ServiceControl { project: project.id.clone(), id, action }, Tag::Service);
+    app.sync_watch();
 }
 
 pub fn key(app: &mut App, k: KeyEvent) {
     let has_banner = !app.waiting.is_empty();
     let order: Vec<Focus> = if has_banner {
-        vec![Focus::Banner, Focus::Projects, Focus::Services, Focus::Runs]
+        vec![Focus::Banner, Focus::Projects, Focus::Runs, Focus::Services]
     } else {
-        vec![Focus::Projects, Focus::Services, Focus::Runs]
+        vec![Focus::Projects, Focus::Runs, Focus::Services]
     };
     if !has_banner && app.dash.focus == Focus::Banner {
         app.dash.focus = Focus::Projects;
@@ -277,29 +213,31 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
 }
 
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    let mut h = vec![("↑↓", "select"), ("enter", "open"), ("tab", "next pane")];
-    if app.dash.focus == Focus::Banner {
-        h[1] = ("enter", "review");
-    }
-    h.extend([("s", "start/stop"), ("r", "restart"), ("l", "full log"), ("?", "help")]);
-    h
+    let enter = if app.dash.focus == Focus::Banner { ("enter", "review") } else { ("enter", "open") };
+    vec![("s", "start/stop"), ("r", "restart"), ("l", "full output"), ("↑↓", "select"), enter, ("tab", "next pane")]
 }
 
+const BANNER_H: u16 = 3;
+const RUNS_MIN_H: u16 = 3;
+const RUNS_MAX_H: u16 = 7;
+const SERVICES_MIN_H: u16 = 6;
+
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
-    let banner_h = if app.waiting.is_empty() { 0 } else { 4 };
-    let [banner, body] = Layout::vertical([Constraint::Length(banner_h), Constraint::Min(0)]).areas(area);
+    let banner_h = if app.waiting.is_empty() { 0 } else { BANNER_H.min(area.height) };
+    let rest = area.height - banner_h;
+    let projects_h = (app.projects.len().max(1) as u16 + 3).min(rest.saturating_sub(RUNS_MIN_H + SERVICES_MIN_H));
+    let runs_h = (app.recent.len() as u16 + 2).clamp(RUNS_MIN_H, RUNS_MAX_H).min(rest.saturating_sub(projects_h + SERVICES_MIN_H));
+    let [banner, projects, runs, bottom] =
+        Layout::vertical([Constraint::Length(banner_h), Constraint::Length(projects_h), Constraint::Length(runs_h), Constraint::Min(0)])
+            .areas(area);
+    let [services, log] = Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(bottom);
     if banner_h > 0 {
         draw_banner(app, f, banner);
     }
-    let svc_rows = selected_project(app).map(|p| service_rows(p).len()).unwrap_or(0) as u16;
-    let top_h = (app.projects.len() as u16 + 5).max(svc_rows + 2).max(7).min(body.height / 2 + 2);
-    let [top, bottom] = Layout::vertical([Constraint::Length(top_h), Constraint::Min(0)]).areas(body);
-    let [tl, tr] = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).areas(top);
-    let [bl, br] = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).areas(bottom);
-    draw_projects(app, f, tl);
-    draw_services(app, f, tr);
-    draw_runs(app, f, bl);
-    draw_log(app, f, br);
+    draw_projects(app, f, projects);
+    draw_runs(app, f, runs);
+    draw_services(app, f, services);
+    draw_log(app, f, log);
 }
 
 fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
@@ -308,53 +246,50 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed_alert(f, area, &title, true);
     app.hits.add(area, Target::DashBanner, 0);
     let a = &app.waiting[0];
-    let run = app.recent.iter().find(|r| r.id == a.run_id);
     let w = inner.width as usize;
-    let left_mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
-    let mut l1 = vec![
-        left_mark,
+    let mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
+    let mut head = vec![
+        mark,
         Span::styled(format!("{}/{}", a.project, a.pipeline), theme::bold()),
         Span::styled(format!(" #{}", a.run_id), theme::muted()),
     ];
     if let Some(env) = &a.env {
-        l1.push(Span::styled("   env ", theme::muted()));
-        l1.push(Span::styled(env.clone(), theme::warning()));
+        head.push(Span::styled("  env ", theme::muted()));
+        head.push(Span::styled(env.clone(), theme::warning()));
     }
-    if let Some(r) = run {
-        l1.push(Span::styled("   commit ", theme::muted()));
-        l1.push(Span::styled(r.commit.clone().unwrap_or_else(|| "-".into()), theme::text()));
-        let (t, s) = run_tree_word(r);
-        let t = if t == "clean" { "clean, pushed".to_string() } else { t };
-        l1.push(Span::styled(format!("   {t}"), if r.dirty || r.unpushed { s } else { theme::text() }));
-    }
-    let left_secs = a.expires_at - now();
+    let more = if app.waiting.len() > 1 { format!(" (+{} more)", app.waiting.len() - 1) } else { String::new() };
     let right = vec![
-        Span::styled(format!("expires {} ({})   ", fmt_clock(a.expires_at), fmt_age(left_secs)), theme::muted()),
+        Span::styled(format!("expires {} ({})   ", fmt_clock(a.expires_at), fmt_age(a.expires_at - now())), theme::muted()),
         Span::styled("enter", theme::key()),
         Span::styled(" review", theme::text()),
     ];
     let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
-    let mut line1 = clip_line(l1, w.saturating_sub(right_w + 2)).spans;
-    let used: usize = line1.iter().map(|s| width(&s.content)).sum();
-    line1.push(Span::raw(" ".repeat(w.saturating_sub(used + right_w))));
-    line1.extend(right);
-    let more = if app.waiting.len() > 1 { format!("  (+{} more)", app.waiting.len() - 1) } else { String::new() };
-    let l2 =
-        clip_line(vec![Span::raw("  "), Span::styled(format!("\"{}\"", a.message), theme::text()), Span::styled(more, theme::muted())], w);
-    f.render_widget(para(vec![clip_line(line1, w), l2]), inner);
+    let avail = w.saturating_sub(right_w + 2);
+    let head_w: usize = head.iter().map(|s| width(&s.content)).sum::<usize>() + 2;
+    let message = Span::styled(format!("\"{}\"", a.message), theme::text());
+    head.push(Span::raw("  "));
+    head.extend(clip_line(vec![message], avail.saturating_sub(head_w + width(&more))).spans);
+    head.push(Span::styled(more, theme::muted()));
+    let mut line = clip_line(head, avail).spans;
+    let used: usize = line.iter().map(|s| width(&s.content)).sum();
+    line.push(Span::raw(" ".repeat(w.saturating_sub(used + right_w))));
+    line.extend(right);
+    f.render_widget(para(vec![Line::from(line)]), inner);
 }
 
 fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     let focused = matches!(app.dash.focus, Focus::Projects);
-    let inner = framed(f, area, vec![title_text("projects"), title_muted(format!(" {}", app.projects.len()))], focused);
+    let inner = framed(f, area, vec![title_text("projects")], focused);
     let w = inner.width;
+    let visible = (inner.height as usize).saturating_sub(1);
+    let start = app.dash.project_sel.saturating_sub(visible.saturating_sub(1));
     // Project rows start below the column header.
-    app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, 0);
+    app.hits.add(Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner }, Target::DashProjects, start);
     let mut lines = vec![row(
         vec![
             cell("", theme::muted(), 1),
-            cell("project", theme::muted(), 18),
-            cell("branch", theme::muted(), 0),
+            cell("project", theme::muted(), 0),
+            cell("branch", theme::muted(), 20),
             cell("tree", theme::muted(), 9),
             cell("↑ ↓", theme::muted(), 7),
             cell("services", theme::muted(), 18),
@@ -367,7 +302,7 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
     } else if app.projects.is_empty() {
         lines.push(Line::styled("  no projects in groundcontrol.yaml", theme::muted()));
     }
-    for (i, p) in app.projects.iter().enumerate() {
+    for (i, p) in app.projects.iter().enumerate().skip(start).take(visible) {
         let sel = i == app.dash.project_sel;
         let (branch, tree, ab) = match (&p.disabled, &p.git) {
             (Some(_), _) => (("disabled".to_string(), theme::danger()), ("-".to_string(), theme::muted()), "".to_string()),
@@ -380,129 +315,20 @@ fn draw_projects(app: &App, f: &mut Frame, area: Rect) {
         };
         let (svc_text, svc_style) = service_summary(p);
         let name_style = if sel { theme::bold() } else { theme::text() };
-        let mut l = row(
+        lines.push(selectable_row(
             vec![
-                cell(if sel { "▶" } else { " " }, theme::key(), 1),
-                cell(if p.busy_run.is_some() { format!("{} ●", p.id) } else { p.id.clone() }, name_style, 18),
-                cell(branch.0, branch.1, 0),
+                cell(if p.busy_run.is_some() { format!("{} ●", p.id) } else { p.id.clone() }, name_style, 0),
+                cell(branch.0, branch.1, 20),
                 cell(tree.0, tree.1, 9),
                 cell(ab, theme::text(), 7),
                 cell(svc_text, svc_style, 18),
             ],
             w,
-            1,
-        );
-        if sel && focused {
-            l = l.style(theme::selected());
-        } else if sel {
-            l = l.style(ratatui::style::Style::new().bg(theme::BAR_BG));
-        }
-        lines.push(l);
+            sel,
+            focused,
+        ));
     }
-    lines.push(Line::raw(""));
-    lines.push(clip_line(
-        vec![Span::styled("↑ ↓ are relative to the last fetch. GroundControl never fetches on its own.", theme::muted())],
-        w as usize,
-    ));
     f.render_widget(para(lines), inner);
-}
-
-fn is_running(s: &ServiceStatus) -> bool {
-    matches!(s.state, ServiceState::Running | ServiceState::Unhealthy)
-}
-
-/// "2/3 up", "1 crashed", "none".
-pub fn service_summary(p: &ProjectInfo) -> (String, ratatui::style::Style) {
-    if p.services.is_empty() {
-        return ("none".into(), theme::muted());
-    }
-    let up = p.services.iter().filter(|s| is_running(s)).count();
-    let crashed = p.services.iter().filter(|s| s.state == ServiceState::Crashed).count();
-    let total = p.services.len();
-    if crashed > 0 {
-        return (format!("{up}/{total} up  {crashed} crashed"), theme::danger());
-    }
-    let style = if up == 0 {
-        theme::muted()
-    } else if up == total {
-        theme::success()
-    } else {
-        theme::warning()
-    };
-    (format!("{up}/{total} up"), style)
-}
-
-pub fn group_word(p: &ProjectInfo, g: &GroupInfo) -> (String, ratatui::style::Style) {
-    let up = g.members.iter().filter(|m| p.services.iter().any(|s| &s.id == *m && is_running(s))).count();
-    let crashed = g.members.iter().any(|m| p.services.iter().any(|s| s.id == *m && s.state == ServiceState::Crashed));
-    let n = g.members.len();
-    if up == n {
-        (format!("running {up}/{n}"), theme::success())
-    } else if up == 0 && !crashed {
-        (format!("stopped 0/{n}"), theme::muted())
-    } else if crashed {
-        (format!("partial {up}/{n}"), theme::danger())
-    } else {
-        (format!("partial {up}/{n}"), theme::warning())
-    }
-}
-
-/// Lines for a services pane (shared with the project screen).
-pub fn service_lines(p: &ProjectInfo, sel: Option<usize>, w: u16) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for (i, r) in service_rows(p).iter().enumerate() {
-        let is_sel = sel == Some(i);
-        let marker = if is_sel { "▶" } else { " " };
-        let mut l = match r {
-            SvcRow::Group(g) => {
-                let gi = p.groups.iter().find(|x| &x.id == g).unwrap();
-                let (word, style) = group_word(p, gi);
-                row(
-                    vec![
-                        cell(marker, theme::key(), 1),
-                        cell("grp", theme::muted(), 3),
-                        cell(g.clone(), theme::text(), 14),
-                        cell(word, style, 16),
-                        cell(gi.members.join(" → "), theme::muted(), 0),
-                    ],
-                    w,
-                    1,
-                )
-            }
-            SvcRow::Service(id) => {
-                let s = p.services.iter().find(|x| &x.id == id).unwrap();
-                let (sym, word, style) = service_word(s);
-                let port = s.port.map(|p| format!(":{p}")).unwrap_or_default();
-                let detail = match (&s.message, s.started_at) {
-                    (Some(m), _) => m.clone(),
-                    (None, Some(t)) if s.state.is_up() => format!("up {}", fmt_age(now() - t)),
-                    _ if !s.depends_on.is_empty() && s.state == ServiceState::Stopped => format!("needs {}", s.depends_on.join(", ")),
-                    _ => String::new(),
-                };
-                let detail_style = if s.state == ServiceState::Crashed { theme::danger() } else { theme::muted() };
-                row(
-                    vec![
-                        cell(marker, theme::key(), 1),
-                        cell(sym, style, 3),
-                        cell(id.clone(), theme::text(), 14),
-                        cell(word, style, 16),
-                        cell(port, theme::muted(), 6),
-                        cell(detail, detail_style, 0),
-                    ],
-                    w,
-                    1,
-                )
-            }
-        };
-        if is_sel {
-            l = l.style(theme::selected());
-        }
-        lines.push(l);
-    }
-    if lines.is_empty() {
-        lines.push(Line::styled(" no services", theme::muted()));
-    }
-    lines
 }
 
 fn draw_services(app: &App, f: &mut Frame, area: Rect) {
@@ -512,20 +338,16 @@ fn draw_services(app: &App, f: &mut Frame, area: Rect) {
         return;
     };
     let inner = framed(f, area, vec![title_text(p.id.clone()), title_muted(" services")], focused);
-    app.hits.add(inner, Target::DashServices, 0);
-    let rows = service_rows(p);
-    let sel = focused.then_some(app.dash.service_sel.min(rows.len().saturating_sub(1)));
-    let mut lines = service_lines(p, sel, inner.width);
-    if !focused && !rows.is_empty() {
-        let i = app.dash.service_sel.min(rows.len() - 1);
-        lines[i] = lines[i].clone().style(ratatui::style::Style::new().bg(theme::BAR_BG));
-    }
+    let sel = app.dash.service_sel.min(service_rows(p).len().saturating_sub(1));
+    let start = sel.saturating_sub((inner.height as usize).saturating_sub(1));
+    app.hits.add(inner, Target::DashServices, start);
+    let lines = service_lines(p, sel, focused, inner.width).into_iter().skip(start).collect();
     f.render_widget(para(lines), inner);
 }
 
 fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
     let focused = app.dash.focus == Focus::Runs;
-    let inner = framed(f, area, vec![title_text("runs"), title_muted("  with a window")], focused);
+    let inner = framed(f, area, vec![title_text("runs")], focused);
     let w = inner.width;
     let mut lines = Vec::new();
     if app.recent.is_empty() {
@@ -540,37 +362,40 @@ fn draw_runs(app: &App, f: &mut Frame, area: Rect) {
         if r.dirty {
             name.push_str(" dirty");
         }
-        let env_style = if r.protected { theme::warning() } else { theme::text() };
-        let mut l = row(
+        let (env, env_style) = match (&r.env, r.protected) {
+            (Some(e), true) => (format!("{} {e}", theme::PROTECTED), theme::warning()),
+            (None, true) => (theme::PROTECTED.to_string(), theme::warning()),
+            (Some(e), false) => (e.clone(), theme::text()),
+            (None, false) => ("-".to_string(), theme::text()),
+        };
+        let selected = i == app.dash.run_sel;
+        lines.push(selectable_row(
             vec![
                 cell(word, style, 5),
                 cell(r.id.to_string(), theme::muted(), 5),
                 cell(name, theme::text(), 0),
-                cell(r.env.clone().unwrap_or_else(|| "-".into()), env_style, 7),
+                cell(env, env_style, 9),
                 cell(r.commit.clone().unwrap_or_else(|| "-".into()), theme::text(), 8),
                 cell(fmt_duration(run_duration(r)), theme::text(), 7),
                 cell(fmt_when(r.started_at), theme::muted(), 12),
             ],
             w,
-            1,
-        );
-        if focused && i == app.dash.run_sel {
-            l = l.style(theme::selected());
-        }
-        lines.push(l);
+            selected,
+            focused,
+        ));
     }
     f.render_widget(para(lines), inner);
 }
 
 fn draw_log(app: &mut App, f: &mut Frame, area: Rect) {
     let title = match &app.dash.log_target {
-        Some((_, s)) => vec![title_text(format!("{s} log")), title_muted(format!("  last {LOG_LINES} lines"))],
-        None => vec![title_text("log")],
+        Some((_, s)) => vec![title_text(format!("{s} output")), title_muted(format!("  last {LOG_LINES} lines"))],
+        None => vec![title_text("output")],
     };
     let inner = framed(f, area, title, false);
     app.hits.add(inner, Target::DashLog, 0);
     if app.dash.log_target.is_none() {
-        f.render_widget(para(vec![Line::styled(" select a service to see its log", theme::muted())]), inner);
+        f.render_widget(para(vec![Line::styled(" select a service to see its output", theme::muted())]), inner);
         return;
     }
     if app.dash.log.is_empty() {

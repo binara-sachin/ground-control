@@ -1,45 +1,17 @@
-//! The TUI's requests to its in-process engine, the engine's responses and
-//! events, and the data types they carry (§10.6).
+//! The data the engine hands the TUI (projects, runs, services, health and the
+//! events that update them) and the inputs the TUI passes to the engine, plus
+//! the status values the window schema encodes (§11).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-
-pub use crate::config::{Diagnostic, Health, InputKind, RestartPolicy, ServiceAction, Severity};
+use crate::config::{Diagnostic, InputKind};
+use crate::git::GitStatus;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Timestamp = i64; // unix seconds
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "method", content = "params")]
-pub enum Request {
-    #[serde(rename = "projects.list")]
-    ProjectsList,
-    #[serde(rename = "run.start")]
-    RunStart(RunStartParams),
-    #[serde(rename = "run.cancel")]
-    RunCancel { id: i64 },
-    #[serde(rename = "run.decide")]
-    RunDecide { id: i64, step: usize, decision: Decision, confirmed: bool },
-    /// Every run that still has a window, newest first.
-    #[serde(rename = "runs.list")]
-    RunsList,
-    #[serde(rename = "run.get")]
-    RunGet { id: i64 },
-    #[serde(rename = "log.read")]
-    LogRead { run: i64, step: usize },
-    #[serde(rename = "service.control")]
-    ServiceControl { project: String, id: String, action: ServiceAction },
-    #[serde(rename = "service.log")]
-    ServiceLog { project: String, id: String },
-    #[serde(rename = "health.get")]
-    HealthGet,
-    #[serde(rename = "subscribe")]
-    Subscribe { topics: Vec<String> },
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct RunStartParams {
     pub project: String,
     pub pipeline: String,
@@ -51,15 +23,13 @@ pub struct RunStartParams {
     pub confirmed: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Approve,
     Reject,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     BadRequest,
     NotFound,
@@ -68,22 +38,25 @@ pub enum ErrorCode {
     Internal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
-pub enum Response {
-    Ok,
-    Projects(Vec<ProjectInfo>),
-    RunStarted { id: i64 },
-    DryRun(DryRunPlan),
-    Runs(RunPage),
-    Run(RunDetail),
-    Log(LogChunk),
-    Text { text: String },
-    Health(HealthInfo),
+/// What the TUI is showing, which tells the engine what to poll: the Health
+/// screen's Docker probe, the runs whose step output is followed, and the
+/// (project, service) pairs whose output is followed. Each `Engine::watch`
+/// replaces the previous one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Watch {
+    pub health: bool,
+    pub runs: BTreeSet<i64>,
+    pub services: BTreeSet<(String, String)>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+/// What `Engine::start_run` did: opened a run's window, or only planned it.
+#[derive(Debug, Clone)]
+pub enum StartOutcome {
+    Started(i64),
+    DryRun(DryRunPlan),
+}
+
+#[derive(Debug, Clone)]
 pub enum Event {
     Run(RunSummary),
     Step {
@@ -101,7 +74,7 @@ pub enum Event {
         project: String,
         git: GitStatus,
     },
-    /// The project list changed shape (config reload); refetch `projects.list`.
+    /// The project list changed shape (config reload); call `Engine::projects` again.
     Projects,
     Config(ConfigStatus),
     Log(LogChunk),
@@ -115,35 +88,10 @@ pub enum Event {
 
 // ── data ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct GitStatus {
-    pub branch: Option<String>,
-    pub commit: Option<String>,
-    pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
-    pub staged: u32,
-    pub modified: u32,
-    pub untracked: u32,
-    pub conflicted: u32,
-    /// `Some(true)` when `origin` matches the declared remote, `None` when no remote is declared.
-    pub origin_matches: Option<bool>,
-    pub origin_url: Option<String>,
-    pub checked_at: Timestamp,
-    pub error: Option<String>,
-}
-
-impl GitStatus {
-    pub fn is_clean(&self) -> bool {
-        self.staged + self.modified + self.untracked + self.conflicted == 0
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProjectInfo {
     pub id: String,
     pub path: String,
-    pub remote: Option<String>,
     pub disabled: Option<String>,
     pub busy_run: Option<i64>,
     pub git: Option<GitStatus>,
@@ -153,20 +101,19 @@ pub struct ProjectInfo {
     pub pipelines: Vec<PipelineInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EnvInfo {
     pub name: String,
     pub protected: bool,
-    pub var_names: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GroupInfo {
     pub id: String,
     pub members: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PipelineInfo {
     pub id: String,
     pub protected: bool,
@@ -178,7 +125,7 @@ pub struct PipelineInfo {
     pub waiting: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct InputInfo {
     pub name: String,
     pub kind: InputKind,
@@ -187,7 +134,7 @@ pub struct InputInfo {
     pub default: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct StepOutline {
     pub kind: StepKindName,
     pub label: String,
@@ -199,8 +146,7 @@ pub struct StepOutline {
     pub previews: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepKindName {
     Run,
     Approve,
@@ -224,8 +170,7 @@ impl StepKindName {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceState {
     Stopped,
     Starting,
@@ -266,7 +211,7 @@ impl ServiceState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServiceStatus {
     pub project: String,
     pub id: String,
@@ -281,12 +226,10 @@ pub struct ServiceStatus {
     /// "port 5432 is in use (not started by GroundControl)".
     pub message: Option<String>,
     pub depends_on: Vec<String>,
-    pub restart: RestartPolicy,
     pub has_health_check: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
     Running,
     AwaitingApproval,
@@ -323,7 +266,7 @@ impl RunStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RunSummary {
     pub id: i64,
     pub project: String,
@@ -341,8 +284,7 @@ pub struct RunSummary {
     pub finished_at: Option<Timestamp>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepStatus {
     Pending,
     Running,
@@ -384,7 +326,7 @@ impl StepStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StepInfo {
     pub index: usize,
     pub name: String,
@@ -395,11 +337,9 @@ pub struct StepInfo {
     pub exit_code: Option<i32>,
     pub started_at: Option<Timestamp>,
     pub finished_at: Option<Timestamp>,
-    pub has_log: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalStatus {
     Pending,
     Approved,
@@ -429,7 +369,7 @@ impl ApprovalStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalInfo {
     pub run_id: i64,
     pub step_index: usize,
@@ -439,30 +379,27 @@ pub struct ApprovalInfo {
     pub protected: bool,
     pub message: String,
     pub status: ApprovalStatus,
-    pub requested_at: Timestamp,
-    pub decided_at: Option<Timestamp>,
     pub expires_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RunDetail {
     pub summary: RunSummary,
     pub inputs: BTreeMap<String, String>,
     pub steps: Vec<StepInfo>,
     pub approvals: Vec<ApprovalInfo>,
     pub outputs: Vec<OutputInfo>,
-    pub unpushed_count: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutputInfo {
     pub key: String,
     pub value: String,
     pub step_index: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunPage {
+#[derive(Debug, Clone)]
+pub struct RunList {
     /// Runs that still have a window, newest first. There is no history:
     /// a succeeded run's window closes itself after 5 seconds.
     pub runs: Vec<RunSummary>,
@@ -470,7 +407,7 @@ pub struct RunPage {
     pub waiting: Vec<ApprovalInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LogChunk {
     pub run: i64,
     pub step: usize,
@@ -481,7 +418,7 @@ pub struct LogChunk {
     pub complete: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DryRunPlan {
     pub project: String,
     pub pipeline: String,
@@ -493,7 +430,7 @@ pub struct DryRunPlan {
     pub blockers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DryRunStep {
     pub index: usize,
     pub kind: StepKindName,
@@ -505,20 +442,20 @@ pub struct DryRunStep {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ToolStatus {
     pub name: String,
     pub path: Option<String>,
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Reachability {
     pub ok: bool,
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ConfigStatus {
     pub path: String,
     /// Whether the file on disk is currently valid.
@@ -530,7 +467,7 @@ pub struct ConfigStatus {
     pub loaded_at: Option<Timestamp>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct HealthInfo {
     pub tools: Vec<ToolStatus>,
     pub tools_checked_at: Option<Timestamp>,
@@ -544,16 +481,4 @@ pub struct HealthInfo {
 
 pub fn now() -> Timestamp {
     chrono::Utc::now().timestamp()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn request_names() {
-        let s = serde_json::to_string(&Request::RunCancel { id: 412 }).unwrap();
-        assert_eq!(s, r#"{"method":"run.cancel","params":{"id":412}}"#);
-        assert!(matches!(serde_json::from_str(r#"{"method":"projects.list"}"#).unwrap(), Request::ProjectsList));
-    }
 }

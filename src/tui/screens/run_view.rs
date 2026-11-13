@@ -1,6 +1,7 @@
-//! Run view (§10.3, §6.3): header, steps, outputs, live output pane with
-//! follow mode, and the approval panel. Approving happens only here; a
-//! protected approval needs a confirm keypress, rejecting takes one key.
+//! Run view (§10.3, §6.3): header, steps beside the run's inputs and outputs,
+//! the live output pane with follow mode, and the approval panel. Approving
+//! happens only here; a protected approval needs a confirm keypress, rejecting
+//! takes one key.
 
 use std::collections::HashMap;
 
@@ -10,13 +11,14 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Confirm, ConfirmAction, Overlay, Tag, View};
+use super::super::app::{App, View};
+use super::super::clipboard::copy_to_clipboard;
 use super::super::mouse::{HitMap, Target};
 use super::super::term_view::TermView;
 use super::super::theme;
 use super::super::widgets::*;
-use super::dialog::wrap;
-use crate::protocol::*;
+use super::overlay::{Confirm, ConfirmAction, Overlay};
+use crate::model::*;
 
 pub struct RunView {
     pub id: i64,
@@ -57,7 +59,7 @@ impl RunView {
     fn wanted_reads(&mut self) -> Vec<(i64, usize)> {
         let Some(d) = &self.detail else { return Vec::new() };
         let Some(step) = d.steps.get(self.sel) else { return Vec::new() };
-        if !step.has_log && step.status != StepStatus::Running {
+        if step.started_at.is_none() && step.status != StepStatus::Running {
             return Vec::new();
         }
         let v = self.outputs.entry(self.sel).or_default();
@@ -189,13 +191,13 @@ pub fn key(app: &mut App, k: KeyEvent) {
         KeyCode::Char('y') => {
             let cmd = view(app).detail.as_ref().and_then(|d| d.steps.get(view(app).sel)).map(|s| s.command.clone());
             if let Some(cmd) = cmd {
-                super::super::copy_to_clipboard(app.tx.clone(), cmd, "command copied");
+                copy_to_clipboard(app.tx.clone(), cmd, "command copied");
             }
         }
         KeyCode::Char('Y') => {
             let v = view(app);
             let text = v.outputs.get(&v.sel).map(|o| o.plain_text()).unwrap_or_default();
-            super::super::copy_to_clipboard(app.tx.clone(), text, "output copied (colour codes stripped)");
+            copy_to_clipboard(app.tx.clone(), text, "output copied (colour codes stripped)");
         }
         KeyCode::Char('c') => {
             let v = view(app);
@@ -241,18 +243,12 @@ pub fn key(app: &mut App, k: KeyEvent) {
                     action: ConfirmAction::Approve { run: a.run_id, step: a.step_index },
                 }));
             } else {
-                app.request(
-                    Request::RunDecide { id: a.run_id, step: a.step_index, decision: Decision::Approve, confirmed: false },
-                    Tag::Decide,
-                );
+                app.decide(a.run_id, a.step_index, Decision::Approve, false);
             }
         }
         KeyCode::Char('x') => {
             if let Some(a) = view(app).pending_approval().cloned() {
-                app.request(
-                    Request::RunDecide { id: a.run_id, step: a.step_index, decision: Decision::Reject, confirmed: false },
-                    Tag::Decide,
-                );
+                app.decide(a.run_id, a.step_index, Decision::Reject, false);
             } else {
                 app.toast("nothing is waiting for approval", super::super::app::Level::Info);
             }
@@ -289,12 +285,12 @@ fn scroll(app: &mut App, f: impl FnOnce(&mut TermView)) {
 fn load_selected(app: &mut App) {
     let reads = view_mut(app).wanted_reads();
     for (run, step) in reads {
-        app.request(Request::LogRead { run, step }, Tag::Log { run, step });
+        app.fetch_step_output(run, step);
     }
 }
 
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    let mut h = vec![("↑↓", "step"), ("enter", "show output"), ("y", "copy command"), ("Y", "copy output"), ("f", "follow")];
+    let mut h = Vec::new();
     let v = view(app);
     if v.pending_approval().is_some() {
         h.extend([("a", "approve"), ("x", "reject")]);
@@ -302,7 +298,24 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     if v.detail.as_ref().is_some_and(|d| d.summary.status.is_active()) {
         h.push(("c", "cancel run"));
     }
+    h.extend([("↑↓", "step"), ("enter", "output"), ("f", "follow"), ("y/Y", "copy")]);
     h
+}
+
+/// The outputs · inputs pane is at least this tall, an empty one included.
+const IO_MIN_H: u16 = 3;
+
+/// Rows of content in the inputs · outputs pane.
+fn io_len(d: &RunDetail) -> usize {
+    let both = !d.inputs.is_empty() && !d.outputs.is_empty();
+    (d.inputs.len() + d.outputs.len() + usize::from(both)).max(1)
+}
+
+/// Height of the outputs · inputs pane in a left column `col_h` rows tall: its
+/// content, but never so tall that the steps pane loses rows it needs.
+fn io_height(d: &RunDetail, col_h: u16) -> u16 {
+    let steps_need = (d.steps.len() as u16 + 5).min(col_h.saturating_sub(3));
+    (io_len(d) as u16 + 2).min(col_h.saturating_sub(steps_need)).max(IO_MIN_H)
 }
 
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
@@ -315,22 +328,14 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let approval_h = if approval.is_some() { 5 } else { 0 };
     let [header, body, appr] = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(approval_h)]).areas(area);
     draw_header(&d, f, header);
-    let [left, right] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
-    let out_rows = (d.outputs.len() + d.inputs.len()).max(1) as u16 + 2 + u16::from(!d.inputs.is_empty() && !d.outputs.is_empty());
-    let steps_h = (d.steps.len() as u16 + 5).min(left.height.saturating_sub(3));
-    let [steps_area, outputs_area, info_area] = Layout::vertical([
-        Constraint::Length(steps_h),
-        Constraint::Length(out_rows.min(left.height.saturating_sub(steps_h))),
-        Constraint::Min(0),
-    ])
-    .areas(left);
+    let [left, output] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
+    let [steps_area, io_area] = Layout::vertical([Constraint::Min(0), Constraint::Length(io_height(&d, left.height))]).areas(left);
     draw_steps(v, &d, f, steps_area, &app.hits);
-    draw_outputs(&d, f, outputs_area);
-    draw_info(&d, f, info_area);
-    app.hits.add(right, Target::RunOutput, 0);
-    draw_output(v, &d, f, right);
+    draw_io(&d, f, io_area);
+    app.hits.add(output, Target::RunOutput, 0);
+    draw_output(v, &d, f, output);
     if let Some(a) = approval {
-        draw_approval(&a, &d, f, appr);
+        draw_approval(&a, f, appr);
     }
 }
 
@@ -416,20 +421,12 @@ fn draw_steps(v: &RunView, d: &RunDetail, f: &mut Frame, area: Rect, hits: &HitM
         } else {
             theme::text()
         };
-        let mut l = row(
-            vec![
-                cell(if sel { "▶" } else { " " }, theme::key(), 1),
-                cell(sym, sym_style, 1),
-                cell(s.name.clone(), name_style, 0),
-                cell(detail, detail_style, 18),
-            ],
+        lines.push(selectable_row(
+            vec![cell(sym, sym_style, 1), cell(s.name.clone(), name_style, 0), cell(detail, detail_style, 18)],
             w,
-            1,
-        );
-        if sel {
-            l = l.style(theme::selected());
-        }
-        lines.push(l);
+            sel,
+            true,
+        ));
     }
     lines.push(Line::raw(""));
     if let Some(s) = d.steps.get(v.sel) {
@@ -448,11 +445,11 @@ fn draw_steps(v: &RunView, d: &RunDetail, f: &mut Frame, area: Rect, hits: &HitM
     f.render_widget(para(lines), inner);
 }
 
-fn draw_outputs(d: &RunDetail, f: &mut Frame, area: Rect) {
+fn draw_io(d: &RunDetail, f: &mut Frame, area: Rect) {
     if area.height < 3 {
         return;
     }
-    let inner = framed(f, area, vec![title_text("outputs")], false);
+    let inner = framed(f, area, vec![title_text("outputs · inputs")], false);
     let w = inner.width as usize;
     let mut lines = Vec::new();
     for o in &d.outputs {
@@ -466,42 +463,24 @@ fn draw_outputs(d: &RunDetail, f: &mut Frame, area: Rect) {
             w,
         ));
     }
-    if !d.inputs.is_empty() {
-        if !d.outputs.is_empty() {
-            lines.push(Line::raw(""));
-        }
-        for (k, val) in &d.inputs {
-            lines.push(clip_line(vec![Span::styled(format!("input {k}  "), theme::muted()), Span::styled(val.clone(), theme::text())], w));
-        }
+    if !d.inputs.is_empty() && !d.outputs.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    for (k, val) in &d.inputs {
+        lines.push(clip_line(vec![Span::styled(format!("input {k}  "), theme::muted()), Span::styled(val.clone(), theme::text())], w));
     }
     if lines.is_empty() {
-        lines.push(Line::styled("none yet", theme::muted()));
+        lines.push(Line::styled("no inputs or outputs yet", theme::muted()));
     }
-    f.render_widget(para(lines), inner);
-}
-
-fn draw_info(d: &RunDetail, f: &mut Frame, area: Rect) {
-    if area.height < 3 || !(d.summary.dirty || d.summary.unpushed) {
-        return;
-    }
-    let inner = framed(f, area, vec![title_text("tree at start")], false);
-    let w = inner.width as usize;
-    let mut lines = Vec::new();
-    if d.summary.dirty {
-        lines.push(clip_line(
-            vec![Span::styled("dirty  ", theme::warning()), Span::styled("the tree had uncommitted changes", theme::text())],
-            w,
-        ));
-    }
-    if d.summary.unpushed {
-        let n = d.unpushed_count.unwrap_or(0);
-        lines.push(clip_line(
-            vec![
-                Span::styled("unpushed  ", theme::warning()),
-                Span::styled(format!("HEAD was {n} commit{} ahead of origin", if n == 1 { "" } else { "s" }), theme::text()),
-            ],
-            w,
-        ));
+    let rows = inner.height as usize;
+    if lines.len() > rows {
+        if rows <= 1 {
+            lines.truncate(1);
+        } else {
+            let hidden = lines.len() - rows + 1;
+            lines.truncate(rows - 1);
+            lines.push(Line::styled(format!("… +{hidden} more"), theme::muted()));
+        }
     }
     f.render_widget(para(lines), inner);
 }
@@ -527,15 +506,8 @@ fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
         title.push(title_muted(format!("  →{}", out.hscroll)));
     }
     let inner = framed(f, area, title, false);
-    let [cmd_area, term_area] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(inner);
-    let cmd = match step.kind {
-        StepKindName::Run => format!("$ {}", step.command.lines().next().unwrap_or("")),
-        StepKindName::Approve => format!("approval: {}", step.command),
-        StepKindName::Service => format!("service {}", step.command),
-    };
-    f.render_widget(para(vec![clip_line(vec![Span::styled(cmd, theme::muted())], cmd_area.width as usize)]), cmd_area);
     if let Some(e) = v.log_errors.get(&step.index) {
-        f.render_widget(para(vec![Line::styled(e.clone(), theme::danger())]), term_area);
+        f.render_widget(para(vec![Line::styled(e.clone(), theme::danger())]), inner);
         return;
     }
     if out.is_empty() {
@@ -547,13 +519,13 @@ fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
             _ if out.loading => "loading…",
             _ => "no output",
         };
-        f.render_widget(para(vec![Line::styled(msg, theme::muted())]), term_area);
+        f.render_widget(para(vec![Line::styled(msg, theme::muted())]), inner);
         return;
     }
-    out.render(term_area, f.buffer_mut());
+    out.render(inner, f.buffer_mut());
 }
 
-fn draw_approval(a: &ApprovalInfo, d: &RunDetail, f: &mut Frame, area: Rect) {
+fn draw_approval(a: &ApprovalInfo, f: &mut Frame, area: Rect) {
     let inner = framed_alert(f, area, &format!("step {}  approval", a.step_index + 1), true);
     let w = inner.width as usize;
     let left = a.expires_at - now();
@@ -561,18 +533,13 @@ fn draw_approval(a: &ApprovalInfo, d: &RunDetail, f: &mut Frame, area: Rect) {
     for chunk in wrap(&a.message, w.saturating_sub(2)).into_iter().take(2) {
         lines.push(Line::styled(format!(" {chunk}"), theme::bold()));
     }
-    let who = if a.protected { "protected: approve asks for a confirm keypress" } else { "approve with one key" };
-    let mut l = vec![
+    let l = vec![
         Span::styled(format!(" No answer by {} cancels the run ({} left).  ", fmt_clock(a.expires_at), fmt_age(left)), theme::muted()),
         Span::styled("a", theme::key()),
         Span::styled(" approve  ", theme::text()),
         Span::styled("x", theme::key()),
-        Span::styled(" reject  ", theme::text()),
-        Span::styled(format!("· {who}"), theme::muted()),
+        Span::styled(" reject", theme::text()),
     ];
-    if d.summary.env.is_some() {
-        l.push(Span::styled(format!(" · {}/{}", d.summary.project, d.summary.env.clone().unwrap_or_default()), theme::muted()));
-    }
     while lines.len() < 2 {
         lines.push(Line::raw(""));
     }

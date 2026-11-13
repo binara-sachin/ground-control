@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, Health, Project, Service, ServiceAction};
 use crate::ctx::Ctx;
-use crate::protocol::{ServiceState, ServiceStatus};
+use crate::model::{ServiceState, ServiceStatus};
 use crate::tmux::NewWindow;
 use crate::window::{self, ServiceWindow, Windows};
 
@@ -36,7 +36,7 @@ pub fn live_window<'a>(windows: &'a Windows, project: &str, service: &str) -> Op
 }
 
 /// Dependency order for a set of services: dependencies first.
-pub fn start_order(project: &Project, members: &[String]) -> Vec<String> {
+fn start_order(project: &Project, members: &[String]) -> Vec<String> {
     fn visit(p: &Project, id: &str, seen: &mut HashSet<String>, out: &mut Vec<String>) {
         if !seen.insert(id.to_string()) {
             return;
@@ -72,7 +72,6 @@ pub fn status(project: &Project, svc: &Service, windows: &Windows) -> ServiceSta
         last_exit_code: None,
         message: None,
         depends_on: svc.depends_on.clone(),
-        restart: svc.restart,
         has_health_check: svc.health.is_some(),
     };
     let all = service_windows(windows, &project.id, &svc.id);

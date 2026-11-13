@@ -1,6 +1,6 @@
 //! A small YAML document tree that keeps line and column positions for every
 //! node, built on `yaml-rust2`'s event parser. Validation errors point at the
-//! exact place in `groundcontrol.yaml` (§5.1, §7.4).
+//! exact place in `groundcontrol.yaml` (§5.1, §7.3).
 
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser};
 use yaml_rust2::scanner::{Marker, TScalarStyle};

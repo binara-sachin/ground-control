@@ -8,13 +8,14 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use super::super::app::{App, Level, Overlay, Tag, View};
+use super::super::app::{App, Level, Reply, View};
 use super::super::mouse::{HitMap, Target};
 use super::super::theme;
 use super::super::widgets::*;
-use super::dashboard::{self, service_rows};
 use super::dialog::RunDialog;
-use crate::protocol::*;
+use super::overlay::Overlay;
+use super::services::{self, service_rows};
+use crate::model::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -36,7 +37,7 @@ impl ProjectView {
         ProjectView { id: id.to_string(), focus: Focus::Pipelines, sel: 0, svc_sel: 0, env_choice: HashMap::new() }
     }
 
-    pub fn env_for(&self, p: &PipelineInfo) -> Option<String> {
+    fn env_for(&self, p: &PipelineInfo) -> Option<String> {
         if p.environments.is_empty() {
             return None;
         }
@@ -112,7 +113,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 open_dialog(app, &p, &pl, true);
             }
         }
-        // The services pane's keys act on its selection, which shows only while it has focus.
+        // The services pane's keys act on its selection, and only while it has focus.
         KeyCode::Char('s') | KeyCode::Char('r') | KeyCode::Char('l') | KeyCode::Enter if v.focus == Focus::Services => {
             let rows = service_rows(&p);
             let Some(row) = rows.get(v.svc_sel.min(rows.len().saturating_sub(1))).cloned() else {
@@ -121,11 +122,11 @@ pub fn key(app: &mut App, k: KeyEvent) {
             };
             match k.code {
                 KeyCode::Char('l') | KeyCode::Enter => {
-                    if let Some(svc) = dashboard::row_service(&p, &row) {
-                        dashboard::open_full_log(app, &p.id, &svc);
+                    if let Some(svc) = services::row_service(&p, &row) {
+                        services::open_full_log(app, &p.id, &svc);
                     }
                 }
-                c => dashboard::control(app, &p, &row, c == KeyCode::Char('r')),
+                c => services::control(app, &p, &row, c == KeyCode::Char('r')),
             }
         }
         _ => {}
@@ -163,9 +164,9 @@ fn open_dialog(app: &mut App, p: &ProjectInfo, pl: &PipelineInfo, dry: bool) {
     let mut d = RunDialog::new(p, pl, env);
     if dry && d.inputs_valid() {
         d.busy = true;
-        let req = d.request(true);
+        let params = d.start_params(true);
         app.overlay = Some(Overlay::Dialog(Box::new(d)));
-        app.request(req, Tag::DryRun);
+        app.call(move |e| async move { Reply::DryRun(e.start_run(params).await) });
         return;
     }
     if dry {
@@ -177,9 +178,9 @@ fn open_dialog(app: &mut App, p: &ProjectInfo, pl: &PipelineInfo, dry: bool) {
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match view(app).focus {
         Focus::Pipelines => {
-            vec![("↑↓", "select"), ("enter", "run"), ("d", "dry run"), ("e", "environment"), ("tab", "next pane"), ("?", "help")]
+            vec![("enter", "run"), ("d", "dry run"), ("e", "environment"), ("↑↓", "select"), ("tab", "next pane")]
         }
-        Focus::Services => vec![("↑↓", "select"), ("s", "start/stop"), ("r", "restart"), ("l", "log"), ("tab", "next pane"), ("?", "help")],
+        Focus::Services => vec![("s", "start/stop"), ("r", "restart"), ("enter/l", "full output"), ("↑↓", "select"), ("tab", "next pane")],
     }
 }
 
@@ -207,8 +208,8 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed(f, services, vec![title_text("services")], focused);
     app.hits.add(inner, Target::ProjServices, 0);
     let rows = service_rows(p);
-    let sel = focused.then_some(v.svc_sel.min(rows.len().saturating_sub(1)));
-    f.render_widget(para(dashboard::service_lines(p, sel, inner.width)), inner);
+    let sel = v.svc_sel.min(rows.len().saturating_sub(1));
+    f.render_widget(para(services::service_lines(p, sel, focused, inner.width)), inner);
 }
 
 fn draw_header(p: &ProjectInfo, f: &mut Frame, area: Rect) {
@@ -275,20 +276,16 @@ fn draw_pipelines(p: &ProjectInfo, v: &ProjectView, f: &mut Frame, area: Rect, h
         } else {
             (pl.steps.iter().map(|s| s.label.clone()).collect::<Vec<_>>().join(" + "), theme::muted())
         };
-        let mut l = row(
+        lines.push(selectable_row(
             vec![
-                cell(if sel { "▶" } else { " " }, theme::key(), 1),
                 cell(pl.id.clone(), if sel { theme::bold() } else { theme::text() }, 18),
                 cell(badge, if protected { theme::warning() } else { theme::muted() }, 12),
                 cell(hint, hint_style, 0),
             ],
             w,
-            1,
-        );
-        if sel && focused {
-            l = l.style(theme::selected());
-        }
-        lines.push(l);
+            sel,
+            focused,
+        ));
     }
     f.render_widget(para(lines), inner);
 }

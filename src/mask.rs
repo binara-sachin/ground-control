@@ -7,8 +7,8 @@
 
 use regex::bytes::Regex;
 
-pub const MIN_SECRET_LEN: usize = 6;
-pub const MASK: &[u8] = b"***";
+const MIN_SECRET_LEN: usize = 6;
+const MASK: &[u8] = b"***";
 
 #[derive(Debug, Clone)]
 pub struct Masker {

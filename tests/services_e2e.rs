@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::Env;
 use groundcontrol::config::ServiceAction;
-use groundcontrol::protocol::{ServiceState, ServiceStatus};
+use groundcontrol::model::{ServiceState, ServiceStatus};
 use groundcontrol::services;
 use groundcontrol::tmux::target;
 

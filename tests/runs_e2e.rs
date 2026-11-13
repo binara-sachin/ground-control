@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::Env;
-use groundcontrol::engine::{latest_started, split_steps};
-use groundcontrol::protocol::*;
+use groundcontrol::model::*;
 use groundcontrol::runs;
+use groundcontrol::runs::pane::{latest_started, split_steps};
 use groundcontrol::tmux::NewWindow;
 use groundcontrol::window::{RunParams, RunWindow};
 
@@ -79,7 +79,7 @@ fn params(pipeline: &str, env: Option<&str>, inputs: &[(&str, &str)], confirmed:
 
 async fn start(env: &Env, p: RunStartParams) -> Result<i64, (ErrorCode, String)> {
     match runs::start(&env.ctx, &env.config, p).await? {
-        Response::RunStarted { id } => Ok(id),
+        StartOutcome::Started(id) => Ok(id),
         other => panic!("{other:?}"),
     }
 }
@@ -126,7 +126,7 @@ async fn pipelines_end_to_end() {
     assert!(msg.contains("does not match"));
     assert!(env.windows().await.is_empty(), "nothing was opened");
 
-    // Steps, env precedence, masking and outputs, all from the window.
+    // Steps, env layers, masking and outputs, all from the window.
     let id = start(&env, params("hello", None, &[("name", "sam")], false)).await.unwrap();
     let r = finished(&env, id).await;
     assert_eq!(r.summary.status, RunStatus::Succeeded, "{r:?}");
@@ -144,7 +144,7 @@ async fn pipelines_end_to_end() {
     // Dry run executes nothing and lists env var names only.
     let mut dry = params("hello", None, &[("name", "sam")], false);
     dry.dry_run = true;
-    let Response::DryRun(plan) = runs::start(&env.ctx, &env.config, dry).await.unwrap() else { panic!() };
+    let StartOutcome::DryRun(plan) = runs::start(&env.ctx, &env.config, dry).await.unwrap() else { panic!() };
     assert_eq!(plan.steps.len(), 2);
     assert!(plan.steps[0].env_names.iter().any(|n| n.starts_with("API_TOKEN")));
     assert!(plan.steps[0].env_names.iter().any(|n| n == "INPUT_NAME"));

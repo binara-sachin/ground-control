@@ -1,22 +1,24 @@
 //! The TUI's in-process engine (docs/architecture.md, "The TUI"). It answers
-//! the TUI's `Request`s and turns what the tmux-hosted workers publish (their
+//! the TUI's calls and turns what the tmux-hosted workers publish (their
 //! windows' `@gc_*` options and pane output) into `Event`s by polling tmux.
 //! It owns no runs and no services, and stores nothing: quitting the TUI
 //! stops only the engine.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use regex::Regex;
 use tokio::sync::mpsc;
 
-use crate::config::{Config, Pipeline, Project, StepKind};
+use crate::config::{Config, Pipeline, Project, ServiceAction, StepKind};
 use crate::ctx::Ctx;
 use crate::envlayers::{self, RunScope};
-use crate::protocol::*;
-use crate::window::{self, RunWindow, Windows};
+use crate::git::GitStatus;
+use crate::model::*;
+use crate::runs::pane::{latest_started, split_steps};
+use crate::tmux::trim_capture;
+use crate::window::{self, Windows};
 
 const POLL: Duration = Duration::from_secs(1);
 const GIT_POLL: Duration = Duration::from_secs(30);
@@ -24,23 +26,7 @@ const GIT_POLL: Duration = Duration::from_secs(30);
 const DOCKER_EVERY: Duration = Duration::from_secs(30);
 
 /// Tools the steps are expected to find on `PATH` (§6.6).
-pub const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
-
-#[derive(Debug, Clone)]
-pub struct RequestError {
-    pub code: ErrorCode,
-    pub message: String,
-}
-
-impl std::fmt::Display for RequestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-fn rerr(code: ErrorCode, message: impl Into<String>) -> RequestError {
-    RequestError { code, message: message.into() }
-}
+const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
 
 pub struct Engine {
     pub ctx: Ctx,
@@ -49,7 +35,7 @@ pub struct Engine {
     config_status: Mutex<ConfigStatus>,
     git: Mutex<HashMap<String, GitStatus>>,
     git_refresh: mpsc::UnboundedSender<Option<String>>,
-    topics: Mutex<HashSet<String>>,
+    watch: Mutex<Watch>,
     events: mpsc::UnboundedSender<Event>,
     docker: Mutex<Option<(Instant, Reachability)>>,
 }
@@ -73,7 +59,7 @@ impl Engine {
             config: RwLock::new(Arc::new(Config::default())),
             git: Mutex::new(HashMap::new()),
             git_refresh: git_tx,
-            topics: Mutex::new(HashSet::new()),
+            watch: Mutex::new(Watch::default()),
             events,
             docker: Mutex::new(None),
         });
@@ -84,16 +70,12 @@ impl Engine {
         (e, rx)
     }
 
-    pub fn config(&self) -> Arc<Config> {
+    fn config(&self) -> Arc<Config> {
         self.config.read().unwrap().clone()
     }
 
     fn emit(&self, e: Event) {
         let _ = self.events.send(e);
-    }
-
-    fn subscribed(&self, topic: &str) -> bool {
-        self.topics.lock().unwrap().contains(topic)
     }
 
     /// Loads the config file; keeps the previous good config when it is invalid.
@@ -120,82 +102,82 @@ impl Engine {
         self.emit(Event::Config(status));
     }
 
-    pub fn config_status(&self) -> ConfigStatus {
+    fn config_status(&self) -> ConfigStatus {
         self.config_status.lock().unwrap().clone()
     }
 
-    /// Answers one request from the TUI.
-    pub async fn request(&self, req: Request) -> Result<Response, RequestError> {
-        let tmux_err = |e: String| rerr(ErrorCode::Internal, e);
-        let run_err = |(c, m): crate::runs::ReqError| rerr(c, m);
-        match req {
-            Request::ProjectsList => {
-                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
-                Ok(Response::Projects(self.projects(&windows)))
-            }
-            Request::RunStart(p) => {
-                let project = p.project.clone();
-                let r = crate::runs::start(&self.ctx, &self.config(), p).await.map_err(run_err);
-                if r.is_ok() {
-                    self.emit(Event::Projects);
-                    let _ = self.git_refresh.send(Some(project));
-                }
-                r
-            }
-            Request::RunCancel { id } => crate::runs::cancel(&self.ctx, id).await.map_err(run_err),
-            Request::RunDecide { id, step, decision, confirmed } => {
-                crate::runs::decide(&self.ctx, id, step, decision, confirmed).await.map_err(run_err)
-            }
-            Request::RunsList => {
-                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
-                Ok(Response::Runs(self.run_page(&windows)))
-            }
-            Request::RunGet { id } => match self.run_window(id).await? {
-                Some(w) => Ok(Response::Run(crate::runs::detail(&self.config(), &w))),
-                None => Err(rerr(ErrorCode::NotFound, format!("run #{id} has no window any more"))),
-            },
-            Request::LogRead { run, step } => {
-                let Some(w) = self.run_window(run).await? else {
-                    return Err(rerr(ErrorCode::NotFound, format!("run #{run} has no window any more")));
-                };
-                let pane = self.ctx.tmux.capture(run).await.map_err(tmux_err)?;
-                let detail = crate::runs::detail(&self.config(), &w);
-                Ok(Response::Log(step_chunk(&detail, &split_steps(&pane, latest_started(&detail)), step)))
-            }
-            Request::ServiceControl { project, id, action } => {
-                let r = crate::services::control(&self.ctx, &self.config(), &project, &id, action).await;
-                r.map(|msg| Response::Text { text: msg }).map_err(|e| rerr(ErrorCode::Refused, e))
-            }
-            Request::ServiceLog { project, id } => {
-                let windows = window::list(&self.ctx.tmux).await.map_err(tmux_err)?;
-                let text = match crate::services::service_windows(&windows, &project, &id).last() {
-                    Some(w) => trim_capture(&self.ctx.tmux.capture(w.id).await.map_err(tmux_err)?),
-                    None => String::new(),
-                };
-                Ok(Response::Text { text })
-            }
-            Request::HealthGet => Ok(Response::Health(self.health().await)),
-            Request::Subscribe { topics } => {
-                *self.topics.lock().unwrap() = topics.into_iter().collect();
-                Ok(Response::Ok)
-            }
+    /// Replaces what the pollers follow; see `Watch`.
+    pub fn watch(&self, watch: Watch) {
+        *self.watch.lock().unwrap() = watch;
+    }
+
+    pub async fn projects(&self) -> Result<Vec<ProjectInfo>, String> {
+        let windows = window::list(&self.ctx.tmux).await?;
+        Ok(self.project_infos(&windows))
+    }
+
+    /// Opens a run's window, or only plans it when `params.dry_run` is set.
+    pub async fn start_run(&self, params: RunStartParams) -> Result<StartOutcome, String> {
+        let project = params.project.clone();
+        let r = crate::runs::start(&self.ctx, &self.config(), params).await.map_err(|(_, m)| m);
+        if r.is_ok() {
+            self.emit(Event::Projects);
+            let _ = self.git_refresh.send(Some(project));
+        }
+        r
+    }
+
+    pub async fn cancel_run(&self, id: i64) -> Result<(), String> {
+        crate::runs::cancel(&self.ctx, id).await.map_err(|(_, m)| m)
+    }
+
+    pub async fn decide(&self, id: i64, step: usize, decision: Decision, confirmed: bool) -> Result<(), String> {
+        crate::runs::decide(&self.ctx, id, step, decision, confirmed).await.map_err(|(_, m)| m)
+    }
+
+    pub async fn runs(&self) -> Result<RunList, String> {
+        let windows = window::list(&self.ctx.tmux).await?;
+        Ok(self.run_list(&windows))
+    }
+
+    pub async fn run(&self, id: i64) -> Result<RunDetail, String> {
+        match window::run(&self.ctx.tmux, id).await? {
+            Some(w) => Ok(crate::runs::detail(&self.config(), &w)),
+            None => Err(format!("run #{id} has no window any more")),
         }
     }
 
-    async fn run_window(&self, id: i64) -> Result<Option<RunWindow>, RequestError> {
-        window::run(&self.ctx.tmux, id).await.map_err(|e| rerr(ErrorCode::Internal, e))
+    pub async fn step_output(&self, run: i64, step: usize) -> Result<LogChunk, String> {
+        let Some(w) = window::run(&self.ctx.tmux, run).await? else {
+            return Err(format!("run #{run} has no window any more"));
+        };
+        let pane = self.ctx.tmux.capture(run).await?;
+        let detail = crate::runs::detail(&self.config(), &w);
+        Ok(step_chunk(&detail, &split_steps(&pane, latest_started(&detail)), step))
+    }
+
+    pub async fn control_service(&self, project: &str, id: &str, action: ServiceAction) -> Result<String, String> {
+        crate::services::control(&self.ctx, &self.config(), project, id, action).await
+    }
+
+    pub async fn service_output(&self, project: &str, id: &str) -> Result<String, String> {
+        let windows = window::list(&self.ctx.tmux).await?;
+        Ok(match crate::services::service_windows(&windows, project, id).last() {
+            Some(w) => trim_capture(&self.ctx.tmux.capture(w.id).await?),
+            None => String::new(),
+        })
     }
 
     /// Runs that still have a window, newest first, and their waiting approvals.
-    fn run_page(&self, windows: &Windows) -> RunPage {
+    fn run_list(&self, windows: &Windows) -> RunList {
         let config = self.config();
         let mut details: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
         details.reverse();
         let waiting = details.iter().flat_map(|d| d.approvals.iter()).filter(|a| a.status == ApprovalStatus::Pending).cloned().collect();
-        RunPage { runs: details.into_iter().map(|d| d.summary).collect(), waiting }
+        RunList { runs: details.into_iter().map(|d| d.summary).collect(), waiting }
     }
 
-    pub fn projects(&self, windows: &Windows) -> Vec<ProjectInfo> {
+    fn project_infos(&self, windows: &Windows) -> Vec<ProjectInfo> {
         let config = self.config();
         let git = self.git.lock().unwrap().clone();
         let runs: Vec<RunDetail> = windows.runs.iter().map(|w| crate::runs::detail(&config, w)).collect();
@@ -205,19 +187,10 @@ impl Engine {
             .map(|p| ProjectInfo {
                 id: p.id.clone(),
                 path: p.path_display.clone(),
-                remote: p.remote.clone(),
                 disabled: p.disabled.clone(),
                 busy_run: crate::runs::busy_run(windows, &p.id),
                 git: git.get(&p.id).cloned(),
-                environments: p
-                    .environments
-                    .iter()
-                    .map(|e| EnvInfo {
-                        name: e.name.clone(),
-                        protected: e.protected,
-                        var_names: e.vars.iter().map(|(k, _)| k.clone()).collect(),
-                    })
-                    .collect(),
+                environments: p.environments.iter().map(|e| EnvInfo { name: e.name.clone(), protected: e.protected }).collect(),
                 services: p.services.iter().map(|s| crate::services::status(p, s, windows)).collect(),
                 groups: p.groups.iter().map(|g| GroupInfo { id: g.id.clone(), members: g.members.clone() }).collect(),
                 pipelines: p
@@ -287,7 +260,7 @@ impl Engine {
             Ok(v) => Reachability { ok: true, detail: v },
             Err(e) => Reachability { ok: false, detail: e },
         });
-        let docker = if self.subscribed("health") {
+        let docker = if self.watch.lock().unwrap().health {
             let cached = self.docker.lock().unwrap().clone().filter(|(at, _)| at.elapsed() < DOCKER_EVERY).map(|(_, r)| r);
             match cached {
                 Some(r) => Some(r),
@@ -312,8 +285,6 @@ impl Engine {
     }
 }
 
-static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());
-
 /// An approval step's message as a dry run on each of the pipeline's
 /// environments would show it, before inputs are chosen.
 fn approval_previews(config: &Config, project: &Project, pipeline: &Pipeline, message: &str) -> BTreeMap<String, String> {
@@ -328,69 +299,6 @@ fn approval_previews(config: &Config, project: &Project, pipeline: &Pipeline, me
         .collect()
 }
 
-/// A capture without the blank rows below the last output.
-pub fn trim_capture(pane: &str) -> String {
-    let t = pane.trim_end_matches(['\n', ' ']);
-    if t.is_empty() { String::new() } else { format!("{t}\n") }
-}
-
-/// Splits a run window's pane into each step's output, using the header the
-/// worker prints before each step. The run's own status lines are dropped.
-///
-/// The scrollback is finite, so the oldest headers can be gone. Lines above
-/// the first header still visible belong to the step before it; with no
-/// header left at all, they belong to `latest`, the run's latest started step.
-pub fn split_steps(pane: &str, latest: Option<usize>) -> Vec<String> {
-    let mut sections: Vec<String> = Vec::new();
-    let mut current: Option<usize> = None;
-    let mut orphans = String::new();
-    let header = format!("── {}", crate::runs::worker::STEP_HEADER);
-    for line in trim_capture(pane).lines() {
-        let plain = ANSI_RE.replace_all(line, "");
-        let plain = plain.trim();
-        if let Some(rest) = plain.strip_prefix(&header)
-            && let Some(n) = rest.split('/').next().and_then(|n| n.parse::<usize>().ok())
-            && n > 0
-        {
-            if current.is_none() && n > 1 && !orphans.is_empty() {
-                sections.resize(n - 1, String::new());
-                sections[n - 2] = std::mem::take(&mut orphans);
-            }
-            current = Some(n - 1);
-            if sections.len() < n {
-                sections.resize(n, String::new());
-            }
-            continue;
-        }
-        if plain.starts_with("── run #") {
-            continue;
-        }
-        // tmux resets the header's dim style at the start of the next line;
-        // each step's view starts unstyled anyway.
-        let line = line.strip_prefix("\x1b[0m").unwrap_or(line);
-        let section = match current {
-            Some(i) => &mut sections[i],
-            None => &mut orphans,
-        };
-        section.push_str(line);
-        section.push('\n');
-    }
-    if current.is_none()
-        && !orphans.is_empty()
-        && let Some(i) = latest
-    {
-        sections.resize(i + 1, String::new());
-        sections[i] = orphans;
-    }
-    sections
-}
-
-/// The run's latest step that has started, which owns output whose header
-/// has scrolled out of the pane.
-pub fn latest_started(detail: &RunDetail) -> Option<usize> {
-    detail.steps.iter().rev().find(|s| s.started_at.is_some()).map(|s| s.index)
-}
-
 fn step_chunk(detail: &RunDetail, sections: &[String], step: usize) -> LogChunk {
     let finished =
         detail.steps.get(step).is_none_or(|s| !matches!(s.status, StepStatus::Running | StepStatus::Pending | StepStatus::Waiting));
@@ -398,7 +306,7 @@ fn step_chunk(detail: &RunDetail, sections: &[String], step: usize) -> LogChunk 
 }
 
 /// Looks a command up on `PATH` without running anything.
-pub fn find_on_path(name: &str) -> Option<PathBuf> {
+fn find_on_path(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -481,33 +389,31 @@ async fn git_poller(e: Arc<Engine>, mut rx: mpsc::UnboundedReceiver<Option<Strin
     }
 }
 
-/// What the poller last reported, to emit only changes. Values are JSON so
-/// any protocol type can be compared.
+/// What the poller last reported, to emit only changes.
 #[derive(Default)]
 struct Seen {
     primed: bool,
-    runs: HashMap<i64, String>,
-    steps: HashMap<(i64, usize), String>,
-    approvals: HashMap<(i64, usize), String>,
+    runs: HashMap<i64, RunSummary>,
+    steps: HashMap<(i64, usize), StepInfo>,
+    approvals: HashMap<(i64, usize), ApprovalInfo>,
     outputs: HashMap<(i64, String), String>,
-    services: HashMap<(String, String), String>,
-    logs: HashMap<(i64, usize), String>,
+    services: HashMap<(String, String), ServiceStatus>,
+    logs: HashMap<(i64, usize), (String, bool)>,
     service_logs: HashMap<(String, String), String>,
 }
 
-fn changed<K: std::hash::Hash + Eq>(map: &mut HashMap<K, String>, key: K, value: &impl serde::Serialize) -> bool {
-    let json = serde_json::to_string(value).unwrap_or_default();
+fn changed<K: std::hash::Hash + Eq, V: PartialEq + Clone>(map: &mut HashMap<K, V>, key: K, value: &V) -> bool {
     match map.get(&key) {
-        Some(old) if *old == json => false,
+        Some(old) if old == value => false,
         _ => {
-            map.insert(key, json);
+            map.insert(key, value.clone());
             true
         }
     }
 }
 
 /// Turns what the windows publish into events, from one `list-windows` per
-/// poll plus a pane capture for each log on screen.
+/// poll plus a pane capture for each run step or service output being followed.
 async fn state_poller(e: Arc<Engine>) {
     let mut seen = Seen::default();
     loop {
@@ -574,8 +480,7 @@ fn poll_services(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen
 
 /// Re-captures the panes of the runs and services on screen and sends what changed.
 async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
-    let topics: Vec<String> = e.topics.lock().unwrap().iter().cloned().collect();
-    let runs: HashSet<i64> = topics.iter().filter_map(|t| t.strip_prefix("log:")?.parse().ok()).collect();
+    let Watch { runs, services, .. } = e.watch.lock().unwrap().clone();
     seen.logs.retain(|(run, _), _| runs.contains(run));
     for run in runs {
         let Some(w) = windows.run(run) else { continue };
@@ -584,17 +489,12 @@ async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Se
         let sections = split_steps(&pane, latest_started(&detail));
         for step in 0..detail.steps.len().max(sections.len()) {
             let chunk = step_chunk(&detail, &sections, step);
-            if changed(&mut seen.logs, (run, step), &(&chunk.data, chunk.complete)) {
+            if changed(&mut seen.logs, (run, step), &(chunk.data.clone(), chunk.complete)) {
                 e.emit(Event::Log(chunk));
             }
         }
     }
 
-    let services: Vec<(String, String)> = topics
-        .iter()
-        .filter_map(|t| t.strip_prefix("service-log:")?.split_once('/'))
-        .map(|(p, s)| (p.to_string(), s.to_string()))
-        .collect();
     seen.service_logs.retain(|k, _| services.contains(k));
     for (pid, sid) in services {
         let Some(w) = crate::services::service_windows(windows, &pid, &sid).last().map(|w| w.id) else { continue };
@@ -614,26 +514,5 @@ mod tests {
     fn finds_tools_without_running_them() {
         assert!(find_on_path("sh").is_some());
         assert!(find_on_path("definitely-not-a-tool-gc").is_none());
-    }
-
-    #[test]
-    fn splits_a_run_pane_into_steps() {
-        let pane = "\x1b[2m── run #4: app/hello ──\x1b[0m\n\x1b[2m── step 1/2: Greet ──\x1b[0m\n\x1b[0mhi\n\x1b[31mred\x1b[0m\n\
-                    \x1b[2m── step 2/2: Use output ──\x1b[0m\ngot it\n\x1b[2m── run #4 succeeded ──\x1b[0m\n\n\n";
-        let s = split_steps(pane, Some(1));
-        assert_eq!(s, vec!["hi\n\x1b[31mred\x1b[0m\n".to_string(), "got it\n".to_string()]);
-        assert_eq!(trim_capture("a\n\n  \n"), "a\n");
-    }
-
-    #[test]
-    fn output_whose_header_scrolled_away_keeps_its_step() {
-        // Step 2's header and the top of its output are gone from the scrollback.
-        let pane = "…tail of step 2\n── step 3/3: Deploy ──\ndeployed\n";
-        assert_eq!(split_steps(pane, Some(2)), vec![String::new(), "…tail of step 2\n".into(), "deployed\n".into()]);
-        // No header left at all: everything is the latest started step's.
-        assert_eq!(split_steps("line 9000\nline 9001\n", Some(1)), vec![String::new(), "line 9000\nline 9001\n".into()]);
-        assert!(split_steps("line\n", None).is_empty());
-        // Lines before step 1 are the run's own, not a step's.
-        assert_eq!(split_steps("── run #3: a/b ──\nnote\n── step 1/1: X ──\nx\n", Some(0)), vec!["x\n".to_string()]);
     }
 }

@@ -10,7 +10,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::theme;
-use crate::protocol::*;
+use crate::git::GitStatus;
+use crate::model::*;
 
 /// Display width in terminal cells.
 pub fn width(s: &str) -> usize {
@@ -100,8 +101,30 @@ pub fn row(cells: Vec<Cell>, total: u16, gap: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Concatenates spans, truncating the line to `w` cells.
-pub fn clip_line(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
+/// A list row led by the selection marker column (`▶ ` on the selected row,
+/// blank otherwise). The marker shows whether or not the pane has focus; the
+/// highlight only when it does.
+pub fn selectable_row(mut cells: Vec<Cell>, total: u16, selected: bool, focused: bool) -> Line<'static> {
+    cells.insert(0, cell(if selected { "▶" } else { " " }, theme::key(), 1));
+    let line = row(cells, total, 1);
+    if selected && focused { line.style(theme::selected()) } else { line }
+}
+
+/// Display width of the trailing whitespace across `spans`.
+fn trailing_blank(spans: &[Span<'static>]) -> usize {
+    let mut blank = 0;
+    for s in spans.iter().rev() {
+        let kept = s.content.trim_end();
+        blank += width(&s.content) - width(kept);
+        if !kept.is_empty() {
+            break;
+        }
+    }
+    blank
+}
+
+/// Keeps the first `w` cells of `spans`.
+fn take_cells(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut used = 0;
     for s in spans {
@@ -109,20 +132,66 @@ pub fn clip_line(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
         if used + sw <= w {
             used += sw;
             out.push(s);
-        } else {
-            let rest = w.saturating_sub(used);
-            if rest > 0 {
-                out.push(Span::styled(truncate(&s.content, rest), s.style));
-            }
-            break;
+            continue;
         }
+        let mut kept = String::new();
+        for c in s.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + cw > w {
+                break;
+            }
+            kept.push(c);
+            used += cw;
+        }
+        out.push(Span::styled(kept, s.style));
+        break;
+    }
+    out
+}
+
+/// Concatenates spans, truncating the line to `w` cells. Whenever content is
+/// dropped the result ends with `…`; cutting only trailing whitespace is not
+/// content and leaves no mark.
+pub fn clip_line(spans: Vec<Span<'static>>, w: usize) -> Line<'static> {
+    let total: usize = spans.iter().map(|s| width(&s.content)).sum();
+    if total <= w {
+        return Line::from(spans);
+    }
+    if total - trailing_blank(&spans) <= w {
+        return Line::from(take_cells(spans, w));
+    }
+    if w == 0 {
+        return Line::default();
+    }
+    let budget = w - 1;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for s in spans {
+        let sw = width(&s.content);
+        if used + sw <= budget {
+            used += sw;
+            out.push(s);
+            continue;
+        }
+        let mut kept = String::new();
+        for c in s.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + cw > budget {
+                break;
+            }
+            kept.push(c);
+            used += cw;
+        }
+        kept.push('…');
+        out.push(Span::styled(kept, s.style));
+        break;
     }
     Line::from(out)
 }
 
 /// A bordered pane with its title set into the top border.
-pub fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
-    let border = if focused { theme::accent() } else { theme::dim() };
+fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
+    let (border, border_type) = if focused { (theme::accent(), BorderType::Thick) } else { (theme::dim(), BorderType::Plain) };
     let mut t = vec![Span::raw(" ")];
     for s in title {
         let style =
@@ -130,7 +199,7 @@ pub fn pane(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
         t.push(Span::styled(s.content, style));
     }
     t.push(Span::raw(" "));
-    Block::default().borders(Borders::ALL).border_type(BorderType::Plain).border_style(border).title(Line::from(t))
+    Block::default().borders(Borders::ALL).border_type(border_type).border_style(border).title(Line::from(t))
 }
 
 /// Draws a pane with its title clipped to the pane width; returns the inner area.
@@ -152,7 +221,7 @@ pub fn framed_alert(f: &mut Frame, area: Rect, title: &str, striped: bool) -> Re
 }
 
 /// A double-bordered, striped pane for approvals and protected dialogs.
-pub fn alert_pane(title: &str, striped: bool) -> Block<'static> {
+fn alert_pane(title: &str, striped: bool) -> Block<'static> {
     let mut t = vec![Span::raw(" ")];
     if striped {
         t.push(Span::styled(format!("{} ", theme::STRIPES), theme::accent()));
@@ -189,13 +258,17 @@ pub fn para(lines: Vec<Line<'static>>) -> Paragraph<'static> {
     Paragraph::new(lines).style(theme::base())
 }
 
-/// Key hints for the bottom bar: (key, label) pairs.
+/// Key hints for the bottom bar: (key, label) pairs, two spaces apart.
 pub fn key_hints(hints: &[(&str, &str)]) -> Vec<Span<'static>> {
-    let mut out = Vec::new();
-    for (k, l) in hints {
-        out.push(Span::styled(format!(" {k} "), theme::key()));
-        out.push(Span::styled(format!("{l}  "), theme::muted()));
+    let mut out = vec![Span::raw(" ")];
+    for (i, (k, l)) in hints.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::raw("  "));
+        }
+        out.push(Span::styled(k.to_string(), theme::key()));
+        out.push(Span::styled(format!(" {l}"), theme::muted()));
     }
+    out.push(Span::raw(" "));
     out
 }
 
@@ -347,6 +420,26 @@ pub fn step_duration(s: &StepInfo) -> Option<i64> {
     Some(s.finished_at.unwrap_or_else(now) - s.started_at?)
 }
 
+/// Greedy word wrap by display width.
+pub fn wrap(text: &str, w: usize) -> Vec<String> {
+    let w = w.max(10);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if !cur.is_empty() && width(&cur) + 1 + width(word) > w {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +453,32 @@ mod tests {
         assert_eq!(fit("abcdef", 4), "abc…");
         assert_eq!(truncate("x", 0), "");
         assert_eq!(truncate_left("/very/long/path/to/repo", 10), "…h/to/repo");
+    }
+
+    #[test]
+    fn clip_line_marks_every_cut() {
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let spans = || vec![Span::raw("abc"), Span::raw("def"), Span::raw("ghi")];
+        assert_eq!(text(&clip_line(spans(), 9)), "abcdefghi");
+        assert_eq!(text(&clip_line(spans(), 5)), "abcd…");
+        assert_eq!(text(&clip_line(spans(), 7)), "abcdef…");
+        assert_eq!(text(&clip_line(spans(), 6)), "abcde…");
+        assert_eq!(text(&clip_line(vec![Span::raw("ab"), Span::raw("⛅⛅")], 4)), "ab…");
+        assert_eq!(text(&clip_line(vec![Span::raw("ab"), Span::raw("⛅⛅")], 5)), "ab⛅…");
+        assert_eq!(text(&clip_line(spans(), 0)), "");
+    }
+
+    #[test]
+    fn clip_line_ignores_trailing_whitespace() {
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let padded = || vec![Span::raw("abc"), Span::raw("def  "), Span::raw("   ")];
+        assert_eq!(text(&clip_line(padded(), 6)), "abcdef");
+        assert_eq!(text(&clip_line(padded(), 7)), "abcdef ");
+        assert_eq!(text(&clip_line(padded(), 11)), "abcdef     ");
+        assert_eq!(text(&clip_line(padded(), 5)), "abcd…");
+        assert_eq!(text(&clip_line(vec![Span::raw("ab⛅"), Span::raw(" ")], 4)), "ab⛅");
+        assert_eq!(text(&clip_line(vec![Span::raw("  ")], 1)), " ");
+        assert_eq!(text(&clip_line(vec![Span::raw("   ")], 0)), "");
     }
 
     #[test]

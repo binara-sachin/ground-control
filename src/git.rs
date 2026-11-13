@@ -6,7 +6,31 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use crate::protocol::{GitStatus, now};
+use crate::model::{Timestamp, now};
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GitStatus {
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub staged: u32,
+    pub modified: u32,
+    pub untracked: u32,
+    pub conflicted: u32,
+    /// `Some(true)` when `origin` matches the declared remote, `None` when no remote is declared.
+    pub origin_matches: Option<bool>,
+    pub origin_url: Option<String>,
+    pub checked_at: Timestamp,
+    pub error: Option<String>,
+}
+
+impl GitStatus {
+    pub fn is_clean(&self) -> bool {
+        self.staged + self.modified + self.untracked + self.conflicted == 0
+    }
+}
 
 /// Normalises SSH and HTTPS remote forms to `host/owner/repo` (lowercase host,
 /// no `.git` suffix), so `git@github.com:a/b.git` and `https://github.com/a/b` match.
@@ -46,7 +70,7 @@ pub fn normalize_remote(url: &str) -> Option<String> {
     Some(format!("{}/{}", host.to_ascii_lowercase(), path))
 }
 
-pub fn remotes_match(declared: &str, actual: &str) -> bool {
+fn remotes_match(declared: &str, actual: &str) -> bool {
     match (normalize_remote(declared), normalize_remote(actual)) {
         (Some(a), Some(b)) => a == b,
         _ => false,
@@ -54,7 +78,7 @@ pub fn remotes_match(declared: &str, actual: &str) -> bool {
 }
 
 /// Parses `git status --porcelain=v2 --branch` output.
-pub fn parse_porcelain_v2(out: &str) -> GitStatus {
+fn parse_porcelain_v2(out: &str) -> GitStatus {
     let mut g = GitStatus::default();
     for line in out.lines() {
         if let Some(rest) = line.strip_prefix("# branch.oid ") {
@@ -92,7 +116,7 @@ pub fn parse_porcelain_v2(out: &str) -> GitStatus {
 }
 
 /// Runs git with a timeout; returns stdout on success.
-pub async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(dir)
@@ -113,7 +137,7 @@ pub async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// `origin` URL, or an error message.
-pub async fn origin_url(dir: &Path) -> Result<String, String> {
+async fn origin_url(dir: &Path) -> Result<String, String> {
     git(dir, &["remote", "get-url", "origin"]).await.map(|s| s.trim().to_string())
 }
 
@@ -147,7 +171,7 @@ pub async fn status(dir: &Path, declared_remote: Option<&str>) -> GitStatus {
 }
 
 /// Number of commits in HEAD that no `origin` ref contains.
-pub async fn unpushed_count(dir: &Path) -> Result<u32, String> {
+async fn unpushed_count(dir: &Path) -> Result<u32, String> {
     let out = git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]).await?;
     out.trim().parse().map_err(|_| "unexpected rev-list output".to_string())
 }
