@@ -1148,3 +1148,21 @@ fn dashboard_service_keys_act_only_in_the_services_pane() {
     let hints: Vec<_> = dashboard::hints(&app).iter().map(|h| h.0).collect();
     assert!(hints.contains(&"s") && hints.contains(&"r") && hints.contains(&"l"), "{hints:?}");
 }
+
+#[test]
+fn a_crashed_service_shows_its_exit_code_within_the_status_column() {
+    let (mut app, mut term) = busy_app(100, 28);
+    for (code, want) in [(Some(1), "crashed exit 1"), (Some(255), "crashed exit 255"), (None, "crashed")] {
+        app.projects[0].services[1].last_exit_code = code;
+        redraw(&mut app, &mut term);
+        let line = row_at(&app, &term, Target::DashServices, 1);
+        assert!(line.contains(want), "{want}: {line}");
+        if code == Some(255) {
+            // The port and detail columns after it are not pushed out.
+            assert!(line.contains("crashed exit 255 "), "{line}");
+        }
+        if code.is_none() {
+            assert!(!line.contains("exit"), "{line}");
+        }
+    }
+}

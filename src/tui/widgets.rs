@@ -318,7 +318,8 @@ pub fn service_word(s: &ServiceStatus) -> (&'static str, String, Style) {
         ServiceState::Starting => ("◐", "starting".into(), theme::warning()),
         ServiceState::Restarting => ("◐", format!("restarting ({})", s.restart_count), theme::warning()),
         ServiceState::Stopping => ("◐", "stopping".into(), theme::warning()),
-        ServiceState::Crashed => ("×", "crashed".into(), theme::danger()),
+        // "crashed exit 255" is 16 cells, the width of the status column.
+        ServiceState::Crashed => ("×", s.last_exit_code.map_or("crashed".into(), |c| format!("crashed exit {c}")), theme::danger()),
         ServiceState::Stopped => ("○", "stopped".into(), theme::muted()),
     }
 }
