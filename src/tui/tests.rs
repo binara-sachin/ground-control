@@ -1223,3 +1223,115 @@ fn a_selected_group_names_the_member_whose_output_is_shown() {
     let screen = screen_text(&term);
     assert!(screen.contains("web output") && !screen.contains("both ›"), "{screen}");
 }
+
+/// The screen column of the value on a dialog row labelled `label`, past the
+/// `‹ ` marker of a focused selector.
+fn value_column(term: &Terminal<TestBackend>, label: &str) -> usize {
+    let screen = screen_text(term);
+    for row in screen.lines() {
+        let chars: Vec<char> = row.chars().collect();
+        let Some(border) = chars.iter().position(|c| ['┃', '║'].contains(c)) else { continue };
+        let mut i = border + 1;
+        while chars.get(i) == Some(&' ') {
+            i += 1;
+        }
+        let text: String = chars[i..].iter().collect();
+        if !text.starts_with(label) || !text[label.len()..].starts_with(' ') {
+            continue;
+        }
+        i += label.chars().count();
+        while chars.get(i) == Some(&' ') {
+            i += 1;
+        }
+        if chars.get(i) == Some(&'‹') {
+            i += 2;
+        }
+        return i;
+    }
+    panic!("no {label} row\n{screen}");
+}
+
+#[test]
+fn the_env_value_lines_up_with_branch_and_commit_focused_or_not() {
+    let (mut app, mut term) = app();
+    let (p, mut pl) = dialog_project(1, false);
+    pl.environments = vec!["staging".into(), "prod".into()];
+    let d = screens::dialog::RunDialog::new(&p, &pl, None);
+    app.overlay = Some(Overlay::Dialog(Box::new(d)));
+    let mut term2 = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    std::mem::swap(&mut term, &mut term2);
+    redraw(&mut app, &mut term);
+    // Focus starts on the environment selector.
+    let (env, branch, commit) = (value_column(&term, "env"), value_column(&term, "branch"), value_column(&term, "commit"));
+    assert_eq!((env, commit), (branch, branch), "focused");
+    assert!(screen_text(&term).contains("‹ staging ›"));
+    let Some(Overlay::Dialog(d)) = &mut app.overlay else { panic!() };
+    d.focus = 1;
+    redraw(&mut app, &mut term);
+    let (env, branch) = (value_column(&term, "env"), value_column(&term, "branch"));
+    assert_eq!(env, branch, "unfocused");
+    assert!(screen_text(&term).contains("env      staging"), "{}", screen_text(&term));
+}
+
+/// Cells outside the box `r` in the rows it occupies, which must be blank.
+fn beside_the_box(term: &Terminal<TestBackend>, r: Rect) -> String {
+    let w = term.backend().buffer().area.width;
+    let mut out = String::new();
+    for y in r.y..r.y + r.height {
+        for x in (0..r.x).chain(r.x + r.width..w) {
+            out.push_str(&symbol(term, x, y));
+        }
+    }
+    out.trim().to_string()
+}
+
+#[test]
+fn nothing_of_the_screen_behind_shows_beside_a_dialog_or_the_help_panel() {
+    // The run dialog, over the dashboard's borders.
+    let (_app, term) = dialog_app(2, false, 100, 28);
+    let screen = screen_text(&term);
+    let y0 = screen.lines().position(|l| l.contains("run alpha/deploy")).unwrap() as u16;
+    let x0 = screen.lines().nth(y0 as usize).unwrap().chars().position(|c| c == '┏' || c == '╔').unwrap() as u16;
+    let x1 = (x0..100).find(|x| ["┓", "╗"].contains(&symbol(&term, *x, y0).as_str())).unwrap();
+    let y1 = (y0..28).find(|y| ["┗", "╚"].contains(&symbol(&term, x0, *y).as_str())).unwrap();
+    assert_eq!(beside_the_box(&term, Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)), "", "{screen}");
+    // The help panel.
+    for (_, app, term) in help_on_every_screen(100, 28) {
+        assert_eq!(beside_the_box(&term, help_panel(&app, 100, 28)), "");
+    }
+    // The confirm dialog.
+    let (mut app, mut term) = busy_app(100, 28);
+    app.overlay = Some(Overlay::Confirm(screens::overlay::Confirm {
+        title: "cancel run #7".into(),
+        lines: vec![ratatui::text::Line::raw("Stop the run?")],
+        action: screens::overlay::ConfirmAction::CancelRun(7),
+    }));
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    let y0 = screen.lines().position(|l| l.contains("cancel run #7")).unwrap() as u16;
+    let x0 = screen.lines().nth(y0 as usize).unwrap().chars().position(|c| c == '╔').unwrap() as u16;
+    let x1 = (x0..100).find(|x| symbol(&term, *x, y0) == "╗").unwrap();
+    let y1 = (y0..28).find(|y| symbol(&term, x0, *y) == "╚").unwrap();
+    assert_eq!(beside_the_box(&term, Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)), "", "{screen}");
+}
+
+#[test]
+fn a_long_error_gets_the_rows_it_needs_and_the_buttons_stay() {
+    let (mut app, mut term) = dialog_app(1, false, 100, 28);
+    let long = "the tmux server refused the new window because ".repeat(8);
+    let Some(Overlay::Dialog(d)) = &mut app.overlay else { panic!() };
+    d.error = Some(long.trim().to_string());
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    let error_rows = screen.lines().filter(|l| l.contains("× ") && l.contains("tmux") || l.contains("because")).count();
+    assert!(error_rows > 3, "more than three rows are kept when there is room: {error_rows}\n{screen}");
+    assert_buttons(&app, &term, 100, 28);
+    // With much less room the error is cut, with an ellipsis, and the buttons are still there.
+    let (mut app, mut term) = dialog_app(12, true, 100, 28);
+    let Some(Overlay::Dialog(d)) = &mut app.overlay else { panic!() };
+    d.error = Some(long.trim().to_string());
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains('…'), "{screen}");
+    assert_buttons(&app, &term, 100, 28);
+}

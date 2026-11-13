@@ -370,9 +370,6 @@ struct Keep {
     destructive: bool,
 }
 
-/// Most error rows kept above the buttons.
-const ERROR_ROWS: usize = 3;
-
 impl RunDialog {
     /// Lays the dialog out in at most `budget` rows where it can.
     fn build(&self, inner_w: usize, budget: usize) -> Built {
@@ -382,13 +379,15 @@ impl RunDialog {
         let mut env_line = vec![label("env")];
         match self.env() {
             Some(e) => {
+                // The value stays in the column of branch and commit. When the
+                // selector is focused, `‹` takes the last two cells of the label.
                 let focused = self.focus == 0 && self.envs.len() > 1;
-                if self.envs.len() > 1 {
-                    env_line.push(Span::styled(if focused { "‹ " } else { "  " }, theme::key()));
+                if focused {
+                    env_line = vec![Span::styled(fit("env", 7), theme::muted()), Span::styled("‹ ", theme::key())];
                 }
                 env_line.push(Span::styled(e, if protected { theme::warning() } else { theme::text() }));
-                if self.envs.len() > 1 {
-                    env_line.push(Span::styled(if focused { " ›" } else { "  " }, theme::key()));
+                if focused {
+                    env_line.push(Span::styled(" ›", theme::key()));
                 }
             }
             None => env_line.push(Span::styled("none", theme::muted())),
@@ -472,15 +471,7 @@ impl RunDialog {
             ));
         }
 
-        let mut footer: Vec<Line<'static>> = Vec::new();
-        if let Some(e) = &self.error {
-            let chunks = wrap(e, inner_w.saturating_sub(2));
-            let cut = chunks.len() > ERROR_ROWS;
-            for (i, chunk) in chunks.into_iter().take(ERROR_ROWS).enumerate() {
-                let chunk = if cut && i + 1 == ERROR_ROWS { truncate(&format!("{chunk} …"), inner_w.saturating_sub(2)) } else { chunk };
-                footer.push(Line::styled(format!("× {chunk}"), theme::danger()));
-            }
-        }
+        let error_chunks: Vec<String> = self.error.as_ref().map(|e| wrap(e, inner_w.saturating_sub(2))).unwrap_or_default();
         let start_style = if self.inputs_valid() && !self.busy {
             ratatui::style::Style::new().fg(theme::ON_ACCENT).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
         } else {
@@ -506,10 +497,21 @@ impl RunDialog {
             x += w;
             button_spans.extend(spans);
         }
-        footer.push(Line::from(button_spans));
+        // The error, cut to `err_rows` rows (ending in `…`), then the buttons.
+        let footer = |err_rows: usize| -> Vec<Line<'static>> {
+            let cut = error_chunks.len() > err_rows;
+            let mut footer: Vec<Line<'static>> = Vec::new();
+            for (i, chunk) in error_chunks.iter().take(err_rows).enumerate() {
+                let chunk =
+                    if cut && i + 1 == err_rows { truncate(&format!("{chunk} …"), inner_w.saturating_sub(2)) } else { chunk.clone() };
+                footer.push(Line::styled(format!("× {chunk}"), theme::danger()));
+            }
+            footer.push(Line::from(button_spans.clone()));
+            footer
+        };
 
         let sep = || Line::styled("╌".repeat(inner_w), theme::dim());
-        let assemble = |keep: Keep, window: Option<(usize, usize)>| -> Built {
+        let assemble = |keep: Keep, window: Option<(usize, usize)>, err_rows: usize| -> Built {
             let mut lines = head.clone();
             let mut field_lines = Vec::new();
             if keep.warnings > 0 {
@@ -563,47 +565,60 @@ impl RunDialog {
             if keep.spacer {
                 lines.push(Line::raw(""));
             }
-            lines.extend(footer.iter().cloned());
+            lines.extend(footer(err_rows));
             let button_line = lines.len() - 1;
             Built { lines, field_lines, button_line, button_rects: button_rects.clone() }
         };
 
-        let mut keep = Keep { spacer: true, outline: true, warnings: warnings.len(), destructive: true };
-        let fits = |b: &Built| b.lines.len() <= budget;
-        loop {
-            let built = assemble(keep, None);
-            if fits(&built) {
-                return built;
-            }
-            if keep.spacer {
-                keep.spacer = false;
-            } else if keep.outline {
-                keep.outline = false;
-            } else if keep.warnings > 0 {
-                keep.warnings -= 1;
-            } else {
-                break;
-            }
-        }
-        // Still too tall: scroll the inputs around the focused one, keeping the
-        // destructive warning for as long as anything else can give.
-        let n = units.len();
-        let focus = self.focus.saturating_sub(1).min(n.saturating_sub(1));
-        for destructive in [true, false] {
-            keep.destructive = destructive;
-            let full = assemble(keep, None);
-            if fits(&full) {
-                return full;
-            }
-            for k in (1..n).rev() {
-                let a = focus.saturating_sub(k / 2).min(n - k);
-                let built = assemble(keep, Some((a, a + k)));
+        // The error takes the rows it needs. The rest gives way first, in the
+        // order above; only when that is not enough is the error cut, a row at
+        // a time, so the buttons always stay.
+        let layout = |err_rows: usize| -> Result<Built, Built> {
+            let mut keep = Keep { spacer: true, outline: true, warnings: warnings.len(), destructive: true };
+            let fits = |b: &Built| b.lines.len() <= budget;
+            loop {
+                let built = assemble(keep, None, err_rows);
                 if fits(&built) {
-                    return built;
+                    return Ok(built);
+                }
+                if keep.spacer {
+                    keep.spacer = false;
+                } else if keep.outline {
+                    keep.outline = false;
+                } else if keep.warnings > 0 {
+                    keep.warnings -= 1;
+                } else {
+                    break;
                 }
             }
+            // Still too tall: scroll the inputs around the focused one, keeping the
+            // destructive warning for as long as anything else can give.
+            let n = units.len();
+            let focus = self.focus.saturating_sub(1).min(n.saturating_sub(1));
+            for destructive in [true, false] {
+                keep.destructive = destructive;
+                let full = assemble(keep, None, err_rows);
+                if fits(&full) {
+                    return Ok(full);
+                }
+                for k in (1..n).rev() {
+                    let a = focus.saturating_sub(k / 2).min(n - k);
+                    let built = assemble(keep, Some((a, a + k)), err_rows);
+                    if fits(&built) {
+                        return Ok(built);
+                    }
+                }
+            }
+            Err(assemble(keep, (n > 1).then(|| (focus, focus + 1)), err_rows))
+        };
+        let mut err_rows = error_chunks.len();
+        loop {
+            match layout(err_rows) {
+                Ok(built) => return built,
+                Err(built) if err_rows <= 1 => return built,
+                Err(_) => err_rows -= 1,
+            }
         }
-        assemble(keep, (n > 1).then(|| (focus, focus + 1)))
     }
 }
 
@@ -618,7 +633,7 @@ pub fn draw(d: &RunDialog, f: &mut Frame, area: Rect, hits: &HitMap) {
 
     let h = (lines.len() as u16 + 4).min(max_h);
     let r = centered(area, w, h);
-    clear(f, r);
+    clear_band(f, area, r);
     let title = format!("run {}/{}{}", d.project, d.pipeline.id, d.env().map(|e| format!(" on {e}")).unwrap_or_default());
     let inner = framed_alert(f, r, &title, protected);
     let inner = Rect { x: inner.x + 1, y: inner.y + 1, width: inner.width.saturating_sub(2), height: inner.height.saturating_sub(1) };

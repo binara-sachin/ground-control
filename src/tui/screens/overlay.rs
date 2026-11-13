@@ -132,7 +132,7 @@ pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
             let w = 90.min(area.width.saturating_sub(4));
             let h = c.lines.len() as u16 + 6;
             let r = centered(area, w, h);
-            clear(f, r);
+            clear_band(f, area, r);
             let inner = framed_alert(f, r, &c.title, true);
             // The button row is the last line: " y confirm" then "n / esc cancel".
             let row = Rect { y: inner.y + c.lines.len() as u16 + 2, height: 1, ..inner };
@@ -255,7 +255,7 @@ fn draw_help(f: &mut Frame, area: Rect, hits: &HitMap, screen: HelpScreen) {
     let lines = help_lines(screen);
     let h = (lines.len() as u16 + 2).min(area.height);
     let r = centered(area, 84, h);
-    clear(f, r);
+    clear_band(f, area, r);
     hits.add(r, Target::HelpPanel, 0);
     let inner = framed(f, r, vec![title_text("help"), title_muted(format!("  {}", screen.name()))], true);
     f.render_widget(para(lines), inner);

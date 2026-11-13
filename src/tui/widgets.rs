@@ -254,6 +254,12 @@ pub fn clear(f: &mut Frame, r: Rect) {
     f.render_widget(Block::default().style(theme::base()), r);
 }
 
+/// Clears the rows of `area` that a box `r` occupies, across its full width,
+/// so nothing of the screen behind shows beside the box (§10.1).
+pub fn clear_band(f: &mut Frame, area: Rect, r: Rect) {
+    clear(f, Rect { x: area.x, width: area.width, ..r });
+}
+
 pub fn para(lines: Vec<Line<'static>>) -> Paragraph<'static> {
     Paragraph::new(lines).style(theme::base())
 }
