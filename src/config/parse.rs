@@ -36,7 +36,7 @@ impl Ctx<'_> {
 
     fn string(&mut self, node: &Node, what: &str) -> Option<String> {
         match &node.value {
-            Value::Scalar { text, .. } => Some(text.clone()),
+            Value::Scalar { text } => Some(text.clone()),
             _ => {
                 self.err(node.pos, format!("{what} must be a string, found a {}", node.kind()));
                 None
