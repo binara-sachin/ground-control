@@ -44,9 +44,9 @@ other two as the command of a tmux window.
 you ─▶ Terminal ─▶ tmux ─┬─ popup: groundcontrol (TUI + engine) ──reads/writes window options──┐
                          │                                                                      ▼
                          └─ session "ground-control"
-                              ├─ finance/deploy    groundcontrol run-exec  ─▶ @gc_* options, pane
+                              ├─ myapp/deploy      groundcontrol run-exec  ─▶ @gc_* options, pane
                               │                      └─ zsh -c "pnpm … deploy"
-                              └─ finance/api       groundcontrol svc-exec  ─▶ @gc_* options, pane
+                              └─ myapp/api         groundcontrol svc-exec  ─▶ @gc_* options, pane
                                                      └─ zsh -c "pnpm … wrangler dev"
 ```
 
@@ -176,7 +176,10 @@ use. Stop the leftover process by hand.
 
 The engine runs inside the TUI while it is open:
 
-- It answers the TUI's requests (`protocol::Request`) in process.
+- It answers the TUI's calls in process: `watch` (what to follow), `projects`,
+  `start_run`, `cancel_run`, `decide`, `runs`, `run`, `step_output`,
+  `control_service`, `service_output` and `health`. `model.rs` holds the data
+  they return and the events the engine sends.
 - Once a second it lists the session's windows (one `tmux` call) and turns
   changes into events: runs, steps, approvals, outputs, the busy run per
   project, and services. It also re-captures the panes of the run or service
@@ -212,8 +215,3 @@ Homebrew app.
 `make install` copies the binary to `~/.local/bin` and links the
 repository's `groundcontrol.yaml` into `~/.config/ground-control/`. It
 registers nothing with `launchd`. `make uninstall` removes both.
-
-## A possible next step
-
-Move `deploy-*`, `migrate-*` and `merge-pr` to GitHub Actions and trigger them
-with `gh workflow run`. Cloudflare credentials would then stay off the laptop.

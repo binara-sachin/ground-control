@@ -62,7 +62,7 @@ Every process therefore has a visible, interactive parent: Terminal → tmux →
 
 | Component | Responsibility |
 |---|---|
-| **Engine** | Runs inside the TUI while it is open. Loads and validates `groundcontrol.yaml` (§7.4), watches it, and keeps the previous good config when a new one is invalid, with line and column numbers. Opens run windows, starts and stops services in dependency order, and writes approval decisions and cancel and stop requests to the windows. Once a second it lists the `ground-control` windows and re-captures the panes on screen, and turns changes into live updates. Polls git status every 30 seconds and after each run; it never fetches. |
+| **Engine** | Runs inside the TUI while it is open. Loads and validates `groundcontrol.yaml` (§7.3), watches it, and keeps the previous good config when a new one is invalid, with line and column numbers. Opens run windows, starts and stops services in dependency order, and writes approval decisions and cancel and stop requests to the windows. Once a second it lists the `ground-control` windows and re-captures the panes on screen, and turns changes into live updates. Polls git status every 30 seconds and after each run; it never fetches. |
 | **Screens** | Dashboard, Project, Run dialog, Run view, Health (§10). |
 | **Output pane** | Feeds output captured from a tmux pane into a terminal-emulator parser and draws the resulting screen, so colours, `\r` progress lines and box-drawing tables render as they would in a terminal. |
 
@@ -100,7 +100,7 @@ One Rust binary: the TUI and the two workers.
 | Coordination and state | tmux: windows addressed by id, argv commands, `@gc_*` window options for state and requests, pane capture for output |
 | TUI | `ratatui` on `crossterm` |
 | Output pane | `vt100` parser (or a Ratatui widget built on it), plus `unicode-width` for display widths |
-| Config | A YAML parser that reports line and column positions, with `serde` for typed config (crate to confirm, §13) |
+| Config | `yaml-rust2`'s event parser, which carries line and column positions; typed config is built from its tree |
 | File watching | `notify` |
 | Clipboard | `pbcopy` (the TUI always runs on the Mac) |
 
@@ -124,7 +124,7 @@ Rust was chosen over Go for reasons other than performance, which is not a facto
 - **Timeout:** 15 minutes per step by default, overridable with `timeout:`.
 - **Cancel:** from the run view (the TUI sets the window's `@gc_cancel` and wakes the worker), `C-c` in the run's window, or closing the window. The worker sends `SIGTERM` to the step's whole process group, then `SIGKILL` after 10 seconds. A cancelled step marks the run as cancelled, and remaining steps are skipped.
 
-**Environment variables, in increasing precedence:**
+**Env layers, each overriding the ones before:**
 1. The tmux server's environment (your interactive shell's).
 2. Global `env:` from the config.
 3. The project environment's `vars`.
@@ -237,6 +237,7 @@ projects:
     pipelines:
       <pipeline-id>:
         protected: false        # pipeline-level protection (e.g. merge to main)
+        warning: "<text>"      # optional destructive-action warning, shown in red in the run dialog
         environments: [<env>]   # which envs it can run against; omitted → env-less
         inputs:
           <name>: { type: string|bool|choice, pattern: <regex>, options: [..], default: <v> }
@@ -267,7 +268,7 @@ Service and group IDs share a namespace within a project.
             run: tmux source-file ~/.tmux.conf     # fails clearly if no tmux server is running
 ```
 
-### 7.4 Validation rules
+### 7.3 Validation rules
 
 Config that fails an **error** rule is not loaded. The previous valid config stays active, and the errors are shown on the Health screen with line and column numbers.
 
@@ -290,9 +291,9 @@ The text-based checks (blocked commands, `--remote`) are **seatbelts, not guaran
 2. **Confirmation dialog for protected runs.** It shows the project, environment, branch and commit.
    - If the working tree has uncommitted changes, or HEAD isn't on `origin`, the dialog shows a **warning but still allows** the run.
    - In that case the run view shows the run as `dirty` and/or `unpushed` for as long as its window exists.
-3. **Approval steps are required** in every protected pipeline (§6.3, §7.4). The pattern is: a read-only step first, then `approve:`, then the step that makes the change. Approvals happen only in the run view, and protected approvals need a confirm keypress.
+3. **Approval steps are required** in every protected pipeline (§6.3, §7.3). The pattern is: a read-only step first, then `approve:`, then the step that makes the change. Approvals happen only in the run view, and protected approvals need a confirm keypress.
 4. **Repository guard.** When `remote:` is set, `git remote get-url origin` must match it (after normalising SSH and HTTPS forms). This is checked before every run and every service start; a mismatch refuses the action.
-5. **Blocked git commands** (§7.4).
+5. **Blocked git commands** (§7.3).
 6. **Dry run.** Every pipeline has a dry-run action. It shows each step's resolved command, working directory and environment variable *names*, the inputs, and which approval steps would trigger. Nothing is executed.
 7. **No listener, no agent, no stored data.**
    - There is no socket and no network listener, so nothing can reach GroundControl except your own processes.
@@ -306,7 +307,7 @@ The text-based checks (blocked commands, `--remote`) are **seatbelts, not guaran
 1. **Existing CLI sessions do the authentication**: `gh`, `wrangler`, and git's own credential setup. GroundControl never runs login flows.
 2. **`env_file`.** The worker reads the file when it starts the process, passes the values into that process's environment, and keeps them in memory only for masking. They are never written anywhere, and the TUI shows variable names only.
 3. **Masking.** Every `env_file` value of 6 or more characters is replaced with `***` in all output before it reaches the tmux pane, and so before any TUI sees it. The masker keeps a small overlap buffer so a secret split across two chunks of output is still caught. This is best-effort: encoded or transformed secrets are not caught. The masker has its own unit tests.
-4. **The central config is in git and must never contain secrets.** Validation warns about likely literal secrets (§7.4).
+4. **The central config is in git and must never contain secrets.** Validation warns about likely literal secrets (§7.3).
 
 ## 10. Interface
 
@@ -315,14 +316,14 @@ The TUI is the only interface. The mockups shared during the interview set the *
 ### 10.1 Design language
 
 - **Chrome:** a top bar with the app name and numbered screen tabs (a `!` marks a screen needing attention), and on the right the config status with last reload time, and the clock. A bottom bar lists the keys valid on the current screen.
-- **Panes:** bordered panes with the title set into the top border. The focused pane has an accent-coloured border; the others are dim.
-- **Colour roles**, defined once as theme tokens: accent (amber), success (green), warning (amber), danger (red), muted text, and selection background. Status is never shown by colour alone; it always has a word or symbol as well (`OK`, `FAIL`, `WAIT`, `●`, `×`, `○`).
+- **Panes:** bordered panes with the title set into the top border. The focused pane has a thick accent-coloured border; the others have a thin dim one. A selected row is also marked with `▶`.
+- **Colour roles**, defined once as theme tokens in `src/tui/theme.rs`, the only place a colour is named (captured output keeps the colours the program wrote): accent (amber), success (green), warning (amber), danger (red), muted text, and selection background. Status is never shown by colour alone; it always has a word or symbol as well (`OK`, `FAIL`, `WAIT`, `●`, `×`, `○`).
 - **Protected things are marked consistently:** a protected badge next to pipelines and environments, and a striped accent on approval banners and dialogs.
 - **Layout correctness** (the mockups showed text drawn over other text, which must not happen):
   - Columns have fixed or min/max widths, and overflow is truncated with `…`.
   - Width is measured in display cells (`unicode-width`), so wide characters such as the ⛅ wrangler prints take two cells.
   - Nothing is ever drawn on top of other text.
-  - Below a minimum terminal size (to confirm, §13), the TUI shows a "terminal too small" message instead of a broken layout.
+  - Below 100×28 cells the TUI shows a "terminal too small" message instead of a broken layout.
 
 ### 10.2 Global keys
 
@@ -332,19 +333,25 @@ The TUI is the only interface. The mockups shared during the interview set the *
 | `tab` / `shift+tab` | Next or previous pane |
 | `↑↓` / `j k` | Move selection |
 | `enter` | Open the selection |
-| `esc` | Back |
+| `esc` | Back; also closes help, output viewers, confirms and dialogs |
 | `?` | Help |
-| `q` | Quit the TUI (runs and services keep going) |
+| `q` | Quit the TUI (runs and services keep going); closes help, output viewers and confirms instead when one is open |
+| `ctrl+c` | Quit from anywhere, with or without an overlay open (runs and services keep going) |
+| Click | Select the row under the pointer and focus its pane; a top-bar tab opens its screen; the dashboard's approval banner opens the run on one click; fields and buttons in the run dialog and confirm act like their keys |
+| Double-click | Open the row, like `enter` |
+| Wheel | Move the selection in lists; scroll output (a sideways wheel pans it) |
 
 ### 10.3 Screens
 
 | Screen | Contents |
 |---|---|
-| **Dashboard** | An approval banner when any run is waiting (with "review" only). Projects pane: branch, uncommitted changes, ahead/behind (relative to the last fetch; never fetched automatically), service summary. Services pane for the selected project: each service and group with status, health, port and uptime. Runs that still have a window. Output pane for the selected service (last 50 lines). Keys: start/stop group, restart service, open all of its output. |
-| **Project** | Header: path, whether `origin` matches, branch, commit, tree state, and the run in progress. Pipelines pane with protected badges and status hints (for example "1 waiting"). Detail pane for the selected pipeline: its steps, environment, and its latest run that still has a window. Services pane. Keys: run, dry run, choose environment, start/stop, open output. |
-| **Run dialog** | Project, environment, branch and commit. Dirty or unpushed warnings with the note that the run view will show it that way. An input form with live pattern checking. Destructive warnings (for example on `restore-d1`), and the step outline showing where it will stop for approval. Keys: start, dry run, cancel. |
-| **Run view** | Header with run ID, status, environment, commit, tree state, and elapsed time. Steps pane: status, exit code and duration per step. Command line of the selected step. Outputs pane. Output pane showing live terminal output for the selected step, with follow mode. Approval panel with the message and expiry time; approve (with confirm for protected runs) and reject. Keys: copy command, copy output (colour codes stripped), follow, cancel run. |
-| **Health** | Tool check, tmux and Docker reachability, config status and errors with line and column numbers, last reload time, version and config path. |
+| **Dashboard** | Full-width bands, top to bottom. A one-line approval banner, only when an approval waits (project and pipeline, run id, environment, message, expiry, "review"). **Projects:** branch, uncommitted changes, ahead/behind (relative to the last fetch; never fetched automatically), service summary. **Runs** that still have a window: status, id, environment, commit, duration, start time. Then the selected project's **services** (each service and group with status, port and uptime) beside the selected service's **output** (last 50 lines). `tab` / `shift+tab` move focus banner → projects → runs → services (the banner only when present); the focused pane has a thick border. Keys: `s` start/stop and `r` restart the selected service or group, `l` shows its full output (all three act on it whichever pane has focus); `enter` opens the selection (the banner opens the run view). |
+| **Project** | Header: path, whether `origin` matches, branch, commit, tree state, ahead/behind, and the run in progress. A **pipelines** pane with protected badges, the chosen environment and status hints (for example "1 waiting"), and a **services** pane; `tab` switches between them. A detail panel for the selected pipeline shows its steps, inputs, destructive warning and its latest run that still has a window. Keys, pipelines: `enter` run dialog, `d` dry run, `e` next environment. Keys, services: `s` start/stop, `r` restart, `enter` / `l` full output. |
+| **Run dialog** | Titled `run <project>/<pipeline>`, with ` on <env>` when it has an environment; for protected runs it is the confirmation dialog. Rows for environment (changed with `←→` or `ctrl+e` when the pipeline has several), branch and commit. Dirty and unpushed warnings, each with the note that the run view will show the run that way. The inputs, each with a live pattern check. The pipeline's destructive warning, and the step outline showing where it will stop for approval. An error row and the buttons (start run, dry run, cancel) are always visible; when the dialog is too tall the outline, then the warnings, then other inputs give way. The bottom bar lists the keys for the focused field. Keys: `enter` start, `ctrl+d` dry run, `esc` cancel. |
+| **Run view** | Header: pipeline and run id, status, environment, branch and commit, tree state (`clean, pushed`, `dirty`, `unpushed`), and elapsed time. On the left, a **steps** pane (status, exit code and duration per step, then the selected step's command and working directory) over an **outputs · inputs** pane. On the right, the selected step's **output**: live terminal output with follow mode. When an approval waits, an approval panel with the message and expiry time. Keys: `↑↓` select a step, `f` follow, `pgup`/`pgdn` `g`/`G` `←→` scroll and pan, `y` copy the command, `Y` copy the output (colour codes stripped), `a` approve (with a confirm for protected runs), `x` reject, `c` cancel the run. |
+| **Health** | Full-width bands. **groundcontrol:** version and how long the TUI has been open. **tool check:** each tool once, with its path, and for tmux and Docker whether they answered. **config:** status, file, when it loaded and when a reload was last attempted, and errors and warnings with line and column numbers. Key: `r` re-checks now. |
+| **Help** (`?`) | The keys of the current screen, then the ones that work everywhere (keys, mouse). |
+| **Output viewer** | A service's full output, or a dry-run plan (each step's resolved command, working directory, environment variable names, and the approvals that would trigger). Keys: scroll and pan, `Y` copy, `esc` close. |
 
 ### 10.4 Output pane
 
@@ -362,23 +369,35 @@ Workers raise an alert when a run fails, when an approval is waiting, and when a
 
 Successful runs are silent. GroundControl never runs `osascript`. When no tmux client is attached (for example the TUI and every terminal are closed), nobody is told: a waiting approval is only seen the next time a TUI opens, and expires after 30 minutes. An alert only informs; approving still requires the TUI.
 
-### 10.6 Engine requests
+### 10.6 Engine calls and events
 
-The TUI talks to its in-process engine with these requests. There is no socket, envelope or handshake.
+The TUI talks to its in-process engine (`Engine`, `src/engine.rs`) with typed method calls and receives events on a channel. There is no socket, envelope or handshake.
 
-| Request | Purpose |
+| Call | Purpose |
 |---|---|
-| `projects.list` | Projects with git and service status |
-| `run.start {project, pipeline, env, inputs, dry_run}` | Open a run's window, or return a dry-run plan |
-| `run.cancel {id}` | Ask the run's worker to cancel |
-| `run.decide {id, step, decision}` | Approve or reject; returns "already decided" if another TUI answered first |
-| `runs.list` | Runs that still have a window, newest first, and waiting approvals |
-| `run.get {id}` | One run's details |
-| `log.read {run, step}` | A step's output so far, from the run's pane |
-| `service.control {project, id, action}` | Start, stop or restart a service or group |
-| `service.log {project, id}` | A service window's output |
-| `health.get` | Tool check, config status, tmux and Docker |
-| `subscribe {topics}` | Which runs' and services' output to follow and whether the Health screen is open; once a second the engine lists the windows for run, step, approval, service, git and config changes and delivers them as events |
+| `projects()` | Projects with git and service status |
+| `start_run(RunStartParams)` | Open a run's window and return its id, or with `dry_run` return the dry-run plan; the TUI sets `confirmed` once the user has seen the confirmation dialog, and a protected run is refused without it |
+| `cancel_run(id)` | Ask the run's worker to cancel |
+| `decide(id, step, decision, confirmed)` | Approve or reject; refuses a protected approval without `confirmed`, and answers "already decided" if another TUI answered first |
+| `runs()` | Runs that still have a window, newest first, and waiting approvals |
+| `run(id)` | One run's details |
+| `step_output(run, step)` | A step's output so far, from the run's pane |
+| `control_service(project, id, action)` | Start, stop or restart a service or group |
+| `service_output(project, id)` | A service window's output |
+| `health()` | Tool check, config status, tmux and Docker |
+| `watch(Watch)` | Replace what the engine follows: whether the Health screen is open, which runs' step output and which services' output to capture |
+
+Once a second the engine lists the windows and turns changes into events; git status events come from its own 30-second poll, and config events from a reload.
+
+| Event | Meaning |
+|---|---|
+| `Run`, `Step`, `Approval`, `Output` | A run's summary, a step, an approval or a step output changed |
+| `Service` | A service's status changed |
+| `Git` | A project's git status changed |
+| `Projects` | The project list changed shape (a config reload or a run opening or closing); call `projects()` again |
+| `Config` | The config status changed |
+| `Log` | A followed step's output so far |
+| `ServiceLog` | A followed service's whole output, which replaces what was shown |
 
 ## 11. Where state lives
 
@@ -427,9 +446,9 @@ The only files involved are your `groundcontrol.yaml` (linked into `~/.config/gr
 2. ~~D1 Time Travel~~ Dropped with the finance-analyzer project.
 3. ~~Prompt behaviour of `wrangler`~~ Dropped with the finance-analyzer project.
 4. ~~Production environment name in Wrangler~~ Dropped with the finance-analyzer project.
-5. **Merge method** for `merge-pr` (squash, merge commit, or rebase) and whether the merged branch should be deleted.
-6. **Repository paths and remotes** for tmux-ui-manager. Is tmux-ui-manager's dev checkout the copy symlinked into `~/.tmux/plugins`?
+5. ~~Merge method for `merge-pr`~~ No project defines a merge pipeline.
+6. ~~Repository paths and remotes for tmux-ui-manager~~ Set in `groundcontrol.yaml`.
 7. ~~Local sign-in for the Git Internals Dashboard~~ Dropped with the git-internals project.
-8. **YAML crate.** Choose a maintained Rust YAML parser that reports line and column positions for validation errors.
-9. **TUI details:** minimum terminal size, the tmux popup key binding, and final theme colours.
+8. ~~YAML crate~~ `yaml-rust2`, whose events carry line and column positions (`src/yaml.rs`).
+9. ~~TUI details~~ Minimum terminal size 100×28; the theme colours are in `src/tui/theme.rs`; the tmux popup binding is the example in §5.4.
 10. **Security tool:** confirm that the endpoint-security alerts no longer fire with this design (see [`architecture.md`](architecture.md)).
