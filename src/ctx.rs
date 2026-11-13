@@ -19,7 +19,8 @@ impl Ctx {
         // file; absolute, because workers start in the project folder.
         let config_path = match std::fs::canonicalize(&config_path) {
             Ok(p) => p,
-            Err(_) => std::path::absolute(&config_path).map_err(|e| e.to_string())?,
+            Err(_) => std::path::absolute(&config_path)
+                .map_err(|e| format!("cannot work out the full path of the config file {}: {e}", config_path.display()))?,
         };
         Ok(Ctx { tmux, exe, config_path })
     }
