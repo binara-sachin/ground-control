@@ -311,7 +311,7 @@ The text-based checks (blocked commands, `--remote`) are **seatbelts, not guaran
 
 ## 10. Interface
 
-The TUI is the only interface. The mockups shared during the interview set the **design language**; they are a reference, not a layout to copy.
+The TUI is the only interface. §10.1 sets its **design language**: a look and a set of rules, not a fixed layout.
 
 ### 10.1 Design language
 
@@ -319,11 +319,11 @@ The TUI is the only interface. The mockups shared during the interview set the *
 - **Panes:** bordered panes with the title set into the top border. The focused pane has a thick accent-coloured border; the others have a thin dim one. A selected row is also marked with `▶`.
 - **Colour roles**, defined once as theme tokens in `src/tui/theme.rs`, the only place a colour is named (captured output keeps the colours the program wrote): accent (amber), success (green), warning (amber), danger (red), muted text, and selection background. Status is never shown by colour alone; it always has a word or symbol as well (`OK`, `FAIL`, `WAIT`, `●`, `×`, `○`).
 - **Protected things are marked consistently:** a protected badge next to pipelines and environments, and a striped accent on approval banners and dialogs.
-- **Layout correctness** (the mockups showed text drawn over other text, which must not happen):
+- **Layout correctness** (text must never be drawn over other text):
   - Columns have fixed or min/max widths, and overflow is truncated with `…`.
   - Width is measured in display cells (`unicode-width`), so wide characters such as the ⛅ wrangler prints take two cells.
   - Nothing is ever drawn on top of other text.
-  - Below 100×28 cells the TUI shows a "terminal too small" message instead of a broken layout.
+  - Below 100×28 cells the TUI shows a "terminal too small" message instead of a broken layout. Only `q` and `ctrl+c` respond until the terminal is larger again.
 
 ### 10.2 Global keys
 
