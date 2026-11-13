@@ -360,11 +360,12 @@ fn the_banner_is_one_line_with_the_message_and_the_review_key() {
     assert_eq!(symbol(&term, 0, y + 3), "┏", "the projects pane follows at once");
     let line = screen_row(&term, y + 1);
     assert!(line.contains("\"Proceed with the gated change?\"") && line.contains("enter review"), "{line}");
+    assert!(line.ends_with("enter review ║"), "one cell between the text and the border: {line}");
     app.waiting = vec![approval(&"⛅ a very long approval message ".repeat(6)), approval("two")];
     redraw(&mut app, &mut term);
     let line = screen_row(&term, y + 1);
     assert!(line.contains("alpha/gated #7") && line.contains("env prod") && line.contains("(+1 more)"), "{line}");
-    assert!(line.contains('…') && line.contains("enter review"), "{line}");
+    assert!(line.contains('…') && line.ends_with("enter review ║"), "{line}");
 }
 
 #[test]

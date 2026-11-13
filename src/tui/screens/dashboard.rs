@@ -275,7 +275,8 @@ fn draw_banner(app: &App, f: &mut Frame, area: Rect) {
     let inner = framed_alert(f, area, &title, true);
     app.hits.add(area, Target::DashBanner, 0);
     let a = &app.waiting[0];
-    let w = inner.width as usize;
+    // One cell is left free before the right border.
+    let w = (inner.width as usize).saturating_sub(1);
     let mark = if focused { Span::styled("▶ ", theme::key()) } else { Span::styled("▲ ", theme::warning()) };
     let mut head = vec![
         mark,
