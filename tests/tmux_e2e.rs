@@ -49,6 +49,14 @@ async fn session_windows_and_options() {
     env.wait_for(5, "argv window exits", |w| w.iter().any(|w| w.id == id && w.dead)).await;
     assert!(t.capture(id).await.unwrap().contains("a b;c $HOME `id`"));
 
+    // tmux's own "Pane is dead" line never shows up as the program's output.
+    let cmd = argv(&["sh", "-c", "echo hi; exit 1"]);
+    let dead = t.new_window(&NewWindow { name: "dead", cwd: Path::new("/"), argv: &cmd, env: &[], options: &[] }).await.unwrap();
+    env.wait_for(5, "dead window exits", |w| w.iter().any(|w| w.id == dead && w.dead)).await;
+    let raw = t.capture(dead).await.unwrap();
+    assert!(!raw.contains("Pane is dead"), "{raw:?}");
+    assert_eq!(groundcontrol::tmux::trim_capture(&raw), "hi\n");
+
     // A second window joins the existing session; options can be read and written by id.
     let cmd = argv(&["sleep", "30"]);
     let live = t.new_window(&NewWindow { name: "app/web", cwd: Path::new("/"), argv: &cmd, env: &[], options: &[] }).await.unwrap();
