@@ -108,12 +108,15 @@ impl RunView {
         }
     }
 
-    pub fn on_output(&mut self, key: &str, value: &str) {
-        let step = self.active_step();
+    /// `step_index` is the step that wrote the output, as the worker recorded it.
+    pub fn on_output(&mut self, key: &str, value: &str, step_index: Option<usize>) {
         if let Some(d) = &mut self.detail {
             match d.outputs.iter_mut().find(|o| o.key == key) {
-                Some(o) => o.value = value.to_string(),
-                None => d.outputs.push(OutputInfo { key: key.into(), value: value.into(), step_index: step }),
+                Some(o) => {
+                    o.value = value.to_string();
+                    o.step_index = step_index;
+                }
+                None => d.outputs.push(OutputInfo { key: key.into(), value: value.into(), step_index }),
             }
         }
     }

@@ -471,7 +471,7 @@ fn poll_runs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
         }
         for o in &d.outputs {
             if changed(&mut seen.outputs, (id, o.key.clone()), &o.value) && seen.primed {
-                e.emit(Event::Output { run_id: id, key: o.key.clone(), value: o.value.clone() });
+                e.emit(Event::Output { run_id: id, key: o.key.clone(), value: o.value.clone(), step_index: o.step_index });
             }
         }
     }

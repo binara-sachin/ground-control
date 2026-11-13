@@ -372,12 +372,12 @@ impl App {
                 }
                 self.schedule_projects();
             }
-            Event::Output { run_id, key, value } => {
+            Event::Output { run_id, key, value, step_index } => {
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == run_id
                     {
-                        r.on_output(&key, &value);
+                        r.on_output(&key, &value, step_index);
                     }
                 }
             }

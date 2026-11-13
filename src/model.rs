@@ -68,6 +68,7 @@ pub enum Event {
         run_id: i64,
         key: String,
         value: String,
+        step_index: Option<usize>,
     },
     Service(ServiceStatus),
     Git {

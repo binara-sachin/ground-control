@@ -566,6 +566,20 @@ fn the_step_output_keeps_the_full_body_height_and_the_steps_never_clip() {
 }
 
 #[test]
+fn an_output_event_is_labelled_with_the_step_that_wrote_it() {
+    // Step 2 is the active one when the event for step 0's output arrives.
+    let mut d = run_detail(4, 0, 0);
+    d.steps[0].status = StepStatus::Succeeded;
+    d.steps[2].status = StepStatus::Running;
+    let (mut app, mut term) = run_app(d, 100, 28);
+    app.update(Msg::Event(crate::model::Event::Output { run_id: 7, key: "late".into(), value: "v".into(), step_index: Some(0) }));
+    redraw(&mut app, &mut term);
+    let screen = screen_text(&term);
+    assert!(screen.contains("late from step 1"), "{screen}");
+    assert!(!screen.contains("late from step 3"), "{screen}");
+}
+
+#[test]
 fn the_outputs_inputs_pane_lists_everything_and_says_what_is_cut() {
     let (_app, term) = run_app(run_detail(2, 2, 3), 100, 28);
     let screen = screen_text(&term);
