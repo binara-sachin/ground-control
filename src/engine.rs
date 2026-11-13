@@ -33,6 +33,9 @@ pub struct Engine {
     started_at: Timestamp,
     config: RwLock<Arc<Config>>,
     config_status: Mutex<ConfigStatus>,
+    /// The config file's text as of the last load attempt, so the watcher can
+    /// tell whether the file changed before it was armed.
+    config_src: Mutex<Option<String>>,
     git: Mutex<HashMap<String, GitStatus>>,
     git_refresh: mpsc::UnboundedSender<Option<String>>,
     watch: Mutex<Watch>,
@@ -56,6 +59,7 @@ impl Engine {
                 loaded_at: None,
             }),
             ctx,
+            config_src: Mutex::new(None),
             config: RwLock::new(Arc::new(Config::default())),
             git: Mutex::new(HashMap::new()),
             git_refresh: git_tx,
@@ -80,7 +84,12 @@ impl Engine {
 
     /// Loads the config file; keeps the previous good config when it is invalid.
     fn reload_config_now(&self) {
-        let result = crate::config::load_file(&self.ctx.config_path);
+        let src = std::fs::read_to_string(&self.ctx.config_path);
+        *self.config_src.lock().unwrap() = src.as_ref().ok().cloned();
+        let result = match src {
+            Ok(src) => crate::config::load_str(&src),
+            Err(_) => crate::config::load_file(&self.ctx.config_path),
+        };
         let t = now();
         let ok = result.config.is_some();
         let status = {
@@ -352,6 +361,13 @@ async fn watch_config(e: Arc<Engine>) {
     let dir = e.ctx.config_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     if watcher.watch(&dir, notify::RecursiveMode::NonRecursive).is_err() {
         return;
+    }
+    // A change made between the first load and the watcher being armed raises
+    // no event, so compare the file with what was loaded.
+    let loaded = e.config_src.lock().unwrap().clone();
+    if std::fs::read_to_string(&e.ctx.config_path).ok() != loaded {
+        let e2 = e.clone();
+        let _ = tokio::task::spawn_blocking(move || e2.reload_config_now()).await;
     }
     while rx.recv().await.is_some() {
         // Debounce bursts of events from a single save.
