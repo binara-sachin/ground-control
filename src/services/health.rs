@@ -75,7 +75,10 @@ mod tests {
 
     #[tokio::test]
     async fn closed_port() {
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        // Bound but never listening: the port stays reserved while connections to it are refused.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
         assert!(!port_in_use(port).await);
         assert!(!http_ok(&format!("http://127.0.0.1:{port}/")).await);
     }
