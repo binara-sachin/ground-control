@@ -256,7 +256,6 @@ fn service(id: &str, state: ServiceState) -> ServiceStatus {
         id: id.into(),
         state,
         healthy: true,
-        pid: None,
         port: None,
         started_at: None,
         restart_count: 0,

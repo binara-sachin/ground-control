@@ -218,7 +218,6 @@ pub struct ServiceStatus {
     pub id: String,
     pub state: ServiceState,
     pub healthy: bool,
-    pub pid: Option<i32>,
     pub port: Option<u16>,
     pub started_at: Option<Timestamp>,
     pub restart_count: u32,

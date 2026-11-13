@@ -68,6 +68,12 @@ async fn window_of(env: &Env, id: &str) -> i64 {
     services::service_windows(&w, "app", id).last().expect("service window").id
 }
 
+/// The pid the service's worker published in its window.
+async fn pid_of(env: &Env, id: &str) -> Option<i32> {
+    let w = env.windows().await;
+    services::service_windows(&w, "app", id).last().expect("service window").report.pid
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn services_end_to_end() {
     let Some(env) = common::setup(config) else { return };
@@ -85,7 +91,7 @@ async fn services_end_to_end() {
     let web = status(&env, "web").await;
     assert_eq!(web.state, ServiceState::Running);
     assert!(web.healthy);
-    assert!(web.pid.is_some());
+    assert!(pid_of(&env, "web").await.is_some());
     assert_eq!(services::service_windows(&env.windows().await, "app", "web").len(), 1);
 
     // Starting it again is a no-op.
@@ -150,7 +156,7 @@ async fn masking_and_stop_paths() {
     // A second worker for a running service gives up and closes its own window.
     control(&env, "sleeper", ServiceAction::Start).await.unwrap();
     let sleeper = window_of(&env, "sleeper").await;
-    let pid = status(&env, "sleeper").await.pid.unwrap();
+    let pid = pid_of(&env, "sleeper").await.unwrap();
     let exe = env!("CARGO_BIN_EXE_groundcontrol");
     let cfg = format!("GC_CONFIG={}", env.cfg_path.display());
     let out = env.tmux(&[
