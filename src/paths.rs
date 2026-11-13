@@ -27,7 +27,7 @@ pub fn config_path() -> PathBuf {
 }
 
 fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+    std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Expands a leading `~` or `~/`.

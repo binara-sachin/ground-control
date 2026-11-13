@@ -33,12 +33,12 @@ use widgets::*;
 const MIN_WIDTH: u16 = 100;
 const MIN_HEIGHT: u16 = 28;
 
-pub fn run() -> anyhow::Result<()> {
+pub fn run() -> std::io::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     rt.block_on(main_loop())
 }
 
-async fn main_loop() -> anyhow::Result<()> {
+async fn main_loop() -> std::io::Result<()> {
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
     // A panic must not leave the terminal reporting mouse events.
@@ -72,7 +72,7 @@ async fn main_loop() -> anyhow::Result<()> {
     app.start();
     let result = loop {
         if let Err(e) = terminal.draw(|f| draw(&mut app, f)) {
-            break Err(e.into());
+            break Err(e);
         }
         let Some(msg) = rx.recv().await else { break Ok(()) };
         app.update(msg);
