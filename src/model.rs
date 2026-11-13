@@ -78,9 +78,9 @@ pub enum Event {
     /// The project list changed shape (config reload); call `Engine::projects` again.
     Projects,
     Config(ConfigStatus),
-    Log(LogChunk),
+    StepOutput(OutputChunk),
     /// The service window's whole output, which replaces what was shown.
-    ServiceLog {
+    ServiceOutput {
         project: String,
         service: String,
         data: String,
@@ -408,7 +408,7 @@ pub struct RunList {
 }
 
 #[derive(Debug, Clone)]
-pub struct LogChunk {
+pub struct OutputChunk {
     pub run: i64,
     pub step: usize,
     /// The step's whole output so far, as captured from the run's pane

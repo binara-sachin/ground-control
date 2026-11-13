@@ -159,7 +159,7 @@ fn the_text_overlay_scrolls_with_the_wheel() {
     let mut view = term_view::TermView::new();
     view.feed(&"line\r\n".repeat(200));
     app.overlay = Some(Overlay::Text(Box::new(screens::overlay::TextOverlay {
-        title: "log".into(),
+        title: "output".into(),
         subtitle: String::new(),
         view,
         follow_service: None,
@@ -303,7 +303,7 @@ fn busy_app(w: u16, h: u16) -> (App, Terminal<TestBackend>) {
     let (mut app, _) = app();
     app.projects[0].git = Some(git_status());
     app.projects[0].services = vec![service("web", ServiceState::Running), service("db", ServiceState::Crashed)];
-    app.recent = vec![run(8, "alpha", "deploy-everything", false), run(7, "beta", "gated", true)];
+    app.runs = vec![run(8, "alpha", "deploy-everything", false), run(7, "beta", "gated", true)];
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| draw(&mut app, f)).unwrap();
     (app, term)
@@ -390,7 +390,7 @@ fn clicking_a_row_in_each_list_selects_it() {
 fn long_lists_scroll_with_the_selection_and_clicks_follow() {
     let (mut app, mut term) = busy_app(100, 28);
     app.projects = (0..30).map(|i| project(&format!("p{i:02}"))).collect();
-    app.recent = (0..8).map(|i| run(i, "alpha", "deploy", false)).collect();
+    app.runs = (0..8).map(|i| run(i, "alpha", "deploy", false)).collect();
     app.projects[0].services = (0..30).map(|i| service(&format!("s{i:02}"), ServiceState::Running)).collect();
     app.dash.project_sel = 29;
     app.dash.run_sel = 7;
@@ -1178,7 +1178,7 @@ fn clicking_a_visible_row_never_moves_a_scrolled_list() {
     let (mut app, mut term) = busy_app(100, 28);
     app.projects = (0..30).map(|i| project(&format!("p{i:02}"))).collect();
     app.projects[0].services = (0..30).map(|i| service(&format!("s{i:02}"), ServiceState::Running)).collect();
-    app.recent = (0..30).map(|i| run(i, "alpha", "deploy", false)).collect();
+    app.runs = (0..30).map(|i| run(i, "alpha", "deploy", false)).collect();
     for (target, focus) in [
         (Target::DashProjects, dashboard::Focus::Projects),
         (Target::DashServices, dashboard::Focus::Services),
@@ -1212,13 +1212,13 @@ fn a_selected_group_names_the_member_whose_output_is_shown() {
     app.dash.focus = dashboard::Focus::Services;
     // Rows: the group first, then web and db.
     app.dash.service_sel = 0;
-    dashboard::load_log(&mut app, true);
+    dashboard::load_output(&mut app, true);
     redraw(&mut app, &mut term);
     let screen = screen_text(&term);
     assert!(screen.contains("both › db output  crashed"), "the crashed member is shown, and says why\n{screen}");
     // A plain service keeps its own name.
     app.dash.service_sel = 1;
-    dashboard::load_log(&mut app, true);
+    dashboard::load_output(&mut app, true);
     redraw(&mut app, &mut term);
     let screen = screen_text(&term);
     assert!(screen.contains("web output") && !screen.contains("both ›"), "{screen}");

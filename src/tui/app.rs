@@ -34,7 +34,7 @@ pub enum Reply {
     Runs(Result<RunList, String>),
     Health(HealthInfo),
     Run(i64, Result<RunDetail, String>),
-    StepOutput { run: i64, step: usize, result: Result<LogChunk, String> },
+    StepOutput { run: i64, step: usize, result: Result<OutputChunk, String> },
     ServiceOutput { project: String, service: String, result: Result<String, String> },
     FullOutput(Result<String, String>),
     Started(Result<StartOutcome, String>),
@@ -79,7 +79,7 @@ pub struct App {
 
     pub projects: Vec<ProjectInfo>,
     pub projects_loaded: bool,
-    pub recent: Vec<RunSummary>,
+    pub runs: Vec<RunSummary>,
     pub waiting: Vec<ApprovalInfo>,
     pub health: Option<HealthInfo>,
     pub config: Option<ConfigStatus>,
@@ -92,7 +92,7 @@ pub struct App {
 
     watching: Watch,
     refetch_projects_at: Option<Instant>,
-    refetch_recent_at: Option<Instant>,
+    refetch_runs_at: Option<Instant>,
     last_health: Option<Instant>,
     next_connect: Instant,
 }
@@ -110,7 +110,7 @@ impl App {
             toast: None,
             projects: Vec::new(),
             projects_loaded: false,
-            recent: Vec::new(),
+            runs: Vec::new(),
             waiting: Vec::new(),
             health: None,
             config: None,
@@ -119,7 +119,7 @@ impl App {
             last_click: None,
             watching: Watch::default(),
             refetch_projects_at: None,
-            refetch_recent_at: None,
+            refetch_runs_at: None,
             last_health: None,
             next_connect: Instant::now(),
         }
@@ -219,7 +219,7 @@ impl App {
         for id in runs {
             self.fetch_run(id);
         }
-        dashboard::load_log(self, true);
+        dashboard::load_output(self, true);
     }
 
     pub fn fetch_projects(&self) {
@@ -254,7 +254,7 @@ impl App {
                 w.runs.insert(r.id);
             }
         }
-        if let Some(target) = &self.dash.log_target {
+        if let Some(target) = &self.dash.output_target {
             w.services.insert(target.clone());
         }
         if let Some(Overlay::Text(t)) = &self.overlay
@@ -315,8 +315,8 @@ impl App {
             self.refetch_projects_at = None;
             self.fetch_projects();
         }
-        if self.refetch_recent_at.is_some_and(|t| now >= t) {
-            self.refetch_recent_at = None;
+        if self.refetch_runs_at.is_some_and(|t| now >= t) {
+            self.refetch_runs_at = None;
             self.fetch_runs();
         }
         // Checked once at start for the attention markers, then only while the
@@ -341,8 +341,8 @@ impl App {
     fn on_event(&mut self, e: Event) {
         match e {
             Event::Run(s) => {
-                upsert_run(&mut self.recent, &s);
-                self.recent.truncate(50);
+                upsert_run(&mut self.runs, &s);
+                self.runs.truncate(50);
                 for v in &mut self.nav {
                     if let View::Run(r) = v {
                         r.on_summary(&s);
@@ -403,7 +403,7 @@ impl App {
             // Runs came or went (a window opened or closed): refresh both lists.
             Event::Projects => {
                 self.schedule_projects();
-                self.refetch_recent_at.get_or_insert(Instant::now() + Duration::from_millis(250));
+                self.refetch_runs_at.get_or_insert(Instant::now() + Duration::from_millis(250));
             }
             Event::Config(c) => {
                 if !c.ok {
@@ -414,16 +414,16 @@ impl App {
                 self.config = Some(c);
                 self.fetch_health();
             }
-            Event::Log(chunk) => {
+            Event::StepOutput(chunk) => {
                 for v in &mut self.nav {
                     if let View::Run(r) = v
                         && r.id == chunk.run
                     {
-                        r.on_log(&chunk);
+                        r.on_step_output(&chunk);
                     }
                 }
             }
-            Event::ServiceLog { project, service, data } => self.on_service_log(&project, &service, &data),
+            Event::ServiceOutput { project, service, data } => self.on_service_output(&project, &service, &data),
         }
     }
 
@@ -432,10 +432,10 @@ impl App {
             Reply::Projects(Ok(p)) => {
                 self.projects = p;
                 self.projects_loaded = true;
-                dashboard::load_log(self, false);
+                dashboard::load_output(self, false);
             }
             Reply::Runs(Ok(list)) => {
-                self.recent = list.runs.into_iter().take(50).collect();
+                self.runs = list.runs.into_iter().take(50).collect();
                 self.waiting = list.waiting;
                 if !self.waiting.is_empty() && self.dash.focus_banner_on_new {
                     self.dash.focus = dashboard::Focus::Banner;
@@ -463,7 +463,7 @@ impl App {
                     if let View::Run(r) = v
                         && r.id == run
                     {
-                        r.on_log(&chunk);
+                        r.on_step_output(&chunk);
                     }
                 }
             }
@@ -472,13 +472,13 @@ impl App {
                     if let View::Run(r) = v
                         && r.id == run
                     {
-                        r.on_log_error(step, &e);
+                        r.on_step_output_error(step, &e);
                     }
                 }
             }
             Reply::ServiceOutput { project, service, result: Ok(text) } => {
-                self.on_service_log(&project, &service, &text);
-                self.dash.log.loading = false;
+                self.on_service_output(&project, &service, &text);
+                self.dash.output.loading = false;
             }
             Reply::FullOutput(Ok(text)) => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {
@@ -548,12 +548,12 @@ impl App {
 
     /// A service window's whole output arrived: the dashboard shows its last
     /// lines, the full-output overlay all of it.
-    fn on_service_log(&mut self, project: &str, service: &str, text: &str) {
-        if self.dash.log_target.as_ref().is_some_and(|(p, s)| p == project && s == service) {
+    fn on_service_output(&mut self, project: &str, service: &str, text: &str) {
+        if self.dash.output_target.as_ref().is_some_and(|(p, s)| p == project && s == service) {
             let lines: Vec<&str> = text.lines().collect();
-            let tail = lines[lines.len().saturating_sub(dashboard::LOG_LINES)..].join("\n");
+            let tail = lines[lines.len().saturating_sub(dashboard::OUTPUT_LINES)..].join("\n");
             let tail = tail.trim_start_matches('\n');
-            self.dash.log.replace(&if tail.is_empty() { String::new() } else { format!("{tail}\n") });
+            self.dash.output.replace(&if tail.is_empty() { String::new() } else { format!("{tail}\n") });
         }
         if let Some(Overlay::Text(t)) = &mut self.overlay
             && t.follow_service.as_ref().is_some_and(|(p, s)| p == project && s == service)
@@ -697,11 +697,11 @@ impl App {
         const LINES: usize = 3;
         let step = if down { KeyCode::Down } else { KeyCode::Up };
         match target {
-            Target::DashLog => {
+            Target::DashOutput => {
                 if down {
-                    self.dash.log.scroll_down(LINES)
+                    self.dash.output.scroll_down(LINES)
                 } else {
-                    self.dash.log.scroll_up(LINES)
+                    self.dash.output.scroll_up(LINES)
                 }
             }
             Target::DashProjects | Target::DashServices | Target::DashRuns => {
@@ -725,8 +725,8 @@ impl App {
 
     fn on_hwheel(&mut self, target: Target, right: bool) {
         match target {
-            Target::DashLog if right => self.dash.log.scroll_right(8, 40),
-            Target::DashLog => self.dash.log.scroll_left(8),
+            Target::DashOutput if right => self.dash.output.scroll_right(8, 40),
+            Target::DashOutput => self.dash.output.scroll_left(8),
             Target::RunOutput => run_view::scroll_output(self, |o| if right { o.scroll_right(8, 60) } else { o.scroll_left(8) }),
             Target::TextOverlay => {
                 if let Some(Overlay::Text(t)) = &mut self.overlay {

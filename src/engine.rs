@@ -156,7 +156,7 @@ impl Engine {
         }
     }
 
-    pub async fn step_output(&self, run: i64, step: usize) -> Result<LogChunk, String> {
+    pub async fn step_output(&self, run: i64, step: usize) -> Result<OutputChunk, String> {
         let Some(w) = window::run(&self.ctx.tmux, run).await? else {
             return Err(format!("run #{run} has no window any more"));
         };
@@ -308,10 +308,10 @@ fn approval_previews(config: &Config, project: &Project, pipeline: &Pipeline, me
         .collect()
 }
 
-fn step_chunk(detail: &RunDetail, sections: &[String], step: usize) -> LogChunk {
+fn step_chunk(detail: &RunDetail, sections: &[String], step: usize) -> OutputChunk {
     let finished =
         detail.steps.get(step).is_none_or(|s| !matches!(s.status, StepStatus::Running | StepStatus::Pending | StepStatus::Waiting));
-    LogChunk { run: detail.summary.id, step, data: sections.get(step).cloned().unwrap_or_default(), complete: finished }
+    OutputChunk { run: detail.summary.id, step, data: sections.get(step).cloned().unwrap_or_default(), complete: finished }
 }
 
 /// Looks a command up on `PATH` without running anything.
@@ -414,8 +414,8 @@ struct Seen {
     approvals: HashMap<(i64, usize), ApprovalInfo>,
     outputs: HashMap<(i64, String), String>,
     services: HashMap<(String, String), ServiceStatus>,
-    logs: HashMap<(i64, usize), (String, bool)>,
-    service_logs: HashMap<(String, String), String>,
+    step_outputs: HashMap<(i64, usize), (String, bool)>,
+    service_outputs: HashMap<(String, String), String>,
 }
 
 fn changed<K: std::hash::Hash + Eq, V: PartialEq + Clone>(map: &mut HashMap<K, V>, key: K, value: &V) -> bool {
@@ -437,7 +437,7 @@ async fn state_poller(e: Arc<Engine>) {
             let config = e.config();
             poll_runs(&e, &config, &windows, &mut seen);
             poll_services(&e, &config, &windows, &mut seen);
-            poll_logs(&e, &config, &windows, &mut seen).await;
+            poll_output(&e, &config, &windows, &mut seen).await;
             seen.primed = true;
         }
         tokio::time::sleep(POLL).await;
@@ -495,9 +495,9 @@ fn poll_services(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen
 }
 
 /// Re-captures the panes of the runs and services on screen and sends what changed.
-async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
+async fn poll_output(e: &Engine, config: &Config, windows: &Windows, seen: &mut Seen) {
     let Watch { runs, services, .. } = e.watch.lock().unwrap().clone();
-    seen.logs.retain(|(run, _), _| runs.contains(run));
+    seen.step_outputs.retain(|(run, _), _| runs.contains(run));
     for run in runs {
         let Some(w) = windows.run(run) else { continue };
         let Ok(pane) = e.ctx.tmux.capture(run).await else { continue };
@@ -505,19 +505,19 @@ async fn poll_logs(e: &Engine, config: &Config, windows: &Windows, seen: &mut Se
         let sections = split_steps(&pane, latest_started(&detail));
         for step in 0..detail.steps.len().max(sections.len()) {
             let chunk = step_chunk(&detail, &sections, step);
-            if changed(&mut seen.logs, (run, step), &(chunk.data.clone(), chunk.complete)) {
-                e.emit(Event::Log(chunk));
+            if changed(&mut seen.step_outputs, (run, step), &(chunk.data.clone(), chunk.complete)) {
+                e.emit(Event::StepOutput(chunk));
             }
         }
     }
 
-    seen.service_logs.retain(|k, _| services.contains(k));
+    seen.service_outputs.retain(|k, _| services.contains(k));
     for (pid, sid) in services {
         let Some(w) = crate::services::service_windows(windows, &pid, &sid).last().map(|w| w.id) else { continue };
         let Ok(pane) = e.ctx.tmux.capture(w).await else { continue };
         let data = trim_capture(&pane);
-        if changed(&mut seen.service_logs, (pid.clone(), sid.clone()), &data) {
-            e.emit(Event::ServiceLog { project: pid, service: sid, data });
+        if changed(&mut seen.service_outputs, (pid.clone(), sid.clone()), &data) {
+            e.emit(Event::ServiceOutput { project: pid, service: sid, data });
         }
     }
 }

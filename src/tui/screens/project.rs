@@ -123,7 +123,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
             match k.code {
                 KeyCode::Char('l') | KeyCode::Enter => {
                     if let Some(svc) = services::row_service(&p, &row) {
-                        services::open_full_log(app, &p.id, &svc);
+                        services::open_full_output(app, &p.id, &svc);
                     }
                 }
                 c => services::control(app, &p, &row, c == KeyCode::Char('r')),

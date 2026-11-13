@@ -40,7 +40,7 @@ pub fn row_service(p: &ProjectInfo, row: &SvcRow) -> Option<String> {
     }
 }
 
-pub fn open_full_log(app: &mut App, project: &str, service: &str) {
+pub fn open_full_output(app: &mut App, project: &str, service: &str) {
     let mut view = TermView::new();
     view.loading = true;
     app.overlay = Some(Overlay::Text(Box::new(TextOverlay {

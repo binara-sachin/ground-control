@@ -16,7 +16,7 @@ pub enum Target {
     DashProjects,
     DashServices,
     DashRuns,
-    DashLog,
+    DashOutput,
     ProjPipelines,
     ProjServices,
     RunSteps,
@@ -120,7 +120,7 @@ mod tests {
         let m = HitMap::default();
         m.add(Rect::new(0, 0, 10, 10), Target::DashProjects, 0);
         m.add(Rect::new(0, 0, 5, 1), Target::Tab(1), 0);
-        m.add(Rect::new(0, 0, 0, 3), Target::DashLog, 0);
+        m.add(Rect::new(0, 0, 0, 3), Target::DashOutput, 0);
         assert_eq!(m.at(1, 0, false), Some((Target::Tab(1), 0)));
         assert_eq!(m.at(6, 0, false), Some((Target::DashProjects, 0)));
     }

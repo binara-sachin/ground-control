@@ -27,12 +27,12 @@ pub struct RunView {
     /// Track the active step until the user picks one.
     pub auto_select: bool,
     pub outputs: HashMap<usize, TermView>,
-    pub log_errors: HashMap<usize, String>,
+    pub output_errors: HashMap<usize, String>,
 }
 
 impl RunView {
     pub fn new(id: i64) -> RunView {
-        RunView { id, detail: None, sel: 0, auto_select: true, outputs: HashMap::new(), log_errors: HashMap::new() }
+        RunView { id, detail: None, sel: 0, auto_select: true, outputs: HashMap::new(), output_errors: HashMap::new() }
     }
 
     fn active_step(&self) -> Option<usize> {
@@ -123,18 +123,18 @@ impl RunView {
 
     /// Shows a step's output: each chunk is the step's whole output so far,
     /// captured from the run's tmux pane.
-    pub fn on_log(&mut self, c: &LogChunk) {
+    pub fn on_step_output(&mut self, c: &OutputChunk) {
         let v = self.outputs.entry(c.step).or_default();
         v.loading = false;
         v.replace(&c.data);
         v.complete = c.complete;
     }
 
-    pub fn on_log_error(&mut self, step: usize, msg: &str) {
+    pub fn on_step_output_error(&mut self, step: usize, msg: &str) {
         if let Some(v) = self.outputs.get_mut(&step) {
             v.loading = false;
         }
-        self.log_errors.insert(step, msg.to_string());
+        self.output_errors.insert(step, msg.to_string());
     }
 
     fn pending_approval(&self) -> Option<&ApprovalInfo> {
@@ -510,7 +510,7 @@ fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
         title.push(title_muted(format!("  →{}", out.hscroll)));
     }
     let inner = framed(f, area, title, false);
-    if let Some(e) = v.log_errors.get(&step.index) {
+    if let Some(e) = v.output_errors.get(&step.index) {
         f.render_widget(para(vec![Line::styled(e.clone(), theme::danger())]), inner);
         return;
     }
@@ -555,8 +555,8 @@ fn draw_approval(a: &ApprovalInfo, f: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
 
-    fn chunk(data: &str, complete: bool) -> LogChunk {
-        LogChunk { run: 1, step: 0, data: data.into(), complete }
+    fn chunk(data: &str, complete: bool) -> OutputChunk {
+        OutputChunk { run: 1, step: 0, data: data.into(), complete }
     }
 
     fn text(v: &RunView) -> String {
@@ -566,11 +566,11 @@ mod tests {
     #[test]
     fn each_chunk_replaces_the_step_output() {
         let mut v = RunView::new(1);
-        v.on_log(&chunk("ab\n", false));
-        v.on_log(&chunk("ab\ncd\n", false));
+        v.on_step_output(&chunk("ab\n", false));
+        v.on_step_output(&chunk("ab\ncd\n", false));
         assert_eq!(text(&v), "ab\ncd\n");
         // A `\r` progress line rewritten in the pane comes back rewritten.
-        v.on_log(&chunk("ab\ncd\n100%\n", true));
+        v.on_step_output(&chunk("ab\ncd\n100%\n", true));
         assert_eq!(text(&v), "ab\ncd\n100%\n");
         assert!(v.outputs[&0].complete);
     }
@@ -578,9 +578,9 @@ mod tests {
     #[test]
     fn replacing_keeps_the_scroll_position() {
         let mut v = RunView::new(1);
-        v.on_log(&chunk(&"line\n".repeat(100), false));
+        v.on_step_output(&chunk(&"line\n".repeat(100), false));
         v.outputs.get_mut(&0).unwrap().scroll_up(10);
-        v.on_log(&chunk(&"line\n".repeat(120), false));
+        v.on_step_output(&chunk(&"line\n".repeat(120), false));
         let o = &v.outputs[&0];
         assert!(!o.follow);
         assert_eq!(o.scrolled(), 10);

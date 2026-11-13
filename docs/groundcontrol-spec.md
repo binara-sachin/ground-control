@@ -391,13 +391,13 @@ Once a second the engine lists the windows and turns changes into events; git st
 
 | Event | Meaning |
 |---|---|
-| `Run`, `Step`, `Approval`, `Output` | A run's summary, a step, an approval or a step output changed |
+| `Run`, `Step`, `Approval`, `Output` | A run's summary, a step, an approval or a value a step wrote to `$GC_OUTPUT` changed |
 | `Service` | A service's status changed |
 | `Git` | A project's git status changed |
 | `Projects` | The project list changed shape (a config reload or a run opening or closing); call `projects()` again |
 | `Config` | The config status changed |
-| `Log` | A followed step's output so far |
-| `ServiceLog` | A followed service's whole output, which replaces what was shown |
+| `StepOutput` | A followed step's output so far |
+| `ServiceOutput` | A followed service's whole output, which replaces what was shown |
 
 ## 11. Where state lives
 
