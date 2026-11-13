@@ -198,11 +198,21 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     let [left, right] = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(body);
     draw_pipelines(p, v, f, left, &app.hits);
     let pl = p.pipelines.get(v.sel.min(p.pipelines.len().saturating_sub(1)));
+    let desc = pl.map(|pl| description_lines(pl, right.width.saturating_sub(2) as usize)).unwrap_or_default();
+    let desc_h = if desc.is_empty() { 0 } else { desc.len() as u16 + 2 };
     let detail_h =
         pl.map(|pl| pl.steps.len() as u16 * 2 + 6 + u16::from(pl.warning.is_some()) + u16::from(!pl.inputs.is_empty())).unwrap_or(4);
     let svc_h = service_rows(p).len() as u16 + 2;
-    let [detail, services] =
-        Layout::vertical([Constraint::Max(detail_h.max(5)), Constraint::Min(svc_h.min(right.height / 2))]).areas(right);
+    let [about, detail, services] = Layout::vertical([
+        Constraint::Length(desc_h.min(right.height / 3)),
+        Constraint::Max(detail_h.max(5)),
+        Constraint::Min(svc_h.min(right.height / 2)),
+    ])
+    .areas(right);
+    if desc_h > 0 {
+        let inner = framed(f, about, vec![title_text("description")], false);
+        f.render_widget(para(desc.into_iter().map(|l| Line::styled(l, theme::text())).collect()), inner);
+    }
     draw_detail(p, v, pl, f, detail);
     let focused = v.focus == Focus::Services;
     let inner = framed(f, services, vec![title_text("services")], focused);
@@ -288,6 +298,14 @@ fn draw_pipelines(p: &ProjectInfo, v: &ProjectView, f: &mut Frame, area: Rect, h
         ));
     }
     f.render_widget(para(lines), inner);
+}
+
+/// The pipeline's description wrapped to `w` columns; empty when it has none.
+fn description_lines(pl: &PipelineInfo, w: usize) -> Vec<String> {
+    match pl.description.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() && w > 0 => wrap(d, w),
+        _ => Vec::new(),
+    }
 }
 
 fn draw_detail(p: &ProjectInfo, v: &ProjectView, pl: Option<&PipelineInfo>, f: &mut Frame, area: Rect) {

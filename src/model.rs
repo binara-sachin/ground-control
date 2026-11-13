@@ -117,6 +117,7 @@ pub struct GroupInfo {
 #[derive(Debug, Clone)]
 pub struct PipelineInfo {
     pub id: String,
+    pub description: Option<String>,
     pub protected: bool,
     pub environments: Vec<String>,
     pub inputs: Vec<InputInfo>,

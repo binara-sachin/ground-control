@@ -236,6 +236,7 @@ projects:
       <group-id>: [<service-id>, ...]
     pipelines:
       <pipeline-id>:
+        description: "<text>"   # optional human-readable summary, shown in the project screen
         protected: false        # pipeline-level protection (e.g. merge to main)
         warning: "<text>"      # optional destructive-action warning, shown in red in the run dialog
         environments: [<env>]   # which envs it can run against; omitted → env-less

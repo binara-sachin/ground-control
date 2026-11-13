@@ -129,6 +129,8 @@ pub struct Group {
 pub struct Pipeline {
     pub id: String,
     pub pos: Pos,
+    /// Human-readable summary of what the pipeline does, shown in the project screen.
+    pub description: Option<String>,
     pub protected: bool,
     pub environments: Vec<String>,
     pub inputs: Vec<Input>,

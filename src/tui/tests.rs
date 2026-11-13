@@ -854,6 +854,7 @@ fn dialog_project(inputs: usize, long: bool) -> (ProjectInfo, PipelineInfo) {
             })
             .collect(),
         steps,
+        description: None,
         warning: Some("This overwrites the production database with the chosen snapshot and cannot be undone.".into()),
         last_run: None,
         waiting: 0,

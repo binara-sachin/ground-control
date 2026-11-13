@@ -238,6 +238,7 @@ impl Engine {
                             })
                             .collect(),
                         warning: pl.warning.clone(),
+                        description: pl.description.clone(),
                         last_run: runs
                             .iter()
                             .rev()

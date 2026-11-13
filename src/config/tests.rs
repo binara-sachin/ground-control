@@ -53,6 +53,14 @@ projects:
 "#;
 
 #[test]
+fn pipeline_description_is_parsed() {
+    let src = BASE.replace("      pull:\n", "      pull:\n        description: Pulls the latest code.\n");
+    assert!(errors(&src).is_empty(), "{:?}", load_str(&src).diagnostics);
+    let c = load_str(&src).config.unwrap();
+    assert_eq!(c.project("app").unwrap().pipeline("pull").unwrap().description.as_deref(), Some("Pulls the latest code."));
+}
+
+#[test]
 fn base_config_loads() {
     let r = load_str(BASE);
     assert!(errors(BASE).is_empty(), "{:?}", r.diagnostics);

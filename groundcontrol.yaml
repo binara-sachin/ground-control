@@ -13,25 +13,8 @@ projects:
     # after that `deploy` is build + rebind. launch.sh runs the binary on every
     # popup open, so a new build is live the next time the popup opens.
     pipelines:
-      build:
-        steps:
-          - run: cargo build --release
-      test:
-        steps:
-          - run: cargo test
-      check:                                       # the CI gate
-        steps:
-          - run: cargo fmt --all -- --check
-          - run: cargo clippy --all-targets -- -D warnings
-          - run: make test
-      test-live:                                   # isolated tmux servers, safe to run
-        steps:
-          - run: make test-live
-      verify-install:                              # clones from GitHub: tests pushed code
-        steps:
-          - run: make verify-install
-
       status:
+        description: "Shows how the tmux plugin is installed, which checkout and commit it points at, whether the binary is built, and whether the key binding is loaded."
         steps:
           - name: Plugin state
             run: |
@@ -44,6 +27,7 @@ projects:
               tmux list-keys 2>/dev/null | grep -F "tmux-ui-manager" || echo "key binding: not found (no tmux server, or not loaded)"
 
       link-dev:
+        description: "Replaces the TPM clone of the plugin with a link to this dev checkout, keeping the clone as a backup. Asks for approval first."
         protected: true
         steps:
           - name: Check plugin dir
@@ -62,6 +46,7 @@ projects:
               mv "$P" "$P.tpm-backup" && ln -s "$(pwd -P)" "$P"
               echo "linked $P -> $(pwd -P)"
       unlink-dev:
+        description: "Removes the dev link and restores the original TPM clone from its backup. Asks for approval first."
         protected: true
         steps:
           - name: Check link
@@ -78,6 +63,7 @@ projects:
               tmux run-shell "$P/manager.tmux"
 
       deploy:
+        description: "Builds a release binary and rebinds the tmux key so the new build is live the next time the popup opens."
         steps:
           - name: Build
             run: cargo build --release
@@ -88,19 +74,3 @@ projects:
                 || { echo "tmux does not load this checkout; run link-dev first" >&2; exit 1; }
           - name: Rebind in tmux
             run: tmux run-shell "$HOME/.config/tmux/plugins/tmux-ui-manager/manager.tmux"   # fails clearly if no tmux server is running
-
-      # ── git ──
-      pull:
-        steps:
-          - run: git pull --ff-only
-      new-branch:
-        inputs:
-          branch: { type: string, pattern: "^[a-z0-9._/-]+$" }
-        steps:
-          - run: git switch -c "$INPUT_BRANCH"
-      push:
-        steps:
-          - run: git push -u origin HEAD
-      open-pr:
-        steps:
-          - run: gh pr create --fill

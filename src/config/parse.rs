@@ -288,10 +288,11 @@ fn health(cx: &mut Ctx, node: &Node) -> Option<Health> {
 fn pipeline(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Pipeline> {
     let what = format!("pipeline `{}`", key.text);
     let entries = cx.map(node, &what)?;
-    cx.check_keys(entries, &["protected", "environments", "inputs", "steps", "warning"], &what);
+    cx.check_keys(entries, &["description", "protected", "environments", "inputs", "steps", "warning"], &what);
     let mut p = Pipeline {
         id: key.text.clone(),
         pos: key.pos,
+        description: None,
         protected: false,
         environments: Vec::new(),
         inputs: Vec::new(),
@@ -304,6 +305,7 @@ fn pipeline(cx: &mut Ctx, key: &Key, node: &Node) -> Option<Pipeline> {
             "protected" => p.protected = cx.bool(v, "protected").unwrap_or(false),
             "environments" => p.environments = cx.string_list(v, "environments"),
             "warning" => p.warning = cx.string(v, "warning"),
+            "description" => p.description = cx.string(v, "description"),
             "inputs" => {
                 for (ik, iv) in cx.map(v, "inputs").unwrap_or(&[]) {
                     if !is_env_name(&ik.text) {
