@@ -4,6 +4,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::app::Reply;
 use super::*;
 use crate::model::*;
 
@@ -162,6 +163,7 @@ fn the_text_overlay_scrolls_with_the_wheel() {
         subtitle: String::new(),
         view,
         follow_service: None,
+        dialog: None,
     })));
     redraw(&mut app, &mut t);
     let at = cell_of(&app, Target::TextOverlay, 0, true);
@@ -857,6 +859,71 @@ fn dialog_project(inputs: usize, long: bool) -> (ProjectInfo, PipelineInfo) {
         waiting: 0,
     };
     (p, pl)
+}
+
+fn dry_run_plan(steps: usize) -> DryRunPlan {
+    DryRunPlan {
+        project: "alpha".into(),
+        pipeline: "deploy".into(),
+        env: None,
+        protected: false,
+        inputs: Default::default(),
+        steps: (0..steps)
+            .map(|i| DryRunStep {
+                index: i,
+                kind: StepKindName::Run,
+                label: format!("step-{i}"),
+                command: format!("echo {i}"),
+                cwd: "/tmp".into(),
+                env_names: vec![],
+                timeout_secs: None,
+            })
+            .collect(),
+        blockers: vec![],
+    }
+}
+
+#[test]
+fn closing_the_dry_run_returns_to_the_dialog_as_it_was() {
+    let (mut app, mut term) = dialog_app(2, false, 100, 28);
+    for c in "v1".chars() {
+        app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+    }
+    app.update(Msg::Reply(Reply::DryRun(Ok(StartOutcome::DryRun(dry_run_plan(2))))));
+    redraw(&mut app, &mut term);
+    assert!(matches!(app.overlay, Some(Overlay::Text(_))));
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+    redraw(&mut app, &mut term);
+    let Some(Overlay::Dialog(d)) = &app.overlay else { panic!("the dialog is back") };
+    assert_eq!(d.fields[0].value, "v1");
+    assert!(!d.busy);
+    // A second Esc closes the dialog as before.
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn closing_a_dry_run_started_without_a_dialog_closes_the_overlay() {
+    let (mut app, _term) = app();
+    app.update(Msg::Reply(Reply::DryRun(Ok(StartOutcome::DryRun(dry_run_plan(2))))));
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))));
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn the_dry_run_plan_opens_on_its_first_line() {
+    for steps in [1, 3, 8, 20, 60] {
+        for (w, h) in [(100, 28), (120, 40)] {
+            let (mut app, mut term) = dialog_app(1, false, w, h);
+            app.update(Msg::Reply(Reply::DryRun(Ok(StartOutcome::DryRun(dry_run_plan(steps))))));
+            redraw(&mut app, &mut term);
+            let screen = screen_text(&term);
+            assert!(screen.contains("alpha/deploy"), "{steps} steps at {w}x{h}\n{screen}");
+            let lines: Vec<&str> = screen.lines().collect();
+            assert!(lines[2].starts_with("┃alpha/deploy"), "{steps} steps at {w}x{h}: first line is not on top\n{screen}");
+            assert!(!lines[1].contains("9223372036854775807"), "{steps} steps at {w}x{h}\n{screen}");
+        }
+    }
 }
 
 fn dialog_app(inputs: usize, long: bool, w: u16, h: u16) -> (App, Terminal<TestBackend>) {

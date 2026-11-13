@@ -30,6 +30,8 @@ pub struct TextOverlay {
     pub view: TermView,
     /// For output fed live: the service whose events extend this view.
     pub follow_service: Option<(String, String)>,
+    /// The run dialog this view was opened from; closing the view returns to it.
+    pub dialog: Option<Box<dialog::RunDialog>>,
 }
 
 pub struct Confirm {
@@ -71,7 +73,7 @@ pub fn key(app: &mut App, overlay: Overlay, k: KeyEvent) -> Option<Overlay> {
         Overlay::Text(mut t) => {
             let page = 20;
             match k.code {
-                KeyCode::Esc | KeyCode::Char('q') => return None,
+                KeyCode::Esc | KeyCode::Char('q') => return t.dialog.take().map(Overlay::Dialog),
                 KeyCode::Up | KeyCode::Char('k') => t.view.scroll_up(1),
                 KeyCode::Down | KeyCode::Char('j') => t.view.scroll_down(1),
                 KeyCode::PageUp | KeyCode::Char('b') => t.view.scroll_up(page),
@@ -109,6 +111,7 @@ pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
         Some(Overlay::Dialog(d)) => dialog::draw(d, f, area, &app.hits),
         Some(Overlay::Text(t)) => {
             clear(f, area);
+            t.view.fit(area.height.saturating_sub(2));
             let mut title = vec![title_text(t.title.clone())];
             if !t.subtitle.is_empty() {
                 title.push(title_muted(format!("  {}", t.subtitle)));

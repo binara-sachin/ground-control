@@ -48,6 +48,7 @@ pub fn open_full_log(app: &mut App, project: &str, service: &str) {
         subtitle: String::new(),
         view,
         follow_service: Some((project.to_string(), service.to_string())),
+        dialog: None,
     })));
     let (project, service) = (project.to_string(), service.to_string());
     app.call(move |e| async move { Reply::FullOutput(e.service_output(&project, &service).await) });

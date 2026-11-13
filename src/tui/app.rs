@@ -492,9 +492,13 @@ impl App {
                 self.open_run(id);
             }
             Reply::DryRun(Ok(StartOutcome::DryRun(plan))) => {
-                if let Some(Overlay::Dialog(d)) = &mut self.overlay {
-                    d.busy = false;
-                }
+                let dialog = match self.overlay.take() {
+                    Some(Overlay::Dialog(mut d)) => {
+                        d.busy = false;
+                        Some(d)
+                    }
+                    _ => None,
+                };
                 let mut view = TermView::new();
                 view.feed(&overlay::format_plan(&plan));
                 view.follow = false;
@@ -510,6 +514,7 @@ impl App {
                     subtitle: "nothing was executed".into(),
                     view,
                     follow_service: None,
+                    dialog,
                 })));
             }
             Reply::Started(Err(e)) | Reply::DryRun(Err(e)) => {

@@ -501,6 +501,7 @@ fn draw_output(v: &mut RunView, d: &RunDetail, f: &mut Frame, area: Rect) {
     } else {
         "scrolled"
     };
+    out.fit(area.height.saturating_sub(2));
     let mut title = vec![title_text("output"), title_muted(format!("  step {}", step.index + 1)), title_muted(format!("  {state}"))];
     if out.scrolled() > 0 {
         title.push(title_muted(format!("  ↑{}", out.scrolled())));

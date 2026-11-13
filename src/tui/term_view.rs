@@ -137,16 +137,24 @@ impl TermView {
         strip_ansi(&String::from_utf8_lossy(&self.raw))
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        self.resize(area.height);
+    /// Sizes the view for a pane `rows` tall and clamps the scroll position to
+    /// what exists. `render` does this; call it first to read `scrolled()`
+    /// before the frame is drawn, since a jump to the top asks for more lines
+    /// than there are.
+    pub fn fit(&mut self, rows: u16) {
+        self.resize(rows);
         if self.follow {
             self.scroll = 0;
         }
         self.parser.screen_mut().set_scrollback(self.scroll);
         self.scroll = self.parser.screen().scrollback();
+    }
+
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.fit(area.height);
         self.hscroll = self.hscroll.min(COLUMNS.saturating_sub(area.width));
         let screen = self.parser.screen();
         for row in 0..area.height {
