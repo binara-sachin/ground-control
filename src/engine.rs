@@ -141,6 +141,9 @@ impl Engine {
         let config = self.config();
         let dir = crate::devscan::resolve(&config.dev_dir, path)
             .ok_or_else(|| format!("{path} is not a repository under {}", config.dev_dir_display))?;
+        if op == DevOp::Code {
+            return crate::devscan::open_in_code(&dir).await;
+        }
         let _slot = self.dev_ops.acquire().await.map_err(|e| e.to_string())?;
         crate::devscan::run_op(&dir, op).await
     }

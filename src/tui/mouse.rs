@@ -24,6 +24,7 @@ pub enum Target {
     DevFetch,
     DevPush,
     DevPull,
+    DevCode,
     RunSteps,
     RunOutput,
     // Overlays. While one is open only these can be hit.

@@ -201,10 +201,14 @@ async fn last_fetch(dir: &Path) -> Option<Timestamp> {
 /// history or leave a half-done merge. What cannot be done safely is refused
 /// with the reason.
 pub async fn run_op(dir: &Path, op: DevOp) -> Result<String, String> {
+    if op == DevOp::Code {
+        return open_in_code(dir).await;
+    }
     let (repo, remote) = inspect(dir, &[]).await;
     let branch = repo.branch.as_str();
     let refuse = |why: &str| Err(why.to_string());
     match (op, repo.upstream) {
+        (DevOp::Code, _) => open_in_code(dir).await,
         (_, DevUpstream::Error) => refuse("git cannot read this repository"),
         (_, DevUpstream::NoRemote) => refuse("no remote configured"),
         (DevOp::Fetch, _) => git_network(dir, &["fetch", "--all", "--prune"]).await.map(|_| "fetched".into()),
@@ -223,6 +227,49 @@ pub async fn run_op(dir: &Path, op: DevOp) -> Result<String, String> {
             let remote = remote.unwrap_or_default();
             pulled(git_network(dir, &["pull", "--ff-only", &remote, branch]).await)
         }
+    }
+}
+
+/// Where VS Code keeps its own `code` script on macOS. A shell function or
+/// alias called `code` is invisible to a program, so when there is no `code`
+/// on `PATH` this is the script that function would end up running.
+const BUNDLED_CODE: &str = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code";
+
+/// Opens a folder in VS Code with the `code` command.
+pub async fn open_in_code(dir: &Path) -> Result<String, String> {
+    let first = open_with("code", dir).await;
+    match first {
+        Err(Launch::NotFound(_)) if Path::new(BUNDLED_CODE).exists() => open_with(BUNDLED_CODE, dir).await,
+        r => r,
+    }
+    .map_err(|e| match e {
+        Launch::NotFound(m) | Launch::Failed(m) => m,
+    })
+}
+
+enum Launch {
+    /// The program does not exist, so another one may be tried.
+    NotFound(String),
+    Failed(String),
+}
+
+async fn open_with(program: &str, dir: &Path) -> Result<String, Launch> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.arg(dir).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
+        .await
+        .map_err(|_| Launch::Failed(format!("`{program}` did not return")))?
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Launch::NotFound(format!(
+                "`{program}` is not on PATH (in VS Code: Command Palette, \"Shell Command: Install 'code' command in PATH\")"
+            )),
+            _ => Launch::Failed(format!("cannot run `{program}`: {e}")),
+        })?;
+    if out.status.success() {
+        Ok("opened in VS Code".into())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        Err(Launch::Failed(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("`code` failed").trim().to_string()))
     }
 }
 
@@ -342,6 +389,17 @@ mod tests {
         assert_eq!(inspect(&local, &[]).await.0.untracked, 1);
         sh(&local, "git checkout -q -b side && git branch -q -u origin/main side && git update-ref -d refs/remotes/origin/main");
         assert_eq!(inspect(&local, &[]).await.0.upstream, DevUpstream::Gone);
+    }
+
+    #[tokio::test]
+    async fn opening_in_vs_code_reports_what_went_wrong() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(matches!(open_with("true", d.path()).await, Ok(m) if m == "opened in VS Code"));
+        assert!(matches!(open_with("false", d.path()).await, Err(Launch::Failed(_))));
+        match open_with("definitely-not-code-gc", d.path()).await {
+            Err(Launch::NotFound(m)) => assert!(m.contains("not on PATH") && m.contains("Install 'code' command"), "{m}"),
+            _ => panic!("a missing program is NotFound"),
+        }
     }
 
     #[tokio::test]

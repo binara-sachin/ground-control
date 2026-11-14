@@ -26,7 +26,7 @@ pub const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(30
 /// Width of one button: an icon with a cell of room either side, so it is a
 /// target a pointer can hit.
 const BUTTON_W: u16 = 3;
-const BUTTONS_W: u16 = BUTTON_W * 3;
+const BUTTONS_W: u16 = BUTTON_W * 4;
 /// Room between the buttons and the right border: a gap and a blank column.
 const RIGHT_PAD: u16 = 2;
 /// Room between the fetched column and the buttons.
@@ -34,6 +34,8 @@ const BUTTON_GAP: u16 = 2;
 const FETCH_ICON: &str = "↻";
 const PUSH_ICON: &str = "↑";
 const PULL_ICON: &str = "↓";
+/// The VS Code logo, from the Nerd Fonts set (`nf-md-microsoft_visual_studio_code`).
+const CODE_ICON: &str = "\u{f0a1e}";
 
 #[derive(Default)]
 pub struct DevState {
@@ -186,7 +188,7 @@ fn start_op(app: &mut App, path: &str, op: DevOp, in_batch: bool) -> bool {
         }
         return false;
     }
-    if !r.has_remote() {
+    if op != DevOp::Code && !r.has_remote() {
         if !in_batch {
             app.toast(format!("{path}: no remote configured"), Level::Info);
         }
@@ -280,6 +282,11 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 start_op(app, &rows[i].path.clone(), op, false);
             }
         }
+        KeyCode::Char('o') => {
+            if let Some(i) = current {
+                start_op(app, &rows[i].path.clone(), DevOp::Code, false);
+            }
+        }
         KeyCode::Char('F') => fetch_all(app),
         KeyCode::Char('e') => app.dev.only_attention = !app.dev.only_attention,
         KeyCode::Char('r') => app.fetch_dev_scan(),
@@ -306,10 +313,13 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
         Target::DevFetch => DevOp::Fetch,
         Target::DevPush => DevOp::Push,
         Target::DevPull => DevOp::Pull,
+        Target::DevCode => DevOp::Code,
         _ => return true,
     };
     // Whatever the action does (or refuses to do), show the repository as it is now.
-    app.fetch_dev_scan();
+    if op != DevOp::Code {
+        app.fetch_dev_scan();
+    }
     start_op(app, &r.path.clone(), op, false);
     true
 }
@@ -320,6 +330,7 @@ pub fn hints(_app: &App) -> Vec<(&'static str, &'static str)> {
         ("f", "fetch"),
         ("p", "pull"),
         ("P", "push"),
+        ("o", "open in VS Code"),
         ("F", "fetch all"),
         ("e", "needs attention"),
         ("r", "refresh"),
@@ -373,7 +384,7 @@ fn button_spans(r: &DevRepo, busy: Option<DevOp>) -> Vec<Vec<Span<'static>>> {
         let (glyph, style) = match busy {
             Some(b) if b == op => ("…", theme::info()),
             Some(_) => (icon, theme::dim()),
-            None if !r.has_remote() => (icon, theme::dim()),
+            None if op != DevOp::Code && !r.has_remote() => (icon, theme::dim()),
             None => (icon, live),
         };
         vec![Span::styled(format!(" {glyph} "), style)]
@@ -383,6 +394,7 @@ fn button_spans(r: &DevRepo, busy: Option<DevOp>) -> Vec<Vec<Span<'static>>> {
         button(FETCH_ICON, DevOp::Fetch, theme::text()),
         button(PUSH_ICON, DevOp::Push, if to_push { theme::success() } else { theme::muted() }),
         button(PULL_ICON, DevOp::Pull, if r.behind > 0 { theme::warning() } else { theme::muted() }),
+        button(CODE_ICON, DevOp::Code, theme::info()),
     ]
 }
 
@@ -534,7 +546,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     // The list as a whole, then the button columns on top of it, at the right edge.
     app.hits.add(list, Target::DevRepos, start);
     let x = inner.x + w.saturating_sub(BUTTONS_W + RIGHT_PAD);
-    for (i, target) in [Target::DevFetch, Target::DevPush, Target::DevPull].into_iter().enumerate() {
+    for (i, target) in [Target::DevFetch, Target::DevPush, Target::DevPull, Target::DevCode].into_iter().enumerate() {
         app.hits.add(Rect { x: x + BUTTON_W * i as u16, width: BUTTON_W, ..list }, target, start);
     }
 }
