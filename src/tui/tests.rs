@@ -1545,7 +1545,7 @@ fn the_buttons_stand_apart_from_the_fetched_column() {
 }
 
 #[test]
-fn whole_branch_names_are_visible_and_sit_beside_the_repo() {
+fn whole_branch_names_are_visible_and_sit_with_the_detail_columns() {
     for (w, h) in [(100u16, 30u16), (140, 30)] {
         let (mut app, mut t) = projects_app(w, h);
         let long = "csm-reply-newlines-markdown-paste";
@@ -1554,9 +1554,9 @@ fn whole_branch_names_are_visible_and_sit_beside_the_repo() {
         let text = screen_text(&t);
         let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
         assert!(row.contains(long), "{w}: branch cut in {row}");
-        // The branch follows the repo name closely instead of floating at the far side.
+        // The branch is the first of the detail columns, right beside the tree column.
         let col = |needle: &str| row[..row.find(needle).unwrap()].chars().count();
-        assert!(col(long) - col("dotfiles") <= 24, "{w}: branch far from repo: {row}");
+        assert!(col("1M") - (col(long) + long.len()) <= 3, "{w}: branch far from the details: {row}");
         // The buttons are still at the right end.
         assert!(col("↻") > col("3h"), "{row}");
     }
@@ -1605,7 +1605,7 @@ fn the_detail_columns_sit_together_beside_the_buttons() {
     let head = text.lines().find(|l| l.contains("fetched")).unwrap();
     let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
     // All the slack is between the branch and the details, none before the buttons.
-    assert!(col(head, "tree") - col(head, "branch") > 30, "{head}");
+    assert!(col(head, "branch") - col(head, "repo") > 30, "{head}");
     let between = col(row, "↻") - (col(head, "fetched") + "fetched".len());
     assert!((4..=6).contains(&between), "{between} columns between fetched and the buttons: {row}");
     // And only a little more than between the other detail columns.

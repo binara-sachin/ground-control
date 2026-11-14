@@ -434,7 +434,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     // The repo and branch columns are as wide as their longest entry, so no
     // branch name is cut and the branch sits right beside the repo. When the
     // pane is too narrow for both, the repo gives way first (down to 12 cells).
-    // Whatever width is left goes between the branch and the detail columns, which stay together beside the buttons.
+    // Whatever width is left goes between the repo and the branch, which stays with the detail columns beside the buttons.
     let longest_label = rows.iter().map(|r| width(&r.prefix) + width(&r.name)).max().unwrap_or(0);
     let longest_branch = rows.iter().filter_map(|r| r.repo).map(|i| width(&scan.repos[i].branch)).max().unwrap_or(0);
     let others = 1 + 9 + 7 + 7 + 7 + BUTTON_GAP as usize + BUTTONS_W as usize + (RIGHT_PAD as usize - 1);
@@ -452,9 +452,9 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
         vec![
             (vec![marker], 1),
             (repo, repo_w),
-            (branch, branch_w),
-            // Takes the slack, so the detail columns sit together at the right.
+            // Takes the slack, so the branch and the detail columns sit together at the right.
             (vec![], 0),
+            (branch, branch_w),
             (tree, 9),
             (ab, 7),
             (commit, 7),
