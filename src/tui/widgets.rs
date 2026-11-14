@@ -111,9 +111,19 @@ pub fn rich_row(cols: Vec<(Vec<Span<'static>>, u16)>, total: u16, gap: u16) -> L
     let mut out = Vec::new();
     let mut used: u16 = 0;
     for (i, (spans, w)) in cols.into_iter().enumerate() {
-        let w = (if w == 0 { flex } else { w }).min(total.saturating_sub(used));
+        let is_flex = w == 0;
+        let w = (if is_flex { flex } else { w }).min(total.saturating_sub(used));
         if w == 0 {
-            break;
+            // A flexible cell with nothing left is only empty; the cells after
+            // it still get their room. A fixed one that does not fit ends the row.
+            if !is_flex {
+                break;
+            }
+            if i + 1 < n && used + gap <= total {
+                out.push(Span::raw(" ".repeat(gap as usize)));
+                used += gap;
+            }
+            continue;
         }
         let line = clip_line(spans, w as usize);
         let got: usize = line.spans.iter().map(|s| width(&s.content)).sum();
@@ -534,6 +544,9 @@ mod tests {
         let two = || vec![Span::raw("+1"), Span::raw(" ~2")];
         let line = rich_row(vec![(two(), 6), (vec![Span::raw("x")], 0)], 12, 1);
         assert_eq!(text(&line), "+1 ~2  x    ");
+        // A flexible cell with no width left must not drop the cells after it.
+        let tight = rich_row(vec![(vec![Span::raw("ab")], 2), (vec![], 0), (vec![Span::raw("cd")], 2)], 6, 1);
+        assert_eq!(text(&tight), "ab  cd");
         let cut = rich_row(vec![(two(), 3), (vec![Span::raw("long text")], 0)], 8, 1);
         assert_eq!(width(&text(&cut)), 8);
     }

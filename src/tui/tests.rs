@@ -1596,3 +1596,19 @@ fn the_buttons_have_an_actions_heading_above_them() {
         "{head}\n{row}"
     );
 }
+
+#[test]
+fn the_detail_columns_sit_together_beside_the_buttons() {
+    let (_app, term) = projects_app(160, 30);
+    let text = screen_text(&term);
+    let col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+    let head = text.lines().find(|l| l.contains("fetched")).unwrap();
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    // All the slack is between the branch and the details, none before the buttons.
+    assert!(col(head, "tree") - col(head, "branch") > 30, "{head}");
+    let between = col(row, "↻") - (col(head, "fetched") + "fetched".len());
+    assert!((4..=6).contains(&between), "{between} columns between fetched and the buttons: {row}");
+    // And only a little more than between the other detail columns.
+    let other = col(head, "fetched") - (col(head, "commit") + "commit".len());
+    assert!(between > other && between - other <= 4, "{between} vs {other}");
+}

@@ -29,8 +29,8 @@ const BUTTON_W: u16 = 3;
 const BUTTONS_W: u16 = BUTTON_W * 3;
 /// Room between the buttons and the right border: a gap and a blank column.
 const RIGHT_PAD: u16 = 2;
-/// The least room between the fetched column and the buttons.
-const MIN_BUTTON_GAP: usize = 2;
+/// Room between the fetched column and the buttons.
+const BUTTON_GAP: u16 = 2;
 const FETCH_ICON: &str = "↻";
 const PUSH_ICON: &str = "↑";
 const PULL_ICON: &str = "↓";
@@ -434,11 +434,11 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     // The repo and branch columns are as wide as their longest entry, so no
     // branch name is cut and the branch sits right beside the repo. When the
     // pane is too narrow for both, the repo gives way first (down to 12 cells).
-    // Whatever width is left goes to the gap before the buttons.
+    // Whatever width is left goes between the branch and the detail columns, which stay together beside the buttons.
     let longest_label = rows.iter().map(|r| width(&r.prefix) + width(&r.name)).max().unwrap_or(0);
     let longest_branch = rows.iter().filter_map(|r| r.repo).map(|i| width(&scan.repos[i].branch)).max().unwrap_or(0);
-    let others = 1 + 9 + 7 + 7 + 7 + MIN_BUTTON_GAP + BUTTONS_W as usize + (RIGHT_PAD as usize - 1);
-    let gaps = 9;
+    let others = 1 + 9 + 7 + 7 + 7 + BUTTON_GAP as usize + BUTTONS_W as usize + (RIGHT_PAD as usize - 1);
+    let gaps = 10;
     let room = (w as usize).saturating_sub(others + gaps);
     let (mut repo_w, mut branch_w) = (longest_label.max(4), longest_branch.max(6));
     if repo_w + branch_w > room {
@@ -453,12 +453,14 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
             (vec![marker], 1),
             (repo, repo_w),
             (branch, branch_w),
+            // Takes the slack, so the detail columns sit together at the right.
+            (vec![], 0),
             (tree, 9),
             (ab, 7),
             (commit, 7),
             (fetched, 7),
-            // Takes the slack, and sets the buttons apart from the data.
-            (vec![], 0),
+            // A little more room than between the detail columns.
+            (vec![], BUTTON_GAP),
             (buttons, BUTTONS_W),
             (vec![], RIGHT_PAD - 1),
         ]
