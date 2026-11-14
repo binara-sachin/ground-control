@@ -107,9 +107,9 @@ projects:
               args=()
               [ "$INPUT_NOVEL" != "all" ] && args+=(--novel "$INPUT_NOVEL")
               [ "$INPUT_LIMIT" != "0" ] && args+=(--limit "$INPUT_LIMIT")
-              .venv/bin/python -m rrkindle.cli sync "${args[@]}"
+              .venv/bin/python -m novels.cli sync "${args[@]}"
           - name: Regenerate README
-            run: .venv/bin/python -m rrkindle.cli readme
+            run: .venv/bin/python -m novels.cli readme
           - name: Commit and push
             run: |
               scripts/commit-archive.sh "sync: {n} new chapter file(s)" archive README.md
@@ -135,7 +135,7 @@ projects:
               set -e
               args=()
               [ "$INPUT_COMPLETE" = "true" ] && args+=(--complete)
-              .venv/bin/python -m rrkindle.cli add-novel --fiction-id "$INPUT_FICTION_ID" --slug "$INPUT_SLUG" "${args[@]}"
+              .venv/bin/python -m novels.cli add-novel --fiction-id "$INPUT_FICTION_ID" --slug "$INPUT_SLUG" "${args[@]}"
           - name: Commit and push
             run: |
               scripts/commit-archive.sh "add novel: fiction_id $INPUT_FICTION_ID" novels.yaml README.md
@@ -157,8 +157,8 @@ projects:
             run: |
               set -e
               if [ "$INPUT_SYNC_FIRST" = "false" ]; then echo "skipped"; exit 0; fi
-              .venv/bin/python -m rrkindle.cli sync --novel "$INPUT_NOVEL"
-              .venv/bin/python -m rrkindle.cli readme
+              .venv/bin/python -m novels.cli sync --novel "$INPUT_NOVEL"
+              .venv/bin/python -m novels.cli readme
               scripts/commit-archive.sh "sync before build" archive README.md
           - name: Build
             timeout: 30m
