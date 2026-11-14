@@ -1561,3 +1561,25 @@ fn whole_branch_names_are_visible_and_sit_beside_the_repo() {
         assert!(col("↻") > col("3h"), "{row}");
     }
 }
+
+#[test]
+fn a_button_click_re_reads_the_repository_even_while_a_read_is_running() {
+    let (mut app, _t) = projects_app(120, 30);
+    app.dev.loading = true;
+    // A repository with no remote: the action is refused, the values are still refreshed.
+    click_on(&mut app, Target::DevFetch, 3, false);
+    assert!(app.dev.busy.is_empty());
+    assert!(app.dev.rescan_queued, "the read that is running may predate the click");
+    // When that read lands, the queued one starts instead of being lost.
+    let scan = app.dev.scan.clone().unwrap();
+    app.update(Msg::Reply(Reply::DevScan(scan)));
+    assert!(!app.dev.rescan_queued && !app.dev.loading, "no engine here, so the follow-up read cannot start");
+}
+
+#[test]
+fn a_finished_action_queues_a_fresh_read_of_the_tree() {
+    let (mut app, _t) = projects_app(120, 30);
+    app.dev.loading = true;
+    app.update(Msg::Reply(Reply::DevOp { path: "dotfiles".into(), op: DevOp::Push, in_batch: false, result: Ok("pushed".into()) }));
+    assert!(app.dev.rescan_queued);
+}

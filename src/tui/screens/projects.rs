@@ -39,6 +39,9 @@ const PULL_ICON: &str = "↓";
 pub struct DevState {
     pub scan: Option<DevScan>,
     pub loading: bool,
+    /// A read was asked for while one was running, so that one may predate
+    /// the change that asked: read again as soon as it lands.
+    pub rescan_queued: bool,
     pub only_attention: bool,
     /// The selected repository, by path, so a refresh does not move it.
     pub selected: Option<String>,
@@ -143,9 +146,14 @@ fn selected_index(app: &App, rows: &[DevRow]) -> Option<usize> {
 // ── actions ──
 
 impl App {
-    /// Reads the folder again. One read at a time.
+    /// Reads the folder again. One read at a time; a request that arrives
+    /// during a read is kept and runs when that one lands.
     pub fn fetch_dev_scan(&mut self) {
-        if self.engine.is_none() || self.dev.loading {
+        if self.dev.loading {
+            self.dev.rescan_queued = true;
+            return;
+        }
+        if self.engine.is_none() {
             return;
         }
         self.dev.loading = true;
@@ -160,6 +168,9 @@ pub fn on_scan(app: &mut App, scan: DevScan) {
         app.dev.selected = None;
     }
     app.dev.scan = Some(scan);
+    if std::mem::take(&mut app.dev.rescan_queued) {
+        app.fetch_dev_scan();
+    }
 }
 
 fn repo<'a>(app: &'a App, path: &str) -> Option<&'a DevRepo> {
@@ -265,6 +276,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 _ => DevOp::Push,
             };
             if let Some(i) = current {
+                app.fetch_dev_scan();
                 start_op(app, &rows[i].path.clone(), op, false);
             }
         }
@@ -296,6 +308,8 @@ pub fn click(app: &mut App, target: Target, row: usize) -> bool {
         Target::DevPull => DevOp::Pull,
         _ => return true,
     };
+    // Whatever the action does (or refuses to do), show the repository as it is now.
+    app.fetch_dev_scan();
     start_op(app, &r.path.clone(), op, false);
     true
 }
