@@ -1532,3 +1532,14 @@ fn projects_fits_the_smallest_terminal() {
     assert!(text.contains("fetched") && text.contains("└── salli"));
     assert!(app.hits.at(5, 5, false).is_some());
 }
+
+#[test]
+fn the_buttons_stand_apart_from_the_fetched_column() {
+    let (_app, term) = projects_app(100, 30);
+    let text = screen_text(&term);
+    let col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+    let head = text.lines().find(|l| l.contains("fetched")).unwrap();
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    let between = col(row, "↻") - (col(head, "fetched") + "fetched".len());
+    assert!(between >= 4, "only {between} columns between the fetched column and the buttons: {row}");
+}

@@ -425,6 +425,8 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
             (ab, 7),
             (commit, 7),
             (fetched, 7),
+            // Sets the buttons apart from the data.
+            (vec![], 2),
             (buttons, BUTTONS_W),
             (vec![], RIGHT_PAD - 1),
         ]
