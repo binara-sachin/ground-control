@@ -1583,3 +1583,16 @@ fn a_finished_action_queues_a_fresh_read_of_the_tree() {
     app.update(Msg::Reply(Reply::DevOp { path: "dotfiles".into(), op: DevOp::Push, in_batch: false, result: Ok("pushed".into()) }));
     assert!(app.dev.rescan_queued);
 }
+
+#[test]
+fn the_buttons_have_an_actions_heading_above_them() {
+    let (_app, term) = projects_app(120, 30);
+    let text = screen_text(&term);
+    let col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+    let head = text.lines().find(|l| l.contains("actions")).expect("heading");
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    assert!(
+        head.contains("fetched") && col(head, "actions") >= col(row, "↻") - 1 && col(head, "actions") <= col(row, "↻") + 1,
+        "{head}\n{row}"
+    );
+}

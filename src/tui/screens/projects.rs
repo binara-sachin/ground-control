@@ -465,7 +465,16 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     };
     let muted = |s: &'static str| vec![Span::styled(s, theme::muted())];
     let mut lines = vec![rich_row(
-        cols(Span::raw(" "), muted("repo"), muted("branch"), muted("tree"), muted("↑ ↓"), muted("commit"), muted("fetched"), vec![]),
+        cols(
+            Span::raw(" "),
+            muted("repo"),
+            muted("branch"),
+            muted("tree"),
+            muted("↑ ↓"),
+            muted("commit"),
+            muted("fetched"),
+            muted(" actions"),
+        ),
         w,
         1,
     )];
