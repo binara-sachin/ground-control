@@ -701,7 +701,7 @@ impl App {
             }
             Target::DashBanner | Target::DashProjects | Target::DashServices | Target::DashRuns => dashboard::click(self, target, row),
             Target::ProjPipelines | Target::ProjServices => project::click(self, target, row),
-            Target::DevRepos | Target::DevFetch | Target::DevPush | Target::DevPull => projects::click(self, target, row),
+            Target::DevRepos | Target::DevFetch | Target::DevPush | Target::DevPull | Target::DevCode => projects::click(self, target, row),
             Target::RunSteps => run_view::click(self, row),
             _ => false,
         };
@@ -737,7 +737,7 @@ impl App {
                 project::click(self, target, usize::MAX);
                 self.press(step);
             }
-            Target::DevRepos | Target::DevFetch | Target::DevPush | Target::DevPull => self.press(step),
+            Target::DevRepos | Target::DevFetch | Target::DevPush | Target::DevPull | Target::DevCode => self.press(step),
             Target::RunSteps => self.press(step),
             Target::RunOutput => run_view::scroll_output(self, |o| if down { o.scroll_down(LINES) } else { o.scroll_up(LINES) }),
             Target::TextOverlay => {

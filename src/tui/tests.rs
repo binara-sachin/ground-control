@@ -1438,8 +1438,8 @@ fn projects_draws_the_tree_the_state_and_when_it_was_fetched() {
 fn a_button_click_selects_the_row_and_starts_that_action() {
     let (mut app, _t) = projects_app(120, 30);
     // The buttons sit at the right edge of the row.
-    let (x, _) = cell_of(&app, Target::DevPull, 0, false);
-    assert_eq!(x + 3 + 2, 119, "the pull button leaves two blank columns before the border, besides its own");
+    let (x, _) = cell_of(&app, Target::DevCode, 0, false);
+    assert_eq!(x + 3 + 2, 119, "the last button leaves two blank columns before the border, besides its own");
     // Rows: binara-sachin, dotfiles, learn-rust (folder), rune, rune-mentor, salli.
     click_on(&mut app, Target::DevPush, 1, false);
     assert_eq!(app.dev.selected.as_deref(), Some("dotfiles"));
@@ -1546,7 +1546,7 @@ fn the_buttons_stand_apart_from_the_fetched_column() {
 
 #[test]
 fn whole_branch_names_are_visible_and_sit_with_the_detail_columns() {
-    for (w, h) in [(100u16, 30u16), (140, 30)] {
+    for (w, h) in [(110u16, 30u16), (140, 30)] {
         let (mut app, mut t) = projects_app(w, h);
         let long = "csm-reply-newlines-markdown-paste";
         app.dev.scan.as_mut().unwrap().repos[1].branch = long.into();
@@ -1611,4 +1611,28 @@ fn the_detail_columns_sit_together_beside_the_buttons() {
     // And only a little more than between the other detail columns.
     let other = col(head, "fetched") - (col(head, "commit") + "commit".len());
     assert!(between > other && between - other <= 4, "{between} vs {other}");
+}
+
+#[test]
+fn the_vs_code_button_opens_even_without_a_remote() {
+    let (mut app, mut t) = projects_app(120, 30);
+    let text = screen_text(&t);
+    assert!(text.contains('\u{f0a1e}'), "the VS Code icon is drawn");
+    // Rows: binara-sachin, dotfiles, learn-rust (folder), rune (local only), ...
+    click_on(&mut app, Target::DevCode, 3, false);
+    assert_eq!(app.dev.busy.get("learn-rust/rune"), Some(&DevOp::Code), "no remote needed to open a folder");
+    redraw(&mut app, &mut t);
+    // Finishing says what happened and does not need a re-read of the tree.
+    app.update(Msg::Reply(Reply::DevOp {
+        path: "learn-rust/rune".into(),
+        op: DevOp::Code,
+        in_batch: false,
+        result: Ok("opened in VS Code".into()),
+    }));
+    assert!(app.dev.busy.is_empty());
+    assert!(app.toast.as_ref().is_some_and(|(m, _, _)| m == "learn-rust/rune: opened in VS Code"));
+    // The key does the same for the selected repository.
+    app.dev.selected = Some("dotfiles".into());
+    app.update(Msg::Input(Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE))));
+    assert_eq!(app.dev.busy.get("dotfiles"), Some(&DevOp::Code));
 }

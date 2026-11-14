@@ -201,6 +201,7 @@ impl HelpScreen {
                 ("↑↓ / j k", "select a repository"),
                 ("f", "fetch it (↻); the only thing that fetches"),
                 ("p / P", "pull (↓, fast-forward only) / push (↑, never forced)"),
+                ("o", "open it in VS Code (the `code` command)"),
                 ("F", "fetch every repository with a remote"),
                 ("e", "show only repositories that need attention"),
                 ("r", "read the folder again (also every 30 s; local only)"),

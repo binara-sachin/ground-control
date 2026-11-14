@@ -155,6 +155,8 @@ pub enum DevOp {
     Fetch,
     Push,
     Pull,
+    /// Not git: opens the folder in VS Code.
+    Code,
 }
 
 impl DevOp {
@@ -163,6 +165,7 @@ impl DevOp {
             DevOp::Fetch => "fetch",
             DevOp::Push => "push",
             DevOp::Pull => "pull",
+            DevOp::Code => "open in VS Code",
         }
     }
 }
