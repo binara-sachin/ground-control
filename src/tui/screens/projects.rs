@@ -27,6 +27,8 @@ pub const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(30
 /// target a pointer can hit.
 const BUTTON_W: u16 = 3;
 const BUTTONS_W: u16 = BUTTON_W * 3;
+/// Room between the buttons and the right border: a gap and a blank column.
+const RIGHT_PAD: u16 = 2;
 const FETCH_ICON: &str = "↻";
 const PUSH_ICON: &str = "↑";
 const PULL_ICON: &str = "↓";
@@ -415,7 +417,17 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
 
     // Marker, the dashboard's columns, then the buttons at the right end.
     let cols = |marker: Span<'static>, repo, branch, tree, ab, commit, fetched, buttons| -> Vec<(Vec<Span<'static>>, u16)> {
-        vec![(vec![marker], 1), (repo, 0), (branch, 20), (tree, 9), (ab, 7), (commit, 7), (fetched, 7), (buttons, BUTTONS_W)]
+        vec![
+            (vec![marker], 1),
+            (repo, 0),
+            (branch, 20),
+            (tree, 9),
+            (ab, 7),
+            (commit, 7),
+            (fetched, 7),
+            (buttons, BUTTONS_W),
+            (vec![], RIGHT_PAD - 1),
+        ]
     };
     let muted = |s: &'static str| vec![Span::styled(s, theme::muted())];
     let mut lines = vec![rich_row(
@@ -476,7 +488,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
 
     // The list as a whole, then the button columns on top of it, at the right edge.
     app.hits.add(list, Target::DevRepos, start);
-    let x = inner.x + w.saturating_sub(BUTTONS_W);
+    let x = inner.x + w.saturating_sub(BUTTONS_W + RIGHT_PAD);
     for (i, target) in [Target::DevFetch, Target::DevPush, Target::DevPull].into_iter().enumerate() {
         app.hits.add(Rect { x: x + BUTTON_W * i as u16, width: BUTTON_W, ..list }, target, start);
     }

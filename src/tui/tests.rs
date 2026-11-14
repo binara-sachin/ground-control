@@ -1439,7 +1439,7 @@ fn a_button_click_selects_the_row_and_starts_that_action() {
     let (mut app, _t) = projects_app(120, 30);
     // The buttons sit at the right edge of the row.
     let (x, _) = cell_of(&app, Target::DevPull, 0, false);
-    assert!(x + 4 >= 120 - 2, "pull button at {x}");
+    assert_eq!(x + 3 + 2, 119, "the pull button leaves two blank columns before the border, besides its own");
     // Rows: binara-sachin, dotfiles, learn-rust (folder), rune, rune-mentor, salli.
     click_on(&mut app, Target::DevPush, 1, false);
     assert_eq!(app.dev.selected.as_deref(), Some("dotfiles"));
