@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 use app::{App, Conn, Level, Msg, View};
 use mouse::Target;
 use screens::overlay::{Overlay, draw_overlay};
-use screens::{dashboard, dialog, health, project, run_view};
+use screens::{dashboard, dialog, health, project, projects, run_view};
 use widgets::*;
 
 /// Below this size the TUI shows a "terminal too small" message (§10.1).
@@ -125,6 +125,7 @@ fn draw(app: &mut App, f: &mut Frame) {
 fn draw_view(app: &mut App, f: &mut Frame, area: Rect) {
     match app.top() {
         View::Dashboard => dashboard::draw(app, f, area),
+        View::Projects => projects::draw(app, f, area),
         View::Project(_) => project::draw(app, f, area),
         View::Run(_) => run_view::draw(app, f, area),
         View::Health => health::draw(app, f, area),
@@ -157,7 +158,8 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
     let tab = bar.add_modifier(Modifier::BOLD);
     f.render_widget(Block::default().style(bar), area);
     let root = match app.nav.first() {
-        Some(View::Health) => 2,
+        Some(View::Projects) => 2,
+        Some(View::Health) => 3,
         _ => 1,
     };
     let crumbs: Vec<String> = app
@@ -172,7 +174,7 @@ fn draw_top(app: &App, f: &mut Frame, area: Rect) {
         .collect();
     let mut left = vec![Span::styled(" groundcontrol ", tab)];
     let mut tab_x = area.x + width(" groundcontrol ") as u16;
-    for (n, name) in [(1, "dashboard"), (2, "health")] {
+    for (n, name) in [(1, "dashboard"), (2, "projects"), (3, "health")] {
         let mut label = format!(" {n} {name}");
         if n == root && !crumbs.is_empty() {
             label.push_str(&format!(" › {}", crumbs.join(" › ")));
@@ -229,6 +231,7 @@ fn draw_bottom(app: &App, f: &mut Frame, area: Rect) {
             None => {
                 let hints = match app.top() {
                     View::Dashboard => dashboard::hints(app),
+                    View::Projects => projects::hints(app),
                     View::Project(_) => project::hints(app),
                     View::Run(_) => run_view::hints(app),
                     View::Health => health::hints(),

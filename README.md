@@ -59,7 +59,7 @@ terminal, so nothing can stop and wait for input.
 It is edited by hand; the TUI never writes it. An open TUI reloads it on save,
 and each worker uses the config as it was when it started. An invalid file is
 rejected, the previous valid config stays active, and the errors
-(with line and column) appear on the Health screen (`2`).
+(with line and column) appear on the Health screen (`3`).
 
 The schema is spec §7.1, plus one optional pipeline field, `warning:`. It holds a
 destructive-action warning that the run dialog shows in red.
@@ -80,7 +80,7 @@ whose path is missing.
 
 | Key | Action |
 |---|---|
-| `1` `2` | Dashboard, Health |
+| `1` `2` `3` | Dashboard, Projects, Health |
 | `tab` / `shift+tab` | Next or previous pane |
 | `↑↓` / `j k` | Move the selection |
 | `enter` | Open the selection (on the dashboard approval banner: review the run) |
@@ -97,6 +97,7 @@ The TUI captures the mouse, so selecting text with the terminal needs `shift`
 - **Project.** Pipelines and the selected pipeline's steps beside the project's services. `tab` switches between the pipelines and services panes. On pipelines, `enter` opens the run dialog, `d` does a dry run (it asks for missing inputs first) and `e` switches environment. On services, `s`, `r` and `l` work as on the dashboard, and `enter` shows all of the service's output.
 - **Run dialog.** Environment, branch and commit, dirty and unpushed warnings, one field per input with a live pattern check, destructive warnings and the step outline. The error row and the buttons stay pinned to the bottom. `tab` and `↑↓` move between fields; the bottom bar shows the keys of the focused field. `enter` starts the run, `ctrl+d` does a dry run and `esc` cancels. For protected runs, this dialog is the confirmation.
 - **Run view.** Steps beside an `outputs · inputs` pane, and the selected step's live terminal output (colours, `\r` progress, wide characters). `↑↓` select a step, `enter` jumps to its output's end, `f` toggles follow, `y` and `Y` copy the step's command or output, `c` cancels the run (after a confirm). While an approval waits, a banner shows it: `a` approves (a protected run asks for a second `y`) and `x` rejects. The run is also the window `<project>/<pipeline>` in the `ground-control` session, and its id is that window's id. A succeeded run's window closes after 5 seconds, which ends the run; a failed run's window stays until the project's next run. When a run needs approval or fails, every attached tmux client shows a message in its status line; with no tmux client attached, nobody is told until a TUI opens.
+- **Projects.** Every git repository under `dev_dir` (set in `groundcontrol.yaml`, default `~/dev`) as a tree, with the dashboard's branch, tree, `↑ ↓` and the ages of the last commit and the last fetch. At the right end of each repository are three icon buttons: `↻` fetch, `↑` push, `↓` pull (keys `f`, `P`, `p`; `F` fetches all). Nothing fetches until you ask. Push is never forced and pull only fast-forwards. `e` shows only repositories that need attention.
 - **Health.** The version and when the TUI opened, a tool check that lists each tool once (tmux and Docker also say whether they answer; Docker only while this screen is open), and the config: file, load and reload times, and errors and warnings with line and column. `r` checks again.
 
 ## Development

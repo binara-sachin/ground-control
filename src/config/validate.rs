@@ -39,6 +39,13 @@ pub(super) fn looks_secret(key: &str) -> bool {
 }
 
 pub fn validate(config: &mut Config, diags: &mut Vec<Diagnostic>) {
+    if !config.dev_dir.is_dir() {
+        // No position is kept for the key; line 1 is where the file starts.
+        diags.push(Diagnostic::warning(
+            Pos { line: 1, col: 1 },
+            format!("dev_dir {} is not a folder; the Projects screen has nothing to scan", config.dev_dir_display),
+        ));
+    }
     for project in &mut config.projects {
         validate_project(project, diags);
     }
