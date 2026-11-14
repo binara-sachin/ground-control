@@ -4,6 +4,9 @@
 
 env: {}
 
+# The folder the Projects screen scans for git repositories (default ~/dev).
+dev_dir: ~/dev
+
 projects:
   tmux-ui-manager:
     path: ~/dev/tmux-ui-manager

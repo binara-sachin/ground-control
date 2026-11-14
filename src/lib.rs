@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod ctx;
+pub mod devscan;
 pub mod engine;
 pub mod envfile;
 pub mod envlayers;

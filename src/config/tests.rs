@@ -233,3 +233,22 @@ fn repository_example_config_is_valid() {
     let errs = errors(&src);
     assert!(errs.is_empty(), "{errs:#?}");
 }
+
+#[test]
+fn dev_dir_defaults_and_can_be_set() {
+    let r = load_str("projects: {}\n");
+    assert_eq!(r.config.unwrap().dev_dir_display, "~/dev");
+    let r = load_str("dev_dir: /tmp\nprojects: {}\n");
+    let c = r.config.unwrap();
+    assert_eq!((c.dev_dir_display.as_str(), c.dev_dir.to_str()), ("/tmp", Some("/tmp")));
+    assert!(r.diagnostics.is_empty());
+    assert!(has_error("dev_dir: \"\"\n", "must not be empty"));
+    assert!(has_error("dev_dir: [a]\n", "dev_dir must be a string"));
+}
+
+#[test]
+fn a_missing_dev_dir_is_only_a_warning() {
+    let r = load_str("dev_dir: /definitely/not/here\n");
+    assert!(r.config.is_some());
+    assert!(r.diagnostics.iter().any(|d| d.severity == Severity::Warning && d.message.contains("dev_dir")));
+}

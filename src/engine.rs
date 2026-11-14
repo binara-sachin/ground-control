@@ -24,6 +24,7 @@ const POLL: Duration = Duration::from_secs(1);
 const GIT_POLL: Duration = Duration::from_secs(30);
 /// Docker is checked only while the Health screen is open, at most this often.
 const DOCKER_EVERY: Duration = Duration::from_secs(30);
+const DEV_OPS_AT_ONCE: usize = 6;
 
 /// Tools the steps are expected to find on `PATH` (§6.6).
 const REQUIRED_TOOLS: [&str; 8] = ["git", "gh", "pnpm", "npm", "cargo", "go", "docker", "tmux"];
@@ -41,6 +42,8 @@ pub struct Engine {
     watch: Mutex<Watch>,
     events: mpsc::UnboundedSender<Event>,
     docker: Mutex<Option<(Instant, Reachability)>>,
+    /// Caps the network actions running at once (a fetch of every repository).
+    dev_ops: tokio::sync::Semaphore,
 }
 
 impl Engine {
@@ -66,6 +69,7 @@ impl Engine {
             watch: Mutex::new(Watch::default()),
             events,
             docker: Mutex::new(None),
+            dev_ops: tokio::sync::Semaphore::new(DEV_OPS_AT_ONCE),
         });
         e.reload_config_now();
         tokio::spawn(watch_config(e.clone()));
@@ -123,6 +127,22 @@ impl Engine {
     pub async fn projects(&self) -> Result<Vec<ProjectInfo>, String> {
         let windows = window::list(&self.ctx.tmux).await?;
         Ok(self.project_infos(&windows))
+    }
+
+    /// Every git repository under `dev_dir`, read locally (nothing is fetched).
+    pub async fn dev_scan(&self) -> DevScan {
+        let config = self.config();
+        crate::devscan::scan(&config.dev_dir, &config.dev_dir_display).await
+    }
+
+    /// Fetches, pushes or pulls one repository under `dev_dir` (`path` is
+    /// relative to it).
+    pub async fn dev_op(&self, path: &str, op: DevOp) -> Result<String, String> {
+        let config = self.config();
+        let dir = crate::devscan::resolve(&config.dev_dir, path)
+            .ok_or_else(|| format!("{path} is not a repository under {}", config.dev_dir_display))?;
+        let _slot = self.dev_ops.acquire().await.map_err(|e| e.to_string())?;
+        crate::devscan::run_op(&dir, op).await
     }
 
     /// Opens a run's window, or only plans it when `params.dry_run` is set.

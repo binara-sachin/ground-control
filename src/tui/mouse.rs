@@ -10,7 +10,7 @@ use ratatui::layout::{Position, Rect};
 /// What a screen area is, for the click and wheel handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// Top-bar tab: 1 dashboard, 2 health.
+    /// Top-bar tab: 1 dashboard, 2 projects, 3 health.
     Tab(u8),
     DashBanner,
     DashProjects,
@@ -19,6 +19,11 @@ pub enum Target {
     DashOutput,
     ProjPipelines,
     ProjServices,
+    /// The Projects screen: the list, and the fetch, push and pull button columns.
+    DevRepos,
+    DevFetch,
+    DevPush,
+    DevPull,
     RunSteps,
     RunOutput,
     // Overlays. While one is open only these can be hit.
@@ -58,6 +63,7 @@ impl Target {
                 | Target::DashRuns
                 | Target::ProjPipelines
                 | Target::ProjServices
+                | Target::DevRepos
                 | Target::RunSteps
         )
     }

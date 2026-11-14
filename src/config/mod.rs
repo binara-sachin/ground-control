@@ -37,10 +37,27 @@ impl Diagnostic {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub env: Vec<(String, String)>,
+    /// The folder the Projects screen scans for git repositories (`dev_dir`),
+    /// as written and with `~` expanded. `~/dev` when the config does not say.
+    pub dev_dir_display: String,
+    pub dev_dir: PathBuf,
     pub projects: Vec<Project>,
+}
+
+pub const DEFAULT_DEV_DIR: &str = "~/dev";
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            env: Vec::new(),
+            dev_dir_display: DEFAULT_DEV_DIR.into(),
+            dev_dir: crate::paths::expand_tilde(Path::new(DEFAULT_DEV_DIR)),
+            projects: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -118,8 +118,11 @@ fn the_wheel_moves_the_selection() {
 #[test]
 fn top_bar_tabs_switch_screens() {
     let (mut app, mut t) = app();
-    click_on(&mut app, Target::Tab(2), 0, false);
+    click_on(&mut app, Target::Tab(3), 0, false);
     assert!(matches!(app.top(), View::Health));
+    redraw(&mut app, &mut t);
+    click_on(&mut app, Target::Tab(2), 0, false);
+    assert!(matches!(app.top(), View::Projects));
     redraw(&mut app, &mut t);
     click_on(&mut app, Target::Tab(1), 0, false);
     assert!(matches!(app.top(), View::Dashboard));
@@ -753,9 +756,10 @@ fn help_panel(app: &App, w: u16, h: u16) -> Rect {
 fn help_on_every_screen(w: u16, h: u16) -> Vec<(screens::overlay::HelpScreen, App, Terminal<TestBackend>)> {
     use screens::overlay::HelpScreen;
     let mut out = Vec::new();
-    for screen in [HelpScreen::Dashboard, HelpScreen::Project, HelpScreen::Run, HelpScreen::Health] {
+    for screen in [HelpScreen::Dashboard, HelpScreen::Projects, HelpScreen::Project, HelpScreen::Run, HelpScreen::Health] {
         let (mut app, mut term) = match screen {
             HelpScreen::Dashboard => busy_app(w, h),
+            HelpScreen::Projects => projects_app(w, h),
             HelpScreen::Project => {
                 let (mut a, t) = busy_app(w, h);
                 a.open_project("alpha");
@@ -791,6 +795,7 @@ fn help_fits_on_every_screen_and_lists_ctrl_c() {
             assert!(screen_text.contains("ctrl+c") && screen_text.contains("everywhere"), "{screen:?}");
             let own = match screen {
                 HelpScreen::Dashboard => "services pane: start/stop the selected service or group",
+                HelpScreen::Projects => "fetch it (↻); the only thing that fetches",
                 HelpScreen::Project => "open the run dialog",
                 HelpScreen::Run => "approve (asks first if protected)",
                 HelpScreen::Health => "re-check tools, tmux, Docker and config now",
@@ -1102,7 +1107,7 @@ fn only_quit_works_while_the_terminal_is_too_small() {
     redraw(&mut app, &mut small);
     assert!(app.too_small);
     let key = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(c, KeyModifiers::NONE))));
-    for c in ['2', '?', 's', 'a', 'c', 'r', 'l'] {
+    for c in ['3', '?', 's', 'a', 'c', 'r', 'l'] {
         key(&mut app, KeyCode::Char(c));
     }
     key(&mut app, KeyCode::Enter);
@@ -1359,4 +1364,251 @@ fn a_toast_drops_whole_hints_from_the_right_never_part_of_one() {
         }
     }
     assert!(shown.len() > 2, "the hints were dropped one by one: {shown:?}");
+}
+
+// ── the Projects screen ──
+
+fn dev_repo(path: &str) -> DevRepo {
+    DevRepo {
+        path: path.into(),
+        branch: "main".into(),
+        upstream: DevUpstream::Tracking,
+        ahead: 0,
+        behind: 0,
+        staged: 0,
+        unstaged: 0,
+        conflicted: 0,
+        untracked: 0,
+        last_commit: Some(now() - 7200),
+        last_fetch: Some(now() - 3 * 3600),
+    }
+}
+
+/// Five repositories under `~/dev`, one of them local only and one dirty and ahead.
+fn projects_app(w: u16, h: u16) -> (App, Terminal<TestBackend>) {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut app = App::new(tx);
+    app.conn = Conn::Connected;
+    app.nav = vec![View::Projects];
+    let mut dirty = dev_repo("dotfiles");
+    (dirty.unstaged, dirty.ahead) = (1, 2);
+    let mut local = dev_repo("learn-rust/rune");
+    local.upstream = DevUpstream::NoRemote;
+    let mut never = dev_repo("salli");
+    never.last_fetch = None;
+    never.upstream = DevUpstream::Unpushed;
+    let repos = vec![dev_repo("binara-sachin"), dirty, local, dev_repo("learn-rust/rune-mentor"), never];
+    app.dev.scan = Some(DevScan { root: "~/dev".into(), root_found: true, repos, scanned_at: now() });
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| draw(&mut app, f)).unwrap();
+    (app, term)
+}
+
+#[test]
+fn projects_draws_the_tree_the_state_and_when_it_was_fetched() {
+    let (_app, term) = projects_app(120, 30);
+    let text = screen_text(&term);
+    for want in [
+        "├── binara-sachin",
+        "├── learn-rust",
+        "│   ├── rune",
+        "│   └── rune-mentor",
+        "└── salli",
+        "tree",
+        "↑ ↓",
+        "commit",
+        "fetched",
+        "clean",
+        "1M",
+        "2 0",
+        "- -",
+        "5 repositories",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in:\n{text}");
+    }
+    // The age alone, like the commit column: "3h", never "3h ago"; and a repo never fetched says so.
+    assert!(text.contains("3h") && !text.contains("ago") && text.contains("never"), "{text}");
+    // The buttons close each repository's row, after the fetched column.
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    let (fetched, icons) = (row.find("3h").unwrap(), row.find('↻').unwrap());
+    assert!(icons > fetched && row.find('↑').unwrap() > icons && row.find('↓').unwrap() > row.find('↑').unwrap(), "{row}");
+}
+
+#[test]
+fn a_button_click_selects_the_row_and_starts_that_action() {
+    let (mut app, _t) = projects_app(120, 30);
+    // The buttons sit at the right edge of the row.
+    let (x, _) = cell_of(&app, Target::DevPull, 0, false);
+    assert_eq!(x + 3 + 2, 119, "the pull button leaves two blank columns before the border, besides its own");
+    // Rows: binara-sachin, dotfiles, learn-rust (folder), rune, rune-mentor, salli.
+    click_on(&mut app, Target::DevPush, 1, false);
+    assert_eq!(app.dev.selected.as_deref(), Some("dotfiles"));
+    assert_eq!(app.dev.busy.get("dotfiles"), Some(&DevOp::Push));
+    // The same repository is busy: a second click does not start a second action.
+    click_on(&mut app, Target::DevFetch, 1, false);
+    assert_eq!(app.dev.busy.get("dotfiles"), Some(&DevOp::Push));
+    // A click on the folder row, or on a repository with no remote, starts nothing.
+    click_on(&mut app, Target::DevFetch, 2, false);
+    click_on(&mut app, Target::DevPull, 3, false);
+    assert_eq!(app.dev.busy.len(), 1);
+    assert!(app.toast.as_ref().is_some_and(|(m, _, _)| m.contains("no remote")));
+    // A click elsewhere in the row only selects.
+    click_on(&mut app, Target::DevRepos, 5, false);
+    assert_eq!(app.dev.selected.as_deref(), Some("salli"));
+    assert_eq!(app.dev.busy.len(), 1);
+}
+
+#[test]
+fn busy_repositories_show_the_running_action_and_finish_with_a_toast() {
+    let (mut app, mut t) = projects_app(120, 30);
+    click_on(&mut app, Target::DevPull, 0, false);
+    redraw(&mut app, &mut t);
+    assert!(screen_text(&t).contains(" … "));
+    app.update(Msg::Reply(Reply::DevOp {
+        path: "binara-sachin".into(),
+        op: DevOp::Pull,
+        in_batch: false,
+        result: Err("not possible to fast-forward".into()),
+    }));
+    assert!(app.dev.busy.is_empty());
+    let (msg, level, _) = app.toast.clone().unwrap();
+    assert_eq!(level, app::Level::Error);
+    assert!(msg.contains("binara-sachin") && msg.contains("pull failed") && msg.contains("fast-forward"), "{msg}");
+}
+
+#[test]
+fn keys_skip_folders_and_fetch_all_reports_once() {
+    let (mut app, _t) = projects_app(120, 30);
+    let key = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(c, KeyModifiers::NONE))));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.dev.selected.as_deref(), Some("learn-rust/rune"), "the folder row is stepped over");
+    key(&mut app, KeyCode::Char('k'));
+    key(&mut app, KeyCode::Char('k'));
+    key(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.dev.selected.as_deref(), Some("binara-sachin"));
+
+    key(&mut app, KeyCode::Char('F'));
+    assert_eq!(app.dev.busy.len(), 4, "every repository with a remote, not the local-only one");
+    let done = |app: &mut App, path: &str, result| {
+        app.update(Msg::Reply(Reply::DevOp { path: path.into(), op: DevOp::Fetch, in_batch: true, result }))
+    };
+    for p in ["binara-sachin", "dotfiles", "learn-rust/rune-mentor"] {
+        done(&mut app, p, Ok("fetched".into()));
+        assert!(app.toast.is_none(), "no toast per repository");
+    }
+    done(&mut app, "salli", Err("could not resolve host".into()));
+    let (msg, level, _) = app.toast.clone().unwrap();
+    assert_eq!(level, app::Level::Error);
+    assert!(msg.starts_with("1 of 4 failed") && msg.contains("salli: could not resolve host"), "{msg}");
+}
+
+#[test]
+fn the_attention_filter_and_the_refresh_key_do_not_fetch() {
+    let (mut app, mut t) = projects_app(120, 30);
+    let key = |app: &mut App, c| app.update(Msg::Input(Event::Key(KeyEvent::new(c, KeyModifiers::NONE))));
+    key(&mut app, KeyCode::Char('e'));
+    redraw(&mut app, &mut t);
+    let text = screen_text(&t);
+    assert!(text.contains("needs attention only") && text.contains("dotfiles") && !text.contains("rune-mentor"), "{text}");
+    key(&mut app, KeyCode::Char('r'));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.dev.busy.is_empty(), "reading and opening never start a fetch");
+    assert!(app.toast.as_ref().is_some_and(|(m, _, _)| m.contains("not in groundcontrol.yaml")));
+}
+
+#[test]
+fn projects_explains_a_missing_folder() {
+    let (mut app, mut t) = projects_app(120, 30);
+    app.dev.scan = Some(DevScan { root: "~/nowhere".into(), root_found: false, repos: vec![], scanned_at: now() });
+    redraw(&mut app, &mut t);
+    assert!(screen_text(&t).contains("~/nowhere is not a folder — set dev_dir in groundcontrol.yaml"));
+}
+
+#[test]
+fn projects_fits_the_smallest_terminal() {
+    let (app, term) = projects_app(100, 28);
+    let text = screen_text(&term);
+    assert!(text.contains("fetched") && text.contains("└── salli"));
+    assert!(app.hits.at(5, 5, false).is_some());
+}
+
+#[test]
+fn the_buttons_stand_apart_from_the_fetched_column() {
+    let (_app, term) = projects_app(100, 30);
+    let text = screen_text(&term);
+    let col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+    let head = text.lines().find(|l| l.contains("fetched")).unwrap();
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    let between = col(row, "↻") - (col(head, "fetched") + "fetched".len());
+    assert!(between >= 4, "only {between} columns between the fetched column and the buttons: {row}");
+}
+
+#[test]
+fn whole_branch_names_are_visible_and_sit_with_the_detail_columns() {
+    for (w, h) in [(100u16, 30u16), (140, 30)] {
+        let (mut app, mut t) = projects_app(w, h);
+        let long = "csm-reply-newlines-markdown-paste";
+        app.dev.scan.as_mut().unwrap().repos[1].branch = long.into();
+        redraw(&mut app, &mut t);
+        let text = screen_text(&t);
+        let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+        assert!(row.contains(long), "{w}: branch cut in {row}");
+        // The branch is the first of the detail columns, right beside the tree column.
+        let col = |needle: &str| row[..row.find(needle).unwrap()].chars().count();
+        assert!(col("1M") - (col(long) + long.len()) <= 3, "{w}: branch far from the details: {row}");
+        // The buttons are still at the right end.
+        assert!(col("↻") > col("3h"), "{row}");
+    }
+}
+
+#[test]
+fn a_button_click_re_reads_the_repository_even_while_a_read_is_running() {
+    let (mut app, _t) = projects_app(120, 30);
+    app.dev.loading = true;
+    // A repository with no remote: the action is refused, the values are still refreshed.
+    click_on(&mut app, Target::DevFetch, 3, false);
+    assert!(app.dev.busy.is_empty());
+    assert!(app.dev.rescan_queued, "the read that is running may predate the click");
+    // When that read lands, the queued one starts instead of being lost.
+    let scan = app.dev.scan.clone().unwrap();
+    app.update(Msg::Reply(Reply::DevScan(scan)));
+    assert!(!app.dev.rescan_queued && !app.dev.loading, "no engine here, so the follow-up read cannot start");
+}
+
+#[test]
+fn a_finished_action_queues_a_fresh_read_of_the_tree() {
+    let (mut app, _t) = projects_app(120, 30);
+    app.dev.loading = true;
+    app.update(Msg::Reply(Reply::DevOp { path: "dotfiles".into(), op: DevOp::Push, in_batch: false, result: Ok("pushed".into()) }));
+    assert!(app.dev.rescan_queued);
+}
+
+#[test]
+fn the_buttons_have_an_actions_heading_above_them() {
+    let (_app, term) = projects_app(120, 30);
+    let text = screen_text(&term);
+    let col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+    let head = text.lines().find(|l| l.contains("actions")).expect("heading");
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    assert!(
+        head.contains("fetched") && col(head, "actions") >= col(row, "↻") - 1 && col(head, "actions") <= col(row, "↻") + 1,
+        "{head}\n{row}"
+    );
+}
+
+#[test]
+fn the_detail_columns_sit_together_beside_the_buttons() {
+    let (_app, term) = projects_app(160, 30);
+    let text = screen_text(&term);
+    let col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+    let head = text.lines().find(|l| l.contains("fetched")).unwrap();
+    let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+    // All the slack is between the branch and the details, none before the buttons.
+    assert!(col(head, "branch") - col(head, "repo") > 30, "{head}");
+    let between = col(row, "↻") - (col(head, "fetched") + "fetched".len());
+    assert!((4..=6).contains(&between), "{between} columns between fetched and the buttons: {row}");
+    // And only a little more than between the other detail columns.
+    let other = col(head, "fetched") - (col(head, "commit") + "commit".len());
+    assert!(between > other && between - other <= 4, "{between} vs {other}");
 }

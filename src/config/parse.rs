@@ -108,11 +108,21 @@ pub fn is_env_name(s: &str) -> bool {
 pub(super) fn config_from_node(root: &Node, diags: &mut Vec<Diagnostic>) -> Option<Config> {
     let mut cx = Ctx { diags };
     let entries = cx.map(root, "the config file")?;
-    cx.check_keys(entries, &["env", "projects"], "the top level");
+    cx.check_keys(entries, &["env", "dev_dir", "projects"], "the top level");
     let mut config = Config::default();
     for (k, v) in entries {
         match k.text.as_str() {
             "env" => config.env = cx.string_map(v, "env"),
+            "dev_dir" => {
+                if let Some(s) = cx.string(v, "dev_dir") {
+                    if s.trim().is_empty() {
+                        cx.err(v.pos, "dev_dir must not be empty");
+                    } else {
+                        config.dev_dir = crate::paths::expand_tilde(&PathBuf::from(&s));
+                        config.dev_dir_display = s;
+                    }
+                }
+            }
             "projects" => {
                 if let Some(projects) = cx.map(v, "projects") {
                     for (pk, pv) in projects {

@@ -87,6 +87,86 @@ pub enum Event {
     },
 }
 
+// ── the Projects screen: every git repository under `dev_dir` ──
+
+/// How a repository's branch relates to the remote (the ORIGIN column).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevUpstream {
+    /// An upstream is configured; ahead/behind are counted against it.
+    Tracking,
+    /// No upstream, but `<remote>/<branch>` exists; counted against that.
+    Matching,
+    /// The branch has never reached the remote.
+    Unpushed,
+    /// The configured upstream branch was deleted on the remote.
+    Gone,
+    Detached,
+    NoRemote,
+    /// Initialised, nothing committed yet.
+    Unborn,
+    /// Git could not read the repository.
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevRepo {
+    /// Path below `dev_dir`, `/`-separated.
+    pub path: String,
+    pub branch: String,
+    pub upstream: DevUpstream,
+    pub ahead: u32,
+    pub behind: u32,
+    pub staged: u32,
+    pub unstaged: u32,
+    pub conflicted: u32,
+    pub untracked: u32,
+    pub last_commit: Option<Timestamp>,
+    /// When this repository was last fetched or pulled (git's `FETCH_HEAD`).
+    /// `None` when it never was. Counts behind are as old as this.
+    pub last_fetch: Option<Timestamp>,
+}
+
+impl DevRepo {
+    /// Whether there is anything here to act on (the `e` filter).
+    pub fn needs_attention(&self) -> bool {
+        self.upstream == DevUpstream::Error
+            || self.staged + self.unstaged + self.conflicted + self.untracked + self.ahead + self.behind > 0
+            || matches!(self.upstream, DevUpstream::Gone | DevUpstream::Unpushed | DevUpstream::Detached)
+    }
+
+    /// Whether fetch, push and pull make sense: there is a remote to talk to.
+    pub fn has_remote(&self) -> bool {
+        !matches!(self.upstream, DevUpstream::NoRemote | DevUpstream::Error)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevScan {
+    /// `dev_dir` as written in the config.
+    pub root: String,
+    pub root_found: bool,
+    /// Sorted by path.
+    pub repos: Vec<DevRepo>,
+    pub scanned_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DevOp {
+    Fetch,
+    Push,
+    Pull,
+}
+
+impl DevOp {
+    pub fn verb(self) -> &'static str {
+        match self {
+            DevOp::Fetch => "fetch",
+            DevOp::Push => "push",
+            DevOp::Pull => "pull",
+        }
+    }
+}
+
 // ── data ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

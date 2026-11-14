@@ -116,7 +116,17 @@ fn parse_porcelain_v2(out: &str) -> GitStatus {
 }
 
 /// Runs git with a timeout; returns stdout on success.
-async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    run(dir, args, Duration::from_secs(20), false).await
+}
+
+/// Runs git against the network (fetch, push, pull): longer timeout, and ssh
+/// may never ask for a passphrase, because a prompt would write over the TUI.
+pub async fn git_network(dir: &Path, args: &[&str]) -> Result<String, String> {
+    run(dir, args, Duration::from_secs(120), true).await
+}
+
+async fn run(dir: &Path, args: &[&str], timeout: Duration, network: bool) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(dir)
@@ -124,16 +134,44 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .kill_on_drop(true);
-    let out = tokio::time::timeout(Duration::from_secs(20), cmd.output())
+    if network && std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    let out = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| format!("git {} timed out", args.join(" ")))?
         .map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        Err(err.lines().next().unwrap_or("git failed").trim().to_string())
+        Err(summarize_error(&String::from_utf8_lossy(&out.stderr)))
     }
+}
+
+/// The part of git's stderr worth showing in one line. A rejected push starts
+/// with the remote's URL, which says nothing, so prefer the `fatal:`,
+/// `error:` and `! [rejected]` lines.
+pub fn summarize_error(stderr: &str) -> String {
+    let mut picked: Vec<String> = Vec::new();
+    for l in stderr.lines().map(str::trim) {
+        let text = if let Some(t) = l.strip_prefix("fatal:").or_else(|| l.strip_prefix("error:")) {
+            // "failed to push some refs" only repeats what the line before says.
+            if t.trim_start().starts_with("failed to push some refs") {
+                continue;
+            }
+            t.trim()
+        } else if l.starts_with("! [") {
+            l
+        } else {
+            continue;
+        };
+        picked.push(text.to_string());
+    }
+    if picked.is_empty() {
+        return stderr.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("git failed").to_string();
+    }
+    picked.truncate(2);
+    picked.join(" — ")
 }
 
 /// `origin` URL, or an error message.
@@ -206,6 +244,15 @@ mod tests {
         assert_eq!(normalize_remote("ssh://git@github.com/binara-sachin/finance-analyzer"), want);
         assert!(!remotes_match("github.com/a/b", "git@github.com:a/c.git"));
         assert_eq!(normalize_remote("nonsense"), None);
+    }
+
+    #[test]
+    fn error_summaries_skip_the_remote_url() {
+        let push = "To github.com:a/b.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'github.com:a/b.git'\nhint: Updates were rejected\n";
+        assert_eq!(summarize_error(push), "! [rejected]        main -> main (fetch first)");
+        assert_eq!(summarize_error("fatal: not a git repository\n"), "not a git repository");
+        assert_eq!(summarize_error("something odd\nlast line\n"), "last line");
+        assert_eq!(summarize_error(""), "git failed");
     }
 
     #[test]

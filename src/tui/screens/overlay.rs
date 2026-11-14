@@ -158,6 +158,7 @@ pub fn draw_overlay(app: &mut App, f: &mut Frame, area: Rect) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpScreen {
     Dashboard,
+    Projects,
     Project,
     Run,
     Health,
@@ -167,6 +168,7 @@ impl HelpScreen {
     pub fn of(view: &View) -> HelpScreen {
         match view {
             View::Dashboard => HelpScreen::Dashboard,
+            View::Projects => HelpScreen::Projects,
             View::Project(_) => HelpScreen::Project,
             View::Run(_) => HelpScreen::Run,
             View::Health => HelpScreen::Health,
@@ -176,6 +178,7 @@ impl HelpScreen {
     fn name(self) -> &'static str {
         match self {
             HelpScreen::Dashboard => "dashboard",
+            HelpScreen::Projects => "projects",
             HelpScreen::Project => "project",
             HelpScreen::Run => "run view",
             HelpScreen::Health => "health",
@@ -192,7 +195,18 @@ impl HelpScreen {
                 ("s", "services pane: start/stop the selected service or group"),
                 ("r", "services pane: restart it"),
                 ("l", "services pane: show its full output"),
-                ("↑ ↓ column", "commits ahead/behind as of the last fetch (never fetched)"),
+                ("↑ ↓ column", "commits ahead/behind as of the last fetch (fetch by hand)"),
+            ],
+            HelpScreen::Projects => &[
+                ("↑↓ / j k", "select a repository"),
+                ("f", "fetch it (↻); the only thing that fetches"),
+                ("p / P", "pull (↓, fast-forward only) / push (↑, never forced)"),
+                ("F", "fetch every repository with a remote"),
+                ("e", "show only repositories that need attention"),
+                ("r", "read the folder again (also every 30 s; local only)"),
+                ("enter", "open it, if it is a project in groundcontrol.yaml"),
+                ("click", "an icon runs that action; the rest selects the row"),
+                ("fetched", "when it was last fetched; the ↑ ↓ counts are as old as that"),
             ],
             HelpScreen::Project => &[
                 ("tab / shift+tab", "switch between pipelines and services"),
@@ -225,7 +239,7 @@ impl HelpScreen {
 }
 
 const EVERYWHERE: &[(&str, &str)] = &[
-    ("1 2", "dashboard, health"),
+    ("1 2 3", "dashboard, projects, health"),
     ("esc", "go back; also closes help, viewers, confirms and dialogs"),
     ("?", "this help"),
     ("q", "quit; closes help, output viewers and confirms instead"),

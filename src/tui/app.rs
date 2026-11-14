@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::mouse::{HitMap, Target};
 use super::screens::overlay::{self, Overlay, TextOverlay};
-use super::screens::{dashboard, project, run_view};
+use super::screens::{dashboard, project, projects, run_view};
 use super::term_view::TermView;
 use crate::engine::Engine;
 use crate::model::*;
@@ -33,6 +33,8 @@ pub enum Reply {
     Projects(Result<Vec<ProjectInfo>, String>),
     Runs(Result<RunList, String>),
     Health(HealthInfo),
+    DevScan(DevScan),
+    DevOp { path: String, op: DevOp, in_batch: bool, result: Result<String, String> },
     Run(i64, Result<RunDetail, String>),
     StepOutput { run: i64, step: usize, result: Result<OutputChunk, String> },
     ServiceOutput { project: String, service: String, result: Result<String, String> },
@@ -60,6 +62,7 @@ pub enum Conn {
 
 pub enum View {
     Dashboard,
+    Projects,
     Project(project::ProjectView),
     Run(Box<run_view::RunView>),
     Health,
@@ -85,6 +88,7 @@ pub struct App {
     pub config: Option<ConfigStatus>,
 
     pub dash: dashboard::DashState,
+    pub dev: projects::DevState,
 
     /// Clickable areas of the last frame.
     pub hits: HitMap,
@@ -115,6 +119,7 @@ impl App {
             health: None,
             config: None,
             dash: Default::default(),
+            dev: Default::default(),
             hits: HitMap::default(),
             last_click: None,
             watching: Watch::default(),
@@ -329,6 +334,11 @@ impl App {
             self.last_health = Some(now);
             self.fetch_health();
         }
+        // Re-reads the repositories while their screen is open. Local only:
+        // nothing is fetched except by a button.
+        if matches!(self.top(), View::Projects) && self.dev.loaded_at.is_none_or(|t| t.elapsed() >= projects::REFRESH_EVERY) {
+            self.fetch_dev_scan();
+        }
         if self.toast.as_ref().is_some_and(|(_, _, t)| t.elapsed() > Duration::from_secs(5)) {
             self.toast = None;
         }
@@ -407,12 +417,15 @@ impl App {
             }
             Event::Config(c) => {
                 if !c.ok {
-                    self.toast("config is invalid; the previous config stays active (see 2 health)", Level::Error);
+                    self.toast("config is invalid; the previous config stays active (see 3 health)", Level::Error);
                 } else {
                     self.toast("config reloaded", Level::Info);
                 }
                 self.config = Some(c);
                 self.fetch_health();
+                if matches!(self.top(), View::Projects) {
+                    self.fetch_dev_scan();
+                }
             }
             Event::StepOutput(chunk) => {
                 for v in &mut self.nav {
@@ -445,6 +458,8 @@ impl App {
                 self.config = Some(h.config.clone());
                 self.health = Some(h);
             }
+            Reply::DevScan(scan) => projects::on_scan(self, scan),
+            Reply::DevOp { path, op, in_batch, result } => projects::on_op_done(self, path, op, in_batch, result),
             Reply::Run(id, Ok(d)) => {
                 let mut reads = Vec::new();
                 for v in &mut self.nav {
@@ -609,6 +624,10 @@ impl App {
                 self.go_root(2);
                 return;
             }
+            KeyCode::Char('3') => {
+                self.go_root(3);
+                return;
+            }
             KeyCode::Esc if self.nav.len() > 1 => {
                 self.pop();
                 return;
@@ -617,6 +636,7 @@ impl App {
         }
         match self.top() {
             View::Dashboard => dashboard::key(self, k),
+            View::Projects => projects::key(self, k),
             View::Project(_) => project::key(self, k),
             View::Run(_) => run_view::key(self, k),
             View::Health => {
@@ -628,11 +648,15 @@ impl App {
         self.sync_watch();
     }
 
-    /// Switches to a root screen: 1 dashboard, 2 health.
+    /// Switches to a root screen: 1 dashboard, 2 projects, 3 health.
     fn go_root(&mut self, n: u8) {
         match n {
             1 => self.nav = vec![View::Dashboard],
             2 => {
+                self.nav = vec![View::Projects];
+                self.fetch_dev_scan();
+            }
+            3 => {
                 self.nav = vec![View::Health];
                 self.fetch_health();
             }
@@ -677,6 +701,7 @@ impl App {
             }
             Target::DashBanner | Target::DashProjects | Target::DashServices | Target::DashRuns => dashboard::click(self, target, row),
             Target::ProjPipelines | Target::ProjServices => project::click(self, target, row),
+            Target::DevRepos | Target::DevFetch | Target::DevPush | Target::DevPull => projects::click(self, target, row),
             Target::RunSteps => run_view::click(self, row),
             _ => false,
         };
@@ -712,6 +737,7 @@ impl App {
                 project::click(self, target, usize::MAX);
                 self.press(step);
             }
+            Target::DevRepos | Target::DevFetch | Target::DevPush | Target::DevPull => self.press(step),
             Target::RunSteps => self.press(step),
             Target::RunOutput => run_view::scroll_output(self, |o| if down { o.scroll_down(LINES) } else { o.scroll_up(LINES) }),
             Target::TextOverlay => {
@@ -741,7 +767,7 @@ impl App {
     pub fn attention(&self, tab: usize) -> bool {
         match tab {
             1 => !self.waiting.is_empty() || self.projects.iter().any(|p| p.services.iter().any(|s| s.state == ServiceState::Crashed)),
-            2 => {
+            3 => {
                 self.config.as_ref().is_some_and(|c| !c.ok)
                     || self.health.as_ref().is_some_and(|h| {
                         h.tools.iter().any(|t| !t.ok) || h.docker.as_ref().is_some_and(|d| !d.ok) || h.tmux.as_ref().is_some_and(|t| !t.ok)
