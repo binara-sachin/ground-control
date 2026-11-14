@@ -77,3 +77,91 @@ projects:
                 || { echo "tmux does not load this checkout; run link-dev first" >&2; exit 1; }
           - name: Rebind in tmux
             run: tmux run-shell "$HOME/.config/tmux/plugins/tmux-ui-manager/manager.tmux"   # fails clearly if no tmux server is running
+
+  # These pipelines replace the novels repo's retired GitHub Actions workflows.
+  # The daily scheduled sync is now run by hand (ground-control has no
+  # schedules). Each pipeline commits and pushes from the real checkout using
+  # your own git/gh login.
+  novels:
+    path: ~/dev/novels
+    remote: github.com/binara-sachin/novels
+    pipelines:
+      sync:
+        description: "Fetches new chapters for one novel or all of them, regenerates the README, and commits and pushes the archive."
+        inputs:
+          novel:
+            type: string
+            pattern: "^(all|[a-z0-9-]+)$"
+            default: all
+          limit:
+            type: string
+            pattern: "^[0-9]+$"
+            default: "0"
+        steps:
+          - name: Set up Python
+            run: scripts/bootstrap.sh
+          - name: Sync
+            timeout: 90m
+            run: |
+              set -e
+              args=()
+              [ "$INPUT_NOVEL" != "all" ] && args+=(--novel "$INPUT_NOVEL")
+              [ "$INPUT_LIMIT" != "0" ] && args+=(--limit "$INPUT_LIMIT")
+              .venv/bin/python -m rrkindle.cli sync "${args[@]}"
+          - name: Regenerate README
+            run: .venv/bin/python -m rrkindle.cli readme
+          - name: Commit and push
+            run: |
+              scripts/commit-archive.sh "sync: {n} new chapter file(s)" archive README.md
+
+      add-novel:
+        description: "Adds a novel by its Royal Road fiction id, then commits and pushes the updated novels list and README."
+        inputs:
+          fiction_id:
+            type: string
+            pattern: "^[0-9]+$"
+          slug:
+            type: string
+            pattern: "^(auto|[a-z0-9-]+)$"
+            default: auto
+          complete:
+            type: bool
+            default: "false"
+        steps:
+          - name: Set up Python
+            run: scripts/bootstrap.sh
+          - name: Add novel
+            run: |
+              set -e
+              args=()
+              [ "$INPUT_COMPLETE" = "true" ] && args+=(--complete)
+              .venv/bin/python -m rrkindle.cli add-novel --fiction-id "$INPUT_FICTION_ID" --slug "$INPUT_SLUG" "${args[@]}"
+          - name: Commit and push
+            run: |
+              scripts/commit-archive.sh "add novel: fiction_id $INPUT_FICTION_ID" novels.yaml README.md
+
+      build:
+        description: "Optionally syncs a novel first, then builds its EPUB and uploads it to the rolling GitHub release."
+        inputs:
+          novel:
+            type: string
+            pattern: "^[a-z0-9-]+$"
+          sync_first:
+            type: bool
+            default: "true"
+        steps:
+          - name: Set up Python
+            run: scripts/bootstrap.sh
+          - name: Sync first
+            timeout: 60m
+            run: |
+              set -e
+              if [ "$INPUT_SYNC_FIRST" = "false" ]; then echo "skipped"; exit 0; fi
+              .venv/bin/python -m rrkindle.cli sync --novel "$INPUT_NOVEL"
+              .venv/bin/python -m rrkindle.cli readme
+              scripts/commit-archive.sh "sync before build" archive README.md
+          - name: Build
+            timeout: 30m
+            run: scripts/build.sh "$INPUT_NOVEL"
+          - name: Publish release
+            run: scripts/publish-release.sh "$INPUT_NOVEL"

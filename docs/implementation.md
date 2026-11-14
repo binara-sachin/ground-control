@@ -80,7 +80,7 @@ the decisions taken where the spec left room, and what is still open.
 
 ### Projects (§7.2)
 
-- [x] `groundcontrol.yaml` holds tmux-ui-manager. It passes validation; a unit test keeps it that way
+- [x] `groundcontrol.yaml` holds tmux-ui-manager and novels (sync, add-novel, build pipelines). It passes validation; a unit test keeps it that way
 
 ## Decisions where the spec left room
 
