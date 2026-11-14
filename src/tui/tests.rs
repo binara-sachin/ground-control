@@ -1543,3 +1543,21 @@ fn the_buttons_stand_apart_from_the_fetched_column() {
     let between = col(row, "↻") - (col(head, "fetched") + "fetched".len());
     assert!(between >= 4, "only {between} columns between the fetched column and the buttons: {row}");
 }
+
+#[test]
+fn whole_branch_names_are_visible_and_sit_beside_the_repo() {
+    for (w, h) in [(100u16, 30u16), (140, 30)] {
+        let (mut app, mut t) = projects_app(w, h);
+        let long = "csm-reply-newlines-markdown-paste";
+        app.dev.scan.as_mut().unwrap().repos[1].branch = long.into();
+        redraw(&mut app, &mut t);
+        let text = screen_text(&t);
+        let row = text.lines().find(|l| l.contains("dotfiles")).unwrap();
+        assert!(row.contains(long), "{w}: branch cut in {row}");
+        // The branch follows the repo name closely instead of floating at the far side.
+        let col = |needle: &str| row[..row.find(needle).unwrap()].chars().count();
+        assert!(col(long) - col("dotfiles") <= 24, "{w}: branch far from repo: {row}");
+        // The buttons are still at the right end.
+        assert!(col("↻") > col("3h"), "{row}");
+    }
+}
